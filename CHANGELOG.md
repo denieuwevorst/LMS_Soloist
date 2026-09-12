@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.3.7
+
+- Store helper and template paths in the release ZIP with forward slashes
+  so Lyrion extracts `Bin/` and `HTML/` directories on Linux.
+
 ## 0.3.6
 
 - Sanitize persisted player-slot values before using them in cache paths,
