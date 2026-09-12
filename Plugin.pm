@@ -253,10 +253,11 @@ sub startBridgeForPlayer {
 	}
 
 	my $proc;
-	eval { $proc = Proc::Background->new( '/bin/sh', $scriptPath ); };
+	eval { $proc = Proc::Background->new( '/bin/bash', $scriptPath ); };
 
 	if ( $@ || !$proc ) {
-		$log->error("failed to start bridge for '" . $client->name . "': $@");
+		my $error = $@ || $! || 'unknown process launch failure';
+		$log->error("failed to start bridge for '" . $client->name . "': $error");
 		return;
 	}
 
