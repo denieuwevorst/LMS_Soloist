@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.3.6
+
+- Sanitize persisted player-slot values before using them in cache paths,
+  preventing malformed values from creating directories with CR characters.
+
 ## 0.3.5
 
 - Launch the Bash-based bridge script through `/bin/bash` rather than
