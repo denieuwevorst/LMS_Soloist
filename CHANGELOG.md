@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.3.4
+
+- Resolve the bridge script relative to the loaded plugin module so the
+  installed package is used reliably, and log a clear error if it is absent.
+
 ## 0.3.3
 
 - Start bridge scripts through `/bin/sh` so downloaded plugin archives do

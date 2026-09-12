@@ -37,7 +37,7 @@ use base qw(Slim::Plugin::OPMLBased);
 
 use File::Spec::Functions qw(catdir catfile);
 use File::Path qw(make_path);
-use FindBin qw($Bin);
+use File::Basename qw(dirname);
 use JSON::XS qw(decode_json);
 use Proc::Background;
 use Time::HiRes ();
@@ -212,10 +212,7 @@ sub handleFeed {
 # ---------------------------------------------------------------------------
 
 sub _scriptPath {
-	my $info = Slim::Utils::PluginManager->allPlugins->{'SpotifySoloist'};
-	my $base = $info ? $info->{basedir} : catdir( $Bin, 'Plugins', 'SpotifySoloist' );
-
-	return catfile( $base, 'Bin', 'soloist-bridge.sh' );
+	return catfile( dirname(__FILE__), 'Bin', 'soloist-bridge.sh' );
 }
 
 sub startBridgeForPlayer {
@@ -249,8 +246,14 @@ sub startBridgeForPlayer {
 
 	$log->info( "starting soloist bridge for player '" . $client->name . "' (device='$cfg->{deviceName}', slot=$cfg->{slot})" );
 
+	my $scriptPath = _scriptPath();
+	unless ( -f $scriptPath ) {
+		$log->error("can't start bridge for '" . $client->name . "': bridge script not found at $scriptPath");
+		return;
+	}
+
 	my $proc;
-	eval { $proc = Proc::Background->new( '/bin/sh', _scriptPath() ); };
+	eval { $proc = Proc::Background->new( '/bin/sh', $scriptPath ); };
 
 	if ( $@ || !$proc ) {
 		$log->error("failed to start bridge for '" . $client->name . "': $@");
