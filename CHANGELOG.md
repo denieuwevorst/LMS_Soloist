@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.3.11
+
+- Intercept matching Lyrion transport commands before the native live-stream
+  handler runs, preventing control actions from resetting the relay stream.
+
 ## 0.3.10
 
 - Forward Lyrion player-button events to Soloist, including next and
