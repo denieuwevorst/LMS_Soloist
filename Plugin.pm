@@ -86,6 +86,11 @@ $prefs->init({
 my %bridges;      # playerID => { proc, wsPort, relayPort, sink, dataDir, cacheDir, fifoPath, deviceName, lastStatus }
 my $baseDataDir;
 my $baseCacheDir;
+my $originalButtonCommand;
+my $originalMixerVolumeCommand;
+my $originalPauseCommand;
+my $originalPlayCommand;
+my $originalStopCommand;
 
 sub getDisplayName { 'PLUGIN_SPOTIFYSOLOIST' }
 
@@ -110,17 +115,25 @@ sub initPlugin {
 		[ 'soloistbridge', '_action' ],
 		[ 0, 1, 0, \&cliBridge ]
 	);
-	Slim::Control::Request::subscribe(
-		\&handleLyrionTransport,
-		[ [ 'play', 'pause', 'stop' ] ],
+	$originalButtonCommand = Slim::Control::Request::addDispatch(
+		[ 'button', '_buttoncode', '_time', '_orFunction' ],
+		[ 1, 0, 0, \&soloistButtonCommand ],
 	);
-	Slim::Control::Request::subscribe(
-		\&handleLyrionTransport,
-		[ [ 'mixer' ], [ 'volume' ] ],
+	$originalMixerVolumeCommand = Slim::Control::Request::addDispatch(
+		[ 'mixer', 'volume', '_newvalue' ],
+		[ 1, 0, 1, \&soloistMixerVolumeCommand ],
 	);
-	Slim::Control::Request::subscribe(
-		\&handleLyrionTransport,
-		[ [ 'button' ] ],
+	$originalPauseCommand = Slim::Control::Request::addDispatch(
+		[ 'pause', '_newvalue', '_fadein', '_suppressShowBriefly' ],
+		[ 1, 0, 0, \&soloistPlayControlCommand ],
+	);
+	$originalPlayCommand = Slim::Control::Request::addDispatch(
+		[ 'play', '_fadein' ],
+		[ 1, 0, 0, \&soloistPlayControlCommand ],
+	);
+	$originalStopCommand = Slim::Control::Request::addDispatch(
+		[ 'stop' ],
+		[ 1, 0, 0, \&soloistPlayControlCommand ],
 	);
 
 	$class->SUPER::initPlugin(
@@ -368,40 +381,38 @@ sub _runSoloistCtl {
 	return 1;
 }
 
-sub handleLyrionTransport {
+sub _forwardLyrionTransport {
 	my ($request) = @_;
 	my $client = $request->client or return;
 	my $b = _bridgeForSoloistStream($client);
 	unless ($b) {
-		$log->debug( 'ignoring Lyrion control for non-Soloist stream: ' . $request->getRequestString );
 		return;
 	}
 
 	if ( ( $b->{suppressLyrionTransportUntil} || 0 ) >= time() ) {
-		$log->debug( 'ignoring plugin-originated Lyrion control: ' . $request->getRequestString );
 		return;
 	}
 
 	my $command = $request->getRequestString;
 	if ( $command eq 'play' ) {
 		$log->debug('forwarding Lyrion play to Soloist');
-		_runSoloistCtl( $b, 'play' );
+		return _runSoloistCtl( $b, 'play' );
 	}
 	elsif ( $command eq 'pause' ) {
 		my $value = $request->getParam('_newvalue');
 		$log->debug( 'forwarding Lyrion pause to Soloist as ' . ( defined $value && !$value ? 'play' : 'pause' ) );
-		_runSoloistCtl( $b, defined $value && !$value ? 'play' : 'pause' );
+		return _runSoloistCtl( $b, defined $value && !$value ? 'play' : 'pause' );
 	}
 	elsif ( $command eq 'stop' ) {
 		$log->debug('forwarding Lyrion stop to Soloist as pause');
-		_runSoloistCtl( $b, 'pause' );
+		return _runSoloistCtl( $b, 'pause' );
 	}
 	elsif ( $command eq 'mixer volume' ) {
-		my $volume = $client->master->volume;
+		my $volume = $request->getParam('_newvalue');
 		return unless defined $volume && $volume =~ /\A\d+\z/ && $volume <= 100;
 
 		$log->debug("forwarding Lyrion volume to Soloist: $volume");
-		_runSoloistCtl( $b, 'volume', $volume );
+		return _runSoloistCtl( $b, 'volume', $volume );
 	}
 	elsif ( $command eq 'button' ) {
 		my $button = $request->getParam('_buttoncode') || '';
@@ -415,8 +426,32 @@ sub handleLyrionTransport {
 		my $soloistCommand = $buttonCommands{$button} or return;
 
 		$log->debug("forwarding Lyrion button $button to Soloist $soloistCommand");
-		_runSoloistCtl( $b, $soloistCommand );
+		return _runSoloistCtl( $b, $soloistCommand );
 	}
+
+	return;
+}
+
+sub soloistButtonCommand {
+	my ($request) = @_;
+	return $originalButtonCommand->($request) unless _forwardLyrionTransport($request);
+	$request->setStatusDone();
+}
+
+sub soloistMixerVolumeCommand {
+	my ($request) = @_;
+	return $originalMixerVolumeCommand->($request) unless _forwardLyrionTransport($request);
+	$request->setStatusDone();
+}
+
+sub soloistPlayControlCommand {
+	my ($request) = @_;
+	my $original = $request->getRequestString eq 'play'  ? $originalPlayCommand
+	             : $request->getRequestString eq 'pause' ? $originalPauseCommand
+	             :                                       $originalStopCommand;
+
+	return $original->($request) unless _forwardLyrionTransport($request);
+	$request->setStatusDone();
 }
 
 sub bridgeRunning {
