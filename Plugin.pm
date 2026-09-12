@@ -118,6 +118,10 @@ sub initPlugin {
 		\&handleLyrionTransport,
 		[ [ 'mixer' ], [ 'volume' ] ],
 	);
+	Slim::Control::Request::subscribe(
+		\&handleLyrionTransport,
+		[ [ 'button' ] ],
+	);
 
 	$class->SUPER::initPlugin(
 		feed   => \&handleFeed,
@@ -367,26 +371,51 @@ sub _runSoloistCtl {
 sub handleLyrionTransport {
 	my ($request) = @_;
 	my $client = $request->client or return;
-	my $b = _bridgeForSoloistStream($client) or return;
+	my $b = _bridgeForSoloistStream($client);
+	unless ($b) {
+		$log->debug( 'ignoring Lyrion control for non-Soloist stream: ' . $request->getRequestString );
+		return;
+	}
 
-	return if ( $b->{suppressLyrionTransportUntil} || 0 ) >= time();
+	if ( ( $b->{suppressLyrionTransportUntil} || 0 ) >= time() ) {
+		$log->debug( 'ignoring plugin-originated Lyrion control: ' . $request->getRequestString );
+		return;
+	}
 
 	my $command = $request->getRequestString;
 	if ( $command eq 'play' ) {
+		$log->debug('forwarding Lyrion play to Soloist');
 		_runSoloistCtl( $b, 'play' );
 	}
 	elsif ( $command eq 'pause' ) {
 		my $value = $request->getParam('_newvalue');
+		$log->debug( 'forwarding Lyrion pause to Soloist as ' . ( defined $value && !$value ? 'play' : 'pause' ) );
 		_runSoloistCtl( $b, defined $value && !$value ? 'play' : 'pause' );
 	}
 	elsif ( $command eq 'stop' ) {
+		$log->debug('forwarding Lyrion stop to Soloist as pause');
 		_runSoloistCtl( $b, 'pause' );
 	}
 	elsif ( $command eq 'mixer volume' ) {
-		my $volume = $request->getParam('_newvalue');
+		my $volume = $client->master->volume;
 		return unless defined $volume && $volume =~ /\A\d+\z/ && $volume <= 100;
 
+		$log->debug("forwarding Lyrion volume to Soloist: $volume");
 		_runSoloistCtl( $b, 'volume', $volume );
+	}
+	elsif ( $command eq 'button' ) {
+		my $button = $request->getParam('_buttoncode') || '';
+		my %buttonCommands = (
+			play     => 'play',
+			pause    => 'pause',
+			stop     => 'pause',
+			jump_fwd => 'next',
+			jump_rew => 'prev',
+		);
+		my $soloistCommand = $buttonCommands{$button} or return;
+
+		$log->debug("forwarding Lyrion button $button to Soloist $soloistCommand");
+		_runSoloistCtl( $b, $soloistCommand );
 	}
 }
 

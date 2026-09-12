@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.3.10
+
+- Forward Lyrion player-button events to Soloist, including next and
+  previous, and log forwarded or ignored control events at debug level.
+
 ## 0.3.9
 
 - Forward Lyrion play, pause, stop, and volume controls to the matching
