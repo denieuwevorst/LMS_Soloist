@@ -312,7 +312,13 @@ sub restartBridgeForPlayer {
 	my ($playerId) = @_;
 	my %selected = map { $_ => 1 } selectedPlayerIds();
 
-	startBridgeForPlayer($playerId) if $selected{$playerId};
+	unless ( $selected{$playerId} ) {
+		$log->debug("not restarting idle Soloist bridge for deselected player $playerId");
+		return;
+	}
+
+	$log->info("restarting idle Soloist bridge for player $playerId");
+	startBridgeForPlayer($playerId);
 }
 
 sub bridgeRunning {
@@ -437,12 +443,10 @@ sub pollMetadata {
 			&& time() - $b->{pausedSince} >= $idleDisconnectSeconds ) {
 			$log->info( 'disconnecting ' . $client->name . " after $idleDisconnectSeconds seconds paused" );
 			stopBridgeForPlayer($playerId);
-			Slim::Utils::Timers::setTimer(
-				undef,
-				time() + IDLE_RESTART_DELAY,
-				\&restartBridgeForPlayer,
-				$playerId,
-			);
+			$log->debug("scheduling Soloist bridge restart for player $playerId");
+			Slim::Utils::Timers::setTimer( undef, time() + IDLE_RESTART_DELAY, sub {
+				restartBridgeForPlayer($playerId);
+			} );
 			next;
 		}
 

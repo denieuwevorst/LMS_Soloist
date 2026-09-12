@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.3.8
+
+- Schedule the paused-idle bridge restart with a closure that retains the
+  selected player ID, and log restart scheduling and execution.
+
 ## 0.3.7
 
 - Store helper and template paths in the release ZIP with forward slashes
