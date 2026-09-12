@@ -59,9 +59,9 @@ For EACH selected player (its own stable "slot", persisted across restarts):
   the Soloist stream when playback is paused in Spotify — no manual "select
   the stream from Radios" step.
 - Idle disconnect: after 30 seconds paused by default, Soloist disconnects
-  from Spotify and clears its cached artwork. Set **Disconnect after pause**
-  to `0` to keep the selected player's Connect device available; use
-  **Start all selected** to reconnect an idled device.
+  from Spotify and clears its cached artwork before restarting the selected
+  player's Connect device. Set **Disconnect after pause** to `0` to keep it
+  continuously connected.
 - Real Now Playing metadata: title, artist, album, and cover art, via
   Lyrion's native remote-metadata mechanism (not just an ICY text title).
 - No Icecast, no extra system service — a small embedded Python relay

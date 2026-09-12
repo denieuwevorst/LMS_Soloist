@@ -80,7 +80,7 @@ PLUGIN_SPOTIFYSOLOIST_IDLEDISCONNECT
 	EN	Disconnect after pause
 
 PLUGIN_SPOTIFYSOLOIST_IDLEDISCONNECT_DESC
-	EN	Stops the Soloist instance and clears its metadata after this many seconds paused, releasing the Spotify Connect account and stale artwork. Set to 0 to keep it connected.
+	EN	Restarts the Soloist instance after this many seconds paused, clearing its metadata and briefly releasing the Spotify Connect account and stale artwork. Set to 0 to keep it continuously connected.
 
 PLUGIN_SPOTIFYSOLOIST_STARTALL
 	EN	Start all selected

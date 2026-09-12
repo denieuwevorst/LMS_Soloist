@@ -63,6 +63,7 @@ my $log = Slim::Utils::Log->addLogCategory({
 my $prefs = preferences('plugin.spotifysoloist');
 
 use constant METADATA_POLL_INTERVAL => 0.5; # seconds
+use constant IDLE_RESTART_DELAY     => 1;   # seconds
 
 $prefs->init({
 	soloistBin      => '/usr/local/bin/soloist',
@@ -256,7 +257,13 @@ sub startBridgeForPlayer {
 		return;
 	}
 
-	$bridges{$playerId} = { %$cfg, proc => $proc, lastStatus => '', pausedSince => undef };
+	$bridges{$playerId} = {
+		%$cfg,
+		proc                => $proc,
+		lastStatus          => '',
+		pausedSince         => undef,
+		idleDisconnectArmed => 0,
+	};
 }
 
 sub stopBridgeForPlayer {
@@ -280,6 +287,13 @@ sub reconcileBridges {
 
 	stopBridgeForPlayer($_) for grep { !$selected{$_} } keys %bridges;
 	startBridgeForPlayer($_) for keys %selected;
+}
+
+sub restartBridgeForPlayer {
+	my ($playerId) = @_;
+	my %selected = map { $_ => 1 } selectedPlayerIds();
+
+	startBridgeForPlayer($playerId) if $selected{$playerId};
 }
 
 sub bridgeRunning {
@@ -378,6 +392,7 @@ sub pollMetadata {
 			$log->info( 'auto-tuning ' . $client->name . ' to its Spotify Soloist instance' );
 			$client->execute( [ 'playlist', 'play', $url ] );
 			$b->{pausedSince} = undef;
+			$b->{idleDisconnectArmed} = 1;
 		}
 		elsif ( $status eq 'paused' ) {
 			if ( ( $b->{lastStatus} // '' ) eq 'playing' ) {
@@ -388,7 +403,7 @@ sub pollMetadata {
 					$client->execute( [ 'playlist', 'clear' ] );
 				}
 			}
-			$b->{pausedSince} //= time();
+			$b->{pausedSince} //= time() if $b->{idleDisconnectArmed};
 		}
 		elsif ( $status ne 'paused' ) {
 			$b->{pausedSince} = undef;
@@ -398,10 +413,17 @@ sub pollMetadata {
 		my $idleDisconnectSeconds = $prefs->get('idleDisconnectSeconds');
 		if ( $status eq 'paused'
 			&& $b->{pausedSince}
+			&& $b->{idleDisconnectArmed}
 			&& $idleDisconnectSeconds > 0
 			&& time() - $b->{pausedSince} >= $idleDisconnectSeconds ) {
 			$log->info( 'disconnecting ' . $client->name . " after $idleDisconnectSeconds seconds paused" );
 			stopBridgeForPlayer($playerId);
+			Slim::Utils::Timers::setTimer(
+				undef,
+				time() + IDLE_RESTART_DELAY,
+				\&restartBridgeForPlayer,
+				$playerId,
+			);
 			next;
 		}
 
