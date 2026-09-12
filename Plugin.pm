@@ -402,17 +402,6 @@ sub pollMetadata {
 			$cover = ( $large || $xlarge || $covers->[0] || {} )->{url} // '';
 		}
 
-		# Best-effort track length, in case Lyrion's remote-metadata display
-		# uses it for a proper total time. Doesn't change the underlying
-		# limitation: this is one continuous audio connection, not discrete
-		# per-track files, so Lyrion has no transport-level way to know a
-		# new song started -- elapsed time counts from when the stream
-		# connection opened, same as tuning into any live internet radio
-		# station. That's expected behavior for a relayed live source, not
-		# something this duration field can fully fix.
-		my $durationMs = $deco->{playback}->{duration_ms};
-		my $duration   = ( $durationMs && $durationMs > 0 ) ? sprintf( '%.0f', $durationMs / 1000 ) : undef;
-
 		my $master = $client->master;
 		my $meta   = $master->pluginData('metadata') || {};
 
@@ -427,7 +416,6 @@ sub pollMetadata {
 			cover    => $cover,
 			icon     => $cover,
 			type     => 'Spotify Soloist',
-			duration => $duration,
 		} );
 
 		Slim::Music::Info::setCurrentTitle( $url, $title, $client );
