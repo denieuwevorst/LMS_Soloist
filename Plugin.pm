@@ -141,13 +141,28 @@ sub _slotFor {
 	my ($playerId) = @_;
 
 	my $slots = $prefs->get('playerSlots') || {};
-	unless ( defined $slots->{$playerId} ) {
+	my $slot = $slots->{$playerId};
+	if ( defined $slot ) {
+		my $normalizedSlot = $slot =~ /\A\d+\z/ ? int($slot) : undef;
+		if ( !defined $normalizedSlot ) {
+			$log->warn("discarding invalid slot for player $playerId");
+			delete $slots->{$playerId};
+			$slot = undef;
+		}
+		elsif ( $slot ne $normalizedSlot ) {
+			$slots->{$playerId} = $normalizedSlot;
+			$slot = $normalizedSlot;
+		}
+	}
+
+	unless ( defined $slot ) {
 		my $next = 0;
 		$next = $_ + 1 > $next ? $_ + 1 : $next for values %$slots;
-		$slots->{$playerId} = $next;
-		$prefs->set( 'playerSlots', $slots );
+		$slot = $slots->{$playerId} = $next;
 	}
-	return $slots->{$playerId};
+
+	$prefs->set( 'playerSlots', $slots );
+	return $slot;
 }
 
 sub _configFor {
