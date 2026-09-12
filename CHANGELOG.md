@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.3.2
+
+- Reduced auto-tune detection latency by polling playback state every
+  500 ms.
+- Stop and clear Lyrion's Soloist stream when Spotify playback pauses.
+- Restart paused-idle Soloist bridges after clearing cached metadata, so
+  the Connect device remains available without retaining stale artwork.
+- Do not publish a finite track duration for the continuous relay stream,
+  preventing Lyrion from stopping it at a song-duration boundary.
+
 ## 0.3.0
 
 - **Per-player architecture**: one independent Soloist instance per

@@ -76,6 +76,12 @@ PLUGIN_SPOTIFYSOLOIST_AUTOSTART
 PLUGIN_SPOTIFYSOLOIST_AUTOSTART_DESC
 	EN	Starts a Soloist instance for every currently-selected player when Lyrion starts.
 
+PLUGIN_SPOTIFYSOLOIST_IDLEDISCONNECT
+	EN	Disconnect after pause
+
+PLUGIN_SPOTIFYSOLOIST_IDLEDISCONNECT_DESC
+	EN	Restarts the Soloist instance after this many seconds paused, clearing its metadata and briefly releasing the Spotify Connect account and stale artwork. Set to 0 to keep it continuously connected.
+
 PLUGIN_SPOTIFYSOLOIST_STARTALL
 	EN	Start all selected
 

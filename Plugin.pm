@@ -62,6 +62,9 @@ my $log = Slim::Utils::Log->addLogCategory({
 
 my $prefs = preferences('plugin.spotifysoloist');
 
+use constant METADATA_POLL_INTERVAL => 0.5; # seconds
+use constant IDLE_RESTART_DELAY     => 1;   # seconds
+
 $prefs->init({
 	soloistBin      => '/usr/local/bin/soloist',
 	ffmpegBin       => '/usr/bin/ffmpeg',
@@ -75,6 +78,7 @@ $prefs->init({
 	apiKey          => '',
 	relayBind       => '0.0.0.0',
 	autostart       => 1,
+	idleDisconnectSeconds => 30,
 	selectedPlayers => {},                # { playerID => 1, ... }
 	playerSlots     => {},                # { playerID => slot int }, stable across restarts
 });
@@ -253,7 +257,13 @@ sub startBridgeForPlayer {
 		return;
 	}
 
-	$bridges{$playerId} = { %$cfg, proc => $proc, lastStatus => '' };
+	$bridges{$playerId} = {
+		%$cfg,
+		proc                => $proc,
+		lastStatus          => '',
+		pausedSince         => undef,
+		idleDisconnectArmed => 0,
+	};
 }
 
 sub stopBridgeForPlayer {
@@ -262,6 +272,13 @@ sub stopBridgeForPlayer {
 
 	$log->info("stopping soloist bridge for player $playerId");
 	eval { $b->{proc}->die if $b->{proc}->alive; };
+
+	if ( my $client = Slim::Player::Client::getClient($playerId) ) {
+		my $master = $client->master;
+		$master->pluginData( metadata => {} );
+		Slim::Control::Request::notifyFromArray( $master, ['newmetadata'] );
+	}
+
 	delete $bridges{$playerId};
 }
 
@@ -270,6 +287,13 @@ sub reconcileBridges {
 
 	stopBridgeForPlayer($_) for grep { !$selected{$_} } keys %bridges;
 	startBridgeForPlayer($_) for keys %selected;
+}
+
+sub restartBridgeForPlayer {
+	my ($playerId) = @_;
+	my %selected = map { $_ => 1 } selectedPlayerIds();
+
+	startBridgeForPlayer($playerId) if $selected{$playerId};
 }
 
 sub bridgeRunning {
@@ -347,7 +371,7 @@ sub _fetchNowPlaying {
 }
 
 sub pollMetadata {
-	Slim::Utils::Timers::setTimer( undef, time() + 3, \&pollMetadata );
+	Slim::Utils::Timers::setTimer( undef, time() + METADATA_POLL_INTERVAL, \&pollMetadata );
 
 	for my $playerId ( keys %bridges ) {
 		my $b = $bridges{$playerId};
@@ -367,8 +391,41 @@ sub pollMetadata {
 		if ( $status eq 'playing' && ( $b->{lastStatus} // '' ) ne 'playing' ) {
 			$log->info( 'auto-tuning ' . $client->name . ' to its Spotify Soloist instance' );
 			$client->execute( [ 'playlist', 'play', $url ] );
+			$b->{pausedSince} = undef;
+			$b->{idleDisconnectArmed} = 1;
+		}
+		elsif ( $status eq 'paused' ) {
+			if ( ( $b->{lastStatus} // '' ) eq 'playing' ) {
+				my $playing = eval { Slim::Player::Playlist::url($client) };
+				if ( $playing && $playing eq $url ) {
+					$log->info( 'stopping ' . $client->name . ' after Spotify Soloist was paused' );
+					$client->execute( [ 'playlist', 'stop' ] );
+					$client->execute( [ 'playlist', 'clear' ] );
+				}
+			}
+			$b->{pausedSince} //= time() if $b->{idleDisconnectArmed};
+		}
+		elsif ( $status ne 'paused' ) {
+			$b->{pausedSince} = undef;
 		}
 		$b->{lastStatus} = $status;
+
+		my $idleDisconnectSeconds = $prefs->get('idleDisconnectSeconds');
+		if ( $status eq 'paused'
+			&& $b->{pausedSince}
+			&& $b->{idleDisconnectArmed}
+			&& $idleDisconnectSeconds > 0
+			&& time() - $b->{pausedSince} >= $idleDisconnectSeconds ) {
+			$log->info( 'disconnecting ' . $client->name . " after $idleDisconnectSeconds seconds paused" );
+			stopBridgeForPlayer($playerId);
+			Slim::Utils::Timers::setTimer(
+				undef,
+				time() + IDLE_RESTART_DELAY,
+				\&restartBridgeForPlayer,
+				$playerId,
+			);
+			next;
+		}
 
 		# Only push metadata if this player is actually on ITS OWN stream
 		# right now -- it may have been switched to something else manually.
@@ -391,17 +448,6 @@ sub pollMetadata {
 			$cover = ( $large || $xlarge || $covers->[0] || {} )->{url} // '';
 		}
 
-		# Best-effort track length, in case Lyrion's remote-metadata display
-		# uses it for a proper total time. Doesn't change the underlying
-		# limitation: this is one continuous audio connection, not discrete
-		# per-track files, so Lyrion has no transport-level way to know a
-		# new song started -- elapsed time counts from when the stream
-		# connection opened, same as tuning into any live internet radio
-		# station. That's expected behavior for a relayed live source, not
-		# something this duration field can fully fix.
-		my $durationMs = $deco->{playback}->{duration_ms};
-		my $duration   = ( $durationMs && $durationMs > 0 ) ? sprintf( '%.0f', $durationMs / 1000 ) : undef;
-
 		my $master = $client->master;
 		my $meta   = $master->pluginData('metadata') || {};
 
@@ -416,7 +462,6 @@ sub pollMetadata {
 			cover    => $cover,
 			icon     => $cover,
 			type     => 'Spotify Soloist',
-			duration => $duration,
 		} );
 
 		Slim::Music::Info::setCurrentTitle( $url, $title, $client );

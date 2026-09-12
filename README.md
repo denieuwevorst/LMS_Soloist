@@ -45,7 +45,7 @@ For EACH selected player (its own stable "slot", persisted across restarts):
               actual audio fetch, but Lyrion still asks IT for metadata
 
   Plugin.pm polls that instance's own `soloist ctl ... now --json` every
-  3s: writes title/artist/album/cover into that player's Lyrion metadata,
+  500ms: writes title/artist/album/cover into that player's Lyrion metadata,
   and — the moment Spotify actually starts playing — auto-starts playback
   on that same player.
 ```
@@ -55,8 +55,13 @@ For EACH selected player (its own stable "slot", persisted across restarts):
 - One Spotify Connect device per selected Squeezebox player, shown
   separately in the Spotify app.
 - Auto-tune: the corresponding Lyrion player starts playing automatically
-  the moment Spotify actually starts sending audio — no manual "select
+  the moment Spotify actually starts sending audio, then stops and clears
+  the Soloist stream when playback is paused in Spotify — no manual "select
   the stream from Radios" step.
+- Idle disconnect: after 30 seconds paused by default, Soloist disconnects
+  from Spotify and clears its cached artwork before restarting the selected
+  player's Connect device. Set **Disconnect after pause** to `0` to keep it
+  continuously connected.
 - Real Now Playing metadata: title, artist, album, and cover art, via
   Lyrion's native remote-metadata mechanism (not just an ICY text title).
 - No Icecast, no extra system service — a small embedded Python relay
@@ -115,8 +120,8 @@ and other third-party plugins are — paste a repository URL, tick a box,
 done. This repo already includes a ready-to-use `repo.xml` and a correctly
 packaged release zip; you just need to host both somewhere.
 
-1. Create a GitHub Release (e.g. `v0.3.0`) and upload
-   `SpotifySoloist-0.3.0.zip` (in this repo) as a release asset. Its
+1. Create a GitHub Release (e.g. `v0.3.2`) and upload
+   `SpotifySoloist-0.3.2.zip` (in this repo) as a release asset. Its
    sha1 is `32576c561575b37a5d8ec2c06e78d52181e23797` — matches what's
    already in `repo.xml`, **only if you upload this exact file**.
 2. Edit `repo.xml`: replace `REPLACE_WITH_YOUR_NAME`,
@@ -288,8 +293,9 @@ back on (or restart Lyrion) after changing it.
 - Disabling the whole plugin from Lyrion's UI doesn't stop running bridge
   processes — uncheck each player first, or restart Lyrion.
 - Auto-tune fires once per transition into "playing" for that player's
-  instance — if the player is manually stopped afterward, it won't
-  re-tune until Spotify-side playback stops and restarts.
+  instance. Pausing Spotify stops and clears that player's Soloist stream;
+  if the player is manually stopped afterward, it won't re-tune until
+  Spotify-side playback stops and restarts.
 - Player slot numbers (and their ports/sink names) are assigned once and
   persist even after a player is later unchecked, so re-checking it later
   doesn't disturb any other player's assignment — but slot numbers only
