@@ -82,4 +82,8 @@
 	<input name="pref_autostart" id="pref_autostart" type="checkbox" [% IF prefs.pref_autostart %]checked[% END %]>
 [% END %]
 
+[% WRAPPER setting title="PLUGIN_SPOTIFYSOLOIST_IDLEDISCONNECT" desc="PLUGIN_SPOTIFYSOLOIST_IDLEDISCONNECT_DESC" %]
+	<input name="pref_idleDisconnectSeconds" id="pref_idleDisconnectSeconds" type="number" min="0" step="1" value="[% prefs.pref_idleDisconnectSeconds %]"> seconds
+[% END %]
+
 [% PROCESS settings/footer.html %]

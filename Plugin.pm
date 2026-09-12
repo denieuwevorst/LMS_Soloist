@@ -77,6 +77,7 @@ $prefs->init({
 	apiKey          => '',
 	relayBind       => '0.0.0.0',
 	autostart       => 1,
+	idleDisconnectSeconds => 30,
 	selectedPlayers => {},                # { playerID => 1, ... }
 	playerSlots     => {},                # { playerID => slot int }, stable across restarts
 });
@@ -255,7 +256,7 @@ sub startBridgeForPlayer {
 		return;
 	}
 
-	$bridges{$playerId} = { %$cfg, proc => $proc, lastStatus => '' };
+	$bridges{$playerId} = { %$cfg, proc => $proc, lastStatus => '', pausedSince => undef };
 }
 
 sub stopBridgeForPlayer {
@@ -264,6 +265,13 @@ sub stopBridgeForPlayer {
 
 	$log->info("stopping soloist bridge for player $playerId");
 	eval { $b->{proc}->die if $b->{proc}->alive; };
+
+	if ( my $client = Slim::Player::Client::getClient($playerId) ) {
+		my $master = $client->master;
+		$master->pluginData( metadata => {} );
+		Slim::Control::Request::notifyFromArray( $master, ['newmetadata'] );
+	}
+
 	delete $bridges{$playerId};
 }
 
@@ -369,17 +377,33 @@ sub pollMetadata {
 		if ( $status eq 'playing' && ( $b->{lastStatus} // '' ) ne 'playing' ) {
 			$log->info( 'auto-tuning ' . $client->name . ' to its Spotify Soloist instance' );
 			$client->execute( [ 'playlist', 'play', $url ] );
+			$b->{pausedSince} = undef;
 		}
-		elsif ( $status eq 'paused'
-			&& ( $b->{lastStatus} // '' ) eq 'playing' ) {
-			my $playing = eval { Slim::Player::Playlist::url($client) };
-			if ( $playing && $playing eq $url ) {
-				$log->info( 'stopping ' . $client->name . ' after Spotify Soloist was paused' );
-				$client->execute( [ 'playlist', 'stop' ] );
-				$client->execute( [ 'playlist', 'clear' ] );
+		elsif ( $status eq 'paused' ) {
+			if ( ( $b->{lastStatus} // '' ) eq 'playing' ) {
+				my $playing = eval { Slim::Player::Playlist::url($client) };
+				if ( $playing && $playing eq $url ) {
+					$log->info( 'stopping ' . $client->name . ' after Spotify Soloist was paused' );
+					$client->execute( [ 'playlist', 'stop' ] );
+					$client->execute( [ 'playlist', 'clear' ] );
+				}
 			}
+			$b->{pausedSince} //= time();
+		}
+		elsif ( $status ne 'paused' ) {
+			$b->{pausedSince} = undef;
 		}
 		$b->{lastStatus} = $status;
+
+		my $idleDisconnectSeconds = $prefs->get('idleDisconnectSeconds');
+		if ( $status eq 'paused'
+			&& $b->{pausedSince}
+			&& $idleDisconnectSeconds > 0
+			&& time() - $b->{pausedSince} >= $idleDisconnectSeconds ) {
+			$log->info( 'disconnecting ' . $client->name . " after $idleDisconnectSeconds seconds paused" );
+			stopBridgeForPlayer($playerId);
+			next;
+		}
 
 		# Only push metadata if this player is actually on ITS OWN stream
 		# right now -- it may have been switched to something else manually.

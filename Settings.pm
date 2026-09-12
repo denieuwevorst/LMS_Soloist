@@ -24,6 +24,7 @@ sub prefs {
 	return ( $prefs, qw(
 		soloistBin ffmpegBin pythonBin pipewireSink wsPortBase relayPortBase
 		format bitrate deviceNameSuffix apiKey relayBind autostart
+		idleDisconnectSeconds
 	) );
 }
 
