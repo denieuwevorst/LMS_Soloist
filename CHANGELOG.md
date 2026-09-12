@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.3.12
+
+- Send native FLAC rather than Ogg-FLAC for the FLAC stream option, avoiding
+  Ogg container decoder incompatibilities.
+
 ## 0.3.11
 
 - Intercept matching Lyrion transport commands before the native live-stream
