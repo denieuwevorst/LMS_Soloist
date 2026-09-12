@@ -110,6 +110,14 @@ sub initPlugin {
 		[ 'soloistbridge', '_action' ],
 		[ 0, 1, 0, \&cliBridge ]
 	);
+	Slim::Control::Request::subscribe(
+		\&handleLyrionTransport,
+		[ [ 'play', 'pause', 'stop' ] ],
+	);
+	Slim::Control::Request::subscribe(
+		\&handleLyrionTransport,
+		[ [ 'mixer' ], [ 'volume' ] ],
+	);
 
 	$class->SUPER::initPlugin(
 		feed   => \&handleFeed,
@@ -321,6 +329,67 @@ sub restartBridgeForPlayer {
 	startBridgeForPlayer($playerId);
 }
 
+sub _bridgeForSoloistStream {
+	my ($client) = @_;
+	my $master = $client->master;
+	my $b = $bridges{ $master->id } or return;
+	my $playing = eval { Slim::Player::Playlist::url($master) };
+
+	return $playing && $playing eq streamUrlFor($b) ? $b : undef;
+}
+
+sub _runSoloistCtl {
+	my ($b, @args) = @_;
+	my @cmd = ( $prefs->get('soloistBin'), 'ctl', '-w', "127.0.0.1:$b->{wsPort}", @args );
+
+	my $pid = open( my $fh, '-|' );
+	if ( !defined $pid ) {
+		$log->error("can't run soloist ctl: $!");
+		return;
+	}
+
+	if ( $pid == 0 ) {
+		if ( open( my $devnull, '>', '/dev/null' ) ) {
+			POSIX::dup2( fileno($devnull), fileno(STDERR) );
+		}
+		exec(@cmd) or exit(1);
+	}
+
+	close $fh;
+	if ( $? != 0 ) {
+		$log->warn( 'soloist ctl ' . join( ' ', @args ) . " failed for port $b->{wsPort} (exit " . ( $? >> 8 ) . ')' );
+		return;
+	}
+
+	return 1;
+}
+
+sub handleLyrionTransport {
+	my ($request) = @_;
+	my $client = $request->client or return;
+	my $b = _bridgeForSoloistStream($client) or return;
+
+	return if ( $b->{suppressLyrionTransportUntil} || 0 ) >= time();
+
+	my $command = $request->getRequestString;
+	if ( $command eq 'play' ) {
+		_runSoloistCtl( $b, 'play' );
+	}
+	elsif ( $command eq 'pause' ) {
+		my $value = $request->getParam('_newvalue');
+		_runSoloistCtl( $b, defined $value && !$value ? 'play' : 'pause' );
+	}
+	elsif ( $command eq 'stop' ) {
+		_runSoloistCtl( $b, 'pause' );
+	}
+	elsif ( $command eq 'mixer volume' ) {
+		my $volume = $request->getParam('_newvalue');
+		return unless defined $volume && $volume =~ /\A\d+\z/ && $volume <= 100;
+
+		_runSoloistCtl( $b, 'volume', $volume );
+	}
+}
+
 sub bridgeRunning {
 	my ($playerId) = @_;
 	return $bridges{$playerId} && $bridges{$playerId}{proc} && $bridges{$playerId}{proc}->alive ? 1 : 0;
@@ -415,6 +484,7 @@ sub pollMetadata {
 
 		if ( $status eq 'playing' && ( $b->{lastStatus} // '' ) ne 'playing' ) {
 			$log->info( 'auto-tuning ' . $client->name . ' to its Spotify Soloist instance' );
+			$b->{suppressLyrionTransportUntil} = time() + 1;
 			$client->execute( [ 'playlist', 'play', $url ] );
 			$b->{pausedSince} = undef;
 			$b->{idleDisconnectArmed} = 1;
@@ -424,6 +494,7 @@ sub pollMetadata {
 				my $playing = eval { Slim::Player::Playlist::url($client) };
 				if ( $playing && $playing eq $url ) {
 					$log->info( 'stopping ' . $client->name . ' after Spotify Soloist was paused' );
+					$b->{suppressLyrionTransportUntil} = time() + 1;
 					$client->execute( [ 'playlist', 'stop' ] );
 					$client->execute( [ 'playlist', 'clear' ] );
 				}
