@@ -370,6 +370,15 @@ sub pollMetadata {
 			$log->info( 'auto-tuning ' . $client->name . ' to its Spotify Soloist instance' );
 			$client->execute( [ 'playlist', 'play', $url ] );
 		}
+		elsif ( $status eq 'paused'
+			&& ( $b->{lastStatus} // '' ) eq 'playing' ) {
+			my $playing = eval { Slim::Player::Playlist::url($client) };
+			if ( $playing && $playing eq $url ) {
+				$log->info( 'stopping ' . $client->name . ' after Spotify Soloist was paused' );
+				$client->execute( [ 'playlist', 'stop' ] );
+				$client->execute( [ 'playlist', 'clear' ] );
+			}
+		}
 		$b->{lastStatus} = $status;
 
 		# Only push metadata if this player is actually on ITS OWN stream

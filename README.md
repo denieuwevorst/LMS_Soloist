@@ -55,7 +55,8 @@ For EACH selected player (its own stable "slot", persisted across restarts):
 - One Spotify Connect device per selected Squeezebox player, shown
   separately in the Spotify app.
 - Auto-tune: the corresponding Lyrion player starts playing automatically
-  the moment Spotify actually starts sending audio — no manual "select
+  the moment Spotify actually starts sending audio, then stops and clears
+  the Soloist stream when playback is paused in Spotify — no manual "select
   the stream from Radios" step.
 - Real Now Playing metadata: title, artist, album, and cover art, via
   Lyrion's native remote-metadata mechanism (not just an ICY text title).
@@ -288,8 +289,9 @@ back on (or restart Lyrion) after changing it.
 - Disabling the whole plugin from Lyrion's UI doesn't stop running bridge
   processes — uncheck each player first, or restart Lyrion.
 - Auto-tune fires once per transition into "playing" for that player's
-  instance — if the player is manually stopped afterward, it won't
-  re-tune until Spotify-side playback stops and restarts.
+  instance. Pausing Spotify stops and clears that player's Soloist stream;
+  if the player is manually stopped afterward, it won't re-tune until
+  Spotify-side playback stops and restarts.
 - Player slot numbers (and their ports/sink names) are assigned once and
   persist even after a player is later unchecked, so re-checking it later
   doesn't disturb any other player's assignment — but slot numbers only
