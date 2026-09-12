@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.3.5
+
+- Launch the Bash-based bridge script through `/bin/bash` rather than
+  `/bin/sh`, which is Dash on Debian and exits before bridge logging.
+
 ## 0.3.4
 
 - Resolve the bridge script relative to the loaded plugin module so the
