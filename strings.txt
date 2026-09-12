@@ -1,0 +1,98 @@
+PLUGIN_SPOTIFYSOLOIST
+	EN	Spotify Soloist (Connect)
+
+PLUGIN_SPOTIFYSOLOIST_DESC
+	EN	Runs one Spotify Soloist instance per selected Squeezebox player, each its own selectable Connect device, bridges audio directly into Lyrion (no Icecast), and shows real Now Playing metadata including cover art.
+
+PLUGIN_SPOTIFYSOLOIST_SOLOISTBIN
+	EN	Path to soloist binary
+
+PLUGIN_SPOTIFYSOLOIST_SOLOISTBIN_DESC
+	EN	Full path to the soloist executable (or a wrapper script, e.g. for a glibc-compatibility container) on this machine.
+
+PLUGIN_SPOTIFYSOLOIST_FFMPEGBIN
+	EN	Path to ffmpeg binary
+
+PLUGIN_SPOTIFYSOLOIST_FFMPEGBIN_DESC
+	EN	Used to capture each player's PipeWire/PulseAudio sink and feed its relay.
+
+PLUGIN_SPOTIFYSOLOIST_PYTHONBIN
+	EN	Path to python3
+
+PLUGIN_SPOTIFYSOLOIST_PYTHONBIN_DESC
+	EN	Runs the built-in HTTP relay that replaces Icecast (Bin/audio-relay.py), one instance per player. Plain "python3" works if it's on PATH.
+
+PLUGIN_SPOTIFYSOLOIST_SINK
+	EN	PipeWire/PulseAudio sink name prefix
+
+PLUGIN_SPOTIFYSOLOIST_SINK_DESC
+	EN	Each selected player gets its own null-sink named "&lt;prefix&gt;_&lt;slot&gt;", created automatically. Each is also set as PulseAudio's default sink while its instance starts, so Soloist's PulseAudio-fallback output lands there even when --pipewire-device is a no-op (plain PulseAudio hosts) -- see README for why this matters if you select more than one player.
+
+PLUGIN_SPOTIFYSOLOIST_WSPORTBASE
+	EN	Control port base
+
+PLUGIN_SPOTIFYSOLOIST_WSPORTBASE_DESC
+	EN	Each player's soloist --ws / soloist ctl port is this base plus a per-player slot number. Loopback only, not reachable from the network.
+
+PLUGIN_SPOTIFYSOLOIST_RELAYPORTBASE
+	EN	Relay port base
+
+PLUGIN_SPOTIFYSOLOIST_RELAYPORTBASE_DESC
+	EN	Each player's audio relay listens on this base plus its slot number. No separate Icecast install needed.
+
+PLUGIN_SPOTIFYSOLOIST_FORMAT
+	EN	Stream format
+
+PLUGIN_SPOTIFYSOLOIST_FORMAT_DESC
+	EN	mp3 works on every Squeezebox generation, including classic fixed-firmware hardware (Boom, Classic, Receiver). flac uses an Ogg container, which those classic players generally can't decode at all -- only use flac if every player you're targeting is squeezelite-based.
+
+PLUGIN_SPOTIFYSOLOIST_BITRATE
+	EN	MP3 bitrate
+
+PLUGIN_SPOTIFYSOLOIST_BITRATE_DESC
+	EN	Only used when format is mp3.
+
+PLUGIN_SPOTIFYSOLOIST_DEVICENAMESUFFIX
+	EN	Connect device name suffix
+
+PLUGIN_SPOTIFYSOLOIST_DEVICENAMESUFFIX_DESC
+	EN	Appended to each player's own Lyrion name to build its Spotify Connect device name, e.g. "Kitchen" + this suffix = "Kitchen (Soloist)" shown in the Spotify app's device picker.
+
+PLUGIN_SPOTIFYSOLOIST_APIKEY
+	EN	Soloist API key
+
+PLUGIN_SPOTIFYSOLOIST_APIKEY_DESC
+	EN	From the Spotify for Developers dashboard. Required at every Soloist startup. Shared across all per-player instances.
+
+PLUGIN_SPOTIFYSOLOIST_RELAYBIND
+	EN	Relay bind address
+
+PLUGIN_SPOTIFYSOLOIST_RELAYBIND_DESC
+	EN	0.0.0.0 (all interfaces) is usually right so other Squeezebox players on your LAN can reach it.
+
+PLUGIN_SPOTIFYSOLOIST_AUTOSTART
+	EN	Start automatically with Lyrion
+
+PLUGIN_SPOTIFYSOLOIST_AUTOSTART_DESC
+	EN	Starts a Soloist instance for every currently-selected player when Lyrion starts.
+
+PLUGIN_SPOTIFYSOLOIST_STARTALL
+	EN	Start all selected
+
+PLUGIN_SPOTIFYSOLOIST_STOPALL
+	EN	Stop all selected
+
+PLUGIN_SPOTIFYSOLOIST_PLAYERS
+	EN	Players
+
+PLUGIN_SPOTIFYSOLOIST_PLAYERS_DESC
+	EN	Each checked player gets its own Spotify Connect device (shown separately in the Spotify app's device picker as "&lt;player name&gt;&lt;suffix&gt;") and automatically starts playing the moment Spotify actually starts sending it audio. Unchecking a player stops and removes its instance immediately.
+
+PLUGIN_SPOTIFYSOLOIST_RUNNING
+	EN	running
+
+PLUGIN_SPOTIFYSOLOIST_STOPPED
+	EN	stopped
+
+PLUGIN_SPOTIFYSOLOIST_RESTART_NOTE
+	EN	Toggling a player's checkbox takes effect immediately (starts/stops just that instance). Changes to binary paths, port bases, or the sink prefix only apply the next time an instance is (re)started.

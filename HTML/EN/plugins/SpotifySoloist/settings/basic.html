@@ -1,0 +1,85 @@
+[% PROCESS settings/header.html %]
+
+<div class="prefDesc">
+	[% "PLUGIN_SPOTIFYSOLOIST_RESTART_NOTE" | string %]
+</div>
+
+[% WRAPPER setting title="PLUGIN_SPOTIFYSOLOIST_PLAYERS" desc="PLUGIN_SPOTIFYSOLOIST_PLAYERS_DESC" %]
+	<input name="startAll" type="submit" value="[% 'PLUGIN_SPOTIFYSOLOIST_STARTALL' | string %]">
+	<input name="stopAll" type="submit" value="[% 'PLUGIN_SPOTIFYSOLOIST_STOPALL' | string %]">
+	<table>
+	[% FOREACH player IN players %]
+		<tr>
+			<td>
+				<input type="checkbox" name="enabled.[% player.id %]" id="enabled.[% player.id %]"
+					[% IF player.enabled %]checked[% END %]>
+			</td>
+			<td><label for="enabled.[% player.id %]">[% player.name %]</label></td>
+			<td>
+				[% IF player.running %]
+					<span style="color:green">[% 'PLUGIN_SPOTIFYSOLOIST_RUNNING' | string %]</span>
+				[% ELSIF player.enabled %]
+					<span style="color:#999">[% 'PLUGIN_SPOTIFYSOLOIST_STOPPED' | string %]</span>
+				[% END %]
+			</td>
+			<td><small>[% player.streamUrl %]</small></td>
+		</tr>
+	[% END %]
+	</table>
+	[% IF players.size == 0 %]
+		<em>No players found -- connect a Squeezebox/squeezelite player to Lyrion first.</em>
+	[% END %]
+[% END %]
+
+[% WRAPPER setting title="PLUGIN_SPOTIFYSOLOIST_SOLOISTBIN" desc="PLUGIN_SPOTIFYSOLOIST_SOLOISTBIN_DESC" %]
+	<input name="pref_soloistBin" id="pref_soloistBin" type="text" size="50" value="[% prefs.pref_soloistBin %]">
+[% END %]
+
+[% WRAPPER setting title="PLUGIN_SPOTIFYSOLOIST_FFMPEGBIN" desc="PLUGIN_SPOTIFYSOLOIST_FFMPEGBIN_DESC" %]
+	<input name="pref_ffmpegBin" id="pref_ffmpegBin" type="text" size="50" value="[% prefs.pref_ffmpegBin %]">
+[% END %]
+
+[% WRAPPER setting title="PLUGIN_SPOTIFYSOLOIST_PYTHONBIN" desc="PLUGIN_SPOTIFYSOLOIST_PYTHONBIN_DESC" %]
+	<input name="pref_pythonBin" id="pref_pythonBin" type="text" size="20" value="[% prefs.pref_pythonBin %]">
+[% END %]
+
+[% WRAPPER setting title="PLUGIN_SPOTIFYSOLOIST_SINK" desc="PLUGIN_SPOTIFYSOLOIST_SINK_DESC" %]
+	<input name="pref_pipewireSink" id="pref_pipewireSink" type="text" size="30" value="[% prefs.pref_pipewireSink %]">
+[% END %]
+
+[% WRAPPER setting title="PLUGIN_SPOTIFYSOLOIST_WSPORTBASE" desc="PLUGIN_SPOTIFYSOLOIST_WSPORTBASE_DESC" %]
+	<input name="pref_wsPortBase" id="pref_wsPortBase" type="number" min="1024" max="65000" value="[% prefs.pref_wsPortBase %]">
+[% END %]
+
+[% WRAPPER setting title="PLUGIN_SPOTIFYSOLOIST_RELAYPORTBASE" desc="PLUGIN_SPOTIFYSOLOIST_RELAYPORTBASE_DESC" %]
+	<input name="pref_relayPortBase" id="pref_relayPortBase" type="number" min="1024" max="65000" value="[% prefs.pref_relayPortBase %]">
+[% END %]
+
+[% WRAPPER setting title="PLUGIN_SPOTIFYSOLOIST_FORMAT" desc="PLUGIN_SPOTIFYSOLOIST_FORMAT_DESC" %]
+	<select class="stdedit" name="pref_format" id="pref_format">
+		<option value="mp3"  [% IF prefs.pref_format == 'mp3'  %]selected[% END %]>mp3</option>
+		<option value="flac" [% IF prefs.pref_format == 'flac' %]selected[% END %]>flac</option>
+	</select>
+[% END %]
+
+[% WRAPPER setting title="PLUGIN_SPOTIFYSOLOIST_BITRATE" desc="PLUGIN_SPOTIFYSOLOIST_BITRATE_DESC" %]
+	<input name="pref_bitrate" id="pref_bitrate" type="text" size="8" value="[% prefs.pref_bitrate %]">
+[% END %]
+
+[% WRAPPER setting title="PLUGIN_SPOTIFYSOLOIST_DEVICENAMESUFFIX" desc="PLUGIN_SPOTIFYSOLOIST_DEVICENAMESUFFIX_DESC" %]
+	<input name="pref_deviceNameSuffix" id="pref_deviceNameSuffix" type="text" size="20" value="[% prefs.pref_deviceNameSuffix %]">
+[% END %]
+
+[% WRAPPER setting title="PLUGIN_SPOTIFYSOLOIST_APIKEY" desc="PLUGIN_SPOTIFYSOLOIST_APIKEY_DESC" %]
+	<input name="pref_apiKey" id="pref_apiKey" type="password" size="40" value="[% prefs.pref_apiKey %]">
+[% END %]
+
+[% WRAPPER setting title="PLUGIN_SPOTIFYSOLOIST_RELAYBIND" desc="PLUGIN_SPOTIFYSOLOIST_RELAYBIND_DESC" %]
+	<input name="pref_relayBind" id="pref_relayBind" type="text" size="20" value="[% prefs.pref_relayBind %]">
+[% END %]
+
+[% WRAPPER setting title="PLUGIN_SPOTIFYSOLOIST_AUTOSTART" desc="PLUGIN_SPOTIFYSOLOIST_AUTOSTART_DESC" %]
+	<input name="pref_autostart" id="pref_autostart" type="checkbox" [% IF prefs.pref_autostart %]checked[% END %]>
+[% END %]
+
+[% PROCESS settings/footer.html %]
