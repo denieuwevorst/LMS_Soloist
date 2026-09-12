@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.3.9
+
+- Forward Lyrion play, pause, stop, and volume controls to the matching
+  Soloist session while that player is using its Soloist stream.
+
+## 0.3.8
+
+- Schedule the paused-idle bridge restart with a closure that retains the
+  selected player ID, and log restart scheduling and execution.
+
 ## 0.3.7
 
 - Store helper and template paths in the release ZIP with forward slashes
