@@ -62,6 +62,8 @@ my $log = Slim::Utils::Log->addLogCategory({
 
 my $prefs = preferences('plugin.spotifysoloist');
 
+use constant METADATA_POLL_INTERVAL => 0.5; # seconds
+
 $prefs->init({
 	soloistBin      => '/usr/local/bin/soloist',
 	ffmpegBin       => '/usr/bin/ffmpeg',
@@ -347,7 +349,7 @@ sub _fetchNowPlaying {
 }
 
 sub pollMetadata {
-	Slim::Utils::Timers::setTimer( undef, time() + 3, \&pollMetadata );
+	Slim::Utils::Timers::setTimer( undef, time() + METADATA_POLL_INTERVAL, \&pollMetadata );
 
 	for my $playerId ( keys %bridges ) {
 		my $b = $bridges{$playerId};

@@ -45,7 +45,7 @@ For EACH selected player (its own stable "slot", persisted across restarts):
               actual audio fetch, but Lyrion still asks IT for metadata
 
   Plugin.pm polls that instance's own `soloist ctl ... now --json` every
-  3s: writes title/artist/album/cover into that player's Lyrion metadata,
+  500ms: writes title/artist/album/cover into that player's Lyrion metadata,
   and — the moment Spotify actually starts playing — auto-starts playback
   on that same player.
 ```
