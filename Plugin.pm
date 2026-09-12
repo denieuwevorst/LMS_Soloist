@@ -211,16 +211,7 @@ sub streamUrlFor {
 	my $bind = $prefs->get('relayBind');
 	my $host = ( !$bind || $bind eq '0.0.0.0' ) ? Slim::Utils::Network::serverAddr() : $bind;
 
-	# The bridge script mux-wraps flac in an Ogg container (MUX_FORMAT=ogg
-	# in soloist-bridge.sh), so the URL extension needs to say .ogg, not
-	# .flac -- serving Ogg-contained audio at a URL claiming to be raw
-	# .flac is misleading to anything that infers codec from the URL, and
-	# classic Squeezebox hardware (Boom, Classic, Receiver -- fixed-firmware
-	# decoders, unlike squeezelite) generally can't decode Ogg containers
-	# at all, native FLAC or not. mp3 remains the safe default for that
-	# hardware; flac only really makes sense targeting squeezelite-based
-	# players that can handle Ogg-FLAC.
-	my $ext = $prefs->get('format') eq 'flac' ? 'ogg' : $prefs->get('format');
+	my $ext = $prefs->get('format');
 
 	return 'soloist://' . $host . ':' . $cfg->{relayPort} . '/soloist.' . $ext;
 }

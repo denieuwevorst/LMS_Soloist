@@ -44,7 +44,7 @@ PLUGIN_SPOTIFYSOLOIST_FORMAT
 	EN	Stream format
 
 PLUGIN_SPOTIFYSOLOIST_FORMAT_DESC
-	EN	mp3 works on every Squeezebox generation, including classic fixed-firmware hardware (Boom, Classic, Receiver). flac uses an Ogg container, which those classic players generally can't decode at all -- only use flac if every player you're targeting is squeezelite-based.
+	EN	mp3 works on every Squeezebox generation, including classic fixed-firmware hardware (Boom, Classic, Receiver). flac sends a native FLAC stream and requires a player with FLAC decoding support.
 
 PLUGIN_SPOTIFYSOLOIST_BITRATE
 	EN	MP3 bitrate

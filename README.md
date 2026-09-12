@@ -259,24 +259,19 @@ exec distrobox enter soloist-box -- soloist "$@"
 `chmod +x` that wrapper and point the plugin at it. Distrobox forwards the
 PipeWire/PulseAudio socket automatically — nothing else needs to change.
 
-## Format: mp3 vs flac — read this before picking flac
+## Format: mp3 vs flac
 
-**Classic, fixed-firmware Squeezebox hardware (Boom, Classic, Receiver)
-cannot decode Ogg containers at all.** This plugin's `flac` option wraps
-FLAC in an Ogg container, which only squeezelite-based software players
-can handle. If you select `flac` for a classic hardware player, it will
-connect, log in, show correct metadata and artwork, and simply never make
-sound or progress — every part of the pipeline reports success right up
-until the actual firmware decoder, which silently can't parse the stream.
+The `flac` option sends a native, continuous FLAC stream (`audio/flac`),
+not Ogg-FLAC. Select it only for players with FLAC decoding support.
 
-| Format | Classic hardware (Boom/Classic/Receiver) | squeezelite-based players |
+| Format | FLAC-capable players | Other players |
 |---|---|---|
-| `mp3` | ✅ Always works | ✅ Always works |
-| `flac` (Ogg-FLAC) | ❌ Not supported | ✅ Works |
+| `mp3` | Works | Works |
+| `flac` | Works | Use `mp3` |
 
-When in doubt, use `mp3`. Changing the format setting doesn't take effect
-on an already-running instance — toggle that player's checkbox off and
-back on (or restart Lyrion) after changing it.
+Changing the format setting does not take effect on an already-running
+instance. Toggle that player checkbox off and back on (or restart Lyrion)
+after changing it.
 
 ## Known limitations
 

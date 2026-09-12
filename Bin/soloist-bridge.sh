@@ -226,8 +226,8 @@ SINK_ROUTER_PID=$!
 case "$FORMAT" in
 	flac)
 		ENCODE_ARGS=(-c:a flac)
-		MUX_FORMAT="ogg"
-		CONTENT_TYPE="audio/ogg"
+		MUX_FORMAT="flac"
+		CONTENT_TYPE="audio/flac"
 		;;
 	*)
 		ENCODE_ARGS=(-c:a libmp3lame -b:a "$BITRATE")
