@@ -68,6 +68,9 @@ For EACH selected player (its own stable "slot", persisted across restarts):
   continuously connected.
 - Real Now Playing metadata: title, artist, album, and cover art, via
   Lyrion's native remote-metadata mechanism (not just an ICY text title).
+- Stream details: Lyrion metadata includes the configured format and, for
+  MP3, bitrate. The source type is displayed as, for example, `Spotify
+  Soloist (MP3 320k)` or `Spotify Soloist (FLAC)`.
 - No Icecast, no extra system service — a small embedded Python relay
   handles multiple simultaneous listeners per player.
 - Works with both real PipeWire and plain PulseAudio-only hosts.
@@ -124,8 +127,8 @@ and other third-party plugins are — paste a repository URL, tick a box,
 done. This repo already includes a ready-to-use `repo.xml` and a correctly
 packaged release zip; you just need to host both somewhere.
 
-1. Create a GitHub Release (e.g. `v0.3.11`) and upload
-   `SpotifySoloist-0.3.11.zip` (in this repo) as a release asset. Its
+1. Create a GitHub Release (e.g. `v0.3.13`) and upload
+   `SpotifySoloist-0.3.13.zip` (in this repo) as a release asset. Its
    sha1 is `32576c561575b37a5d8ec2c06e78d52181e23797` — matches what's
    already in `repo.xml`, **only if you upload this exact file**.
 2. Edit `repo.xml`: replace `REPLACE_WITH_YOUR_NAME`,

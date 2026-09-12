@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.3.13
+
+- Publish configured stream format and MP3 bitrate in Lyrion metadata.
+
 ## 0.3.12
 
 - Send native FLAC rather than Ogg-FLAC for the FLAC stream option, avoiding

@@ -599,10 +599,16 @@ sub pollMetadata {
 
 		my $master = $client->master;
 		my $meta   = $master->pluginData('metadata') || {};
+		my $format = uc( $prefs->get('format') );
+		my $bitrate = $prefs->get('format') eq 'mp3' ? $prefs->get('bitrate') : undef;
+		my $streamType = 'Spotify Soloist (' . $format
+			. ( defined $bitrate ? " $bitrate" : '' ) . ')';
 
 		next if ( $meta->{title}  // '' ) eq $title
 		     && ( $meta->{artist} // '' ) eq $artist
-		     && ( $meta->{cover}  // '' ) eq $cover;
+		     && ( $meta->{cover}  // '' ) eq $cover
+		     && ( $meta->{format} // '' ) eq $format
+		     && ( $meta->{bitrate} // '' ) eq ( $bitrate // '' );
 
 		$master->pluginData( metadata => {
 			title    => $title,
@@ -610,7 +616,9 @@ sub pollMetadata {
 			album    => $album,
 			cover    => $cover,
 			icon     => $cover,
-			type     => 'Spotify Soloist',
+			type     => $streamType,
+			format   => $format,
+			( defined $bitrate ? ( bitrate => $bitrate ) : () ),
 		} );
 
 		Slim::Music::Info::setCurrentTitle( $url, $title, $client );
