@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.3.3
+
+- Start bridge scripts through `/bin/sh` so downloaded plugin archives do
+  not depend on executable permission bits.
+- Normalize localization strings to UTF-8 without a BOM and LF line endings
+  so Lyrion can parse each plugin string.
+
 ## 0.3.2
 
 - Reduced auto-tune detection latency by polling playback state every
