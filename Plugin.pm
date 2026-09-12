@@ -250,7 +250,7 @@ sub startBridgeForPlayer {
 	$log->info( "starting soloist bridge for player '" . $client->name . "' (device='$cfg->{deviceName}', slot=$cfg->{slot})" );
 
 	my $proc;
-	eval { $proc = Proc::Background->new( _scriptPath() ); };
+	eval { $proc = Proc::Background->new( '/bin/sh', _scriptPath() ); };
 
 	if ( $@ || !$proc ) {
 		$log->error("failed to start bridge for '" . $client->name . "': $@");
