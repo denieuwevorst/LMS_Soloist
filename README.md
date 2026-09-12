@@ -14,13 +14,12 @@ track.
 ## How it works
 
 Lyrion has no native Spotify Connect support and no way to display
-artwork for an arbitrary internet stream. This plugin closes both gaps by
-following the same architecture as the third-party
+artwork for an arbitrary internet stream. This plugin closes both gaps
+using the same technique as the third-party
 [ShairTunes2](https://github.com/philippe44/lms-shairtunes2w) AirPlay
-bridge: a custom URL scheme (`soloist://` here, `airplay://` for them)
-routed through a dedicated protocol handler, which is what lets Lyrion
-call plugin code for metadata lookups instead of falling back to generic
-ICY text parsing.
+bridge: a custom URL scheme (`soloist://`) routed through a dedicated
+protocol handler, which lets Lyrion call plugin code for metadata lookups
+instead of falling back to generic ICY text parsing.
 
 ```
 For EACH selected player (its own stable "slot", persisted across restarts):
@@ -36,7 +35,7 @@ For EACH selected player (its own stable "slot", persisted across restarts):
                                                             │
                         Bin/audio-relay.py: small persistent multi-client
                         HTTP server, reads that FIFO, broadcasts to any
-                        connected listeners — this replaces Icecast
+                        connected listeners — no Icecast needed
                                                             │
                                                             ▼
                         <player> plays soloist://<host>:<port>/soloist.mp3
@@ -50,21 +49,6 @@ For EACH selected player (its own stable "slot", persisted across restarts):
   and — the moment Spotify actually starts playing — auto-starts playback
   on that same player.
 ```
-
-One thing is genuinely simpler here than in ShairTunes2: AirPlay delivers
-artwork as a raw binary blob over its own protocol, so ShairTunes2 has to
-run its own embedded HTTP server just to turn that into a fetchable URL.
-Soloist's `now --json` already gives a direct `https://i.scdn.co/...`
-cover URL — no proxying needed.
-
-**Why one Soloist process per player, not one shared source:** AirPlay
-lets ShairTunes2 advertise a distinct virtual target per Squeezebox via
-mDNS, so you pick the physical speaker directly in the AirPlay picker.
-Spotify Connect has no equivalent — one `soloist` process is one fixed
-device with one name. Running a separate process per selected player, each
-with its own device name/sink/port/relay, is how this gets the same
-practical outcome: N separate, individually selectable entries in the
-Spotify app's device picker.
 
 ## Features
 
@@ -84,22 +68,44 @@ Spotify app's device picker.
 - **Lyrion Music Server** (or Logitech Media Server) already installed
   and running. Tested against a Debian `.deb` install; should work
   anywhere Lyrion runs as a systemd service on Linux.
-- **PipeWire or PulseAudio**, reachable by whichever user Lyrion actually
-  runs as (commonly `squeezeboxserver`, *not* root, on Debian-packaged
-  installs — check with `ps -o user= -p $(systemctl show -p MainPID
-  --value lyrionmusicserver)`). Minimal/headless images (DietPi and
-  similar) often have neither installed by default — see
-  [Setting up PulseAudio](#setting-up-pulseaudio-headless-hosts) below.
-- **Python 3** (runs the built-in audio relay). Almost always already
-  present — `python3 --version` to confirm.
-- **ffmpeg**, for audio capture/encoding.
 - **A Spotify Soloist binary and API key.** Generate a key from the
   [Spotify for Developers dashboard](https://developer.spotify.com/dashboard/soloist)
   (Premium account required) and download a build for your architecture
   from Soloist's own distribution page. Keep the key private — it's tied
   to your account.
+- The Debian packages below, and PulseAudio actually running and
+  reachable by Lyrion's own service account.
 - Optional: if your host's glibc is too old for the prebuilt Soloist
   binary, see [glibc compatibility](#if-your-hosts-glibc-is-too-old) below.
+
+## Debian packages
+
+```bash
+sudo apt install -y pulseaudio pulseaudio-utils ffmpeg python3
+```
+
+- **`pulseaudio` / `pulseaudio-utils`** — Soloist needs PipeWire or
+  PulseAudio for audio output; there's no raw-ALSA fallback. Minimal
+  images (DietPi and similar) often have neither installed by default.
+  Installing the package alone isn't enough on a headless box — it also
+  needs to actually be *running* and reachable by whichever user Lyrion
+  runs as (commonly `squeezeboxserver`, not root). See
+  [Setting up PulseAudio](#setting-up-pulseaudio-headless-hosts) below for
+  the full setup, including a permissions step that's easy to miss.
+- **`ffmpeg`** — captures the PulseAudio sink and encodes it for
+  streaming to Lyrion.
+- **`python3`** — runs the small built-in HTTP relay
+  (`Bin/audio-relay.py`) that gets audio to Lyrion; almost always already
+  installed (`python3 --version` to check).
+
+Two Perl modules the plugin's code needs are usually already bundled with
+Lyrion itself, but if the plugin fails to load with a
+`Can't locate .../XS.pm` or `Can't locate Proc/Background.pm` error in
+Lyrion's server log, install them directly:
+
+```bash
+sudo apt install -y libjson-xs-perl libproc-background-perl
+```
 
 ## Distributing via a Lyrion repository (optional)
 
@@ -177,11 +183,11 @@ existing installs.
 Minimal images like DietPi often ship with neither PipeWire nor
 PulseAudio running. Soloist requires one of them for audio output — there
 is no raw-ALSA fallback. On a headless box, run PulseAudio in **system
-mode** (there's no desktop login session to auto-spawn a per-user one):
+mode** (there's no desktop login session to auto-spawn a per-user one).
+This assumes `pulseaudio`/`pulseaudio-utils` are already installed from
+the [Debian packages](#debian-packages) step above:
 
 ```bash
-sudo apt install -y pulseaudio pulseaudio-utils
-
 sudo tee /etc/systemd/system/pulseaudio.service > /dev/null << 'EOF'
 [Unit]
 Description=System-wide PulseAudio
@@ -357,13 +363,10 @@ sound** — work through these in order:
 
 ## Acknowledgments
 
-Architecturally modeled on [ShairTunes2](https://github.com/philippe44/lms-shairtunes2w)
-(philippe44's fork of disaster123's original ShairTunes2), specifically
-its custom-protocol-handler technique for getting real metadata into
-Lyrion's UI, and its per-player settings-checkbox pattern. No code from
-that project is reused directly — this is an independent implementation
-for a structurally different source (Spotify Connect rather than
-AirPlay), but the architectural debt is real and worth crediting clearly.
+Based on how [ShairTunes2](https://github.com/philippe44/lms-shairtunes2w)
+gets metadata and artwork into Lyrion's UI. No code from that project is
+reused — this is an independent implementation for Spotify Connect rather
+than AirPlay.
 
 ## License
 
