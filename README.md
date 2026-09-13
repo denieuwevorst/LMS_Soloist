@@ -119,77 +119,23 @@ Lyrion's server log, install them directly:
 ```bash
 sudo apt install -y libjson-xs-perl libproc-background-perl
 ```
-
-## Distributing via a Lyrion repository (optional)
-
-Instead of `git clone`-ing directly into `Plugins/`, this can be installed
-through Lyrion's own **Settings → Plugins** browser, the same way official
-and other third-party plugins are — paste a repository URL, tick a box,
-done. This repo already includes a ready-to-use `repo.xml` and a correctly
-packaged release zip; you just need to host both somewhere.
-
-1. Create a GitHub Release (e.g. `v0.3.23`) and upload
-   `SpotifySoloist-0.3.23.zip` (in this repo) as a release asset. Its
-   sha1 is the value published in `repo.xml` — matches what's
-   already in `repo.xml`, **only if you upload this exact file**.
-2. Edit `repo.xml`: replace `REPLACE_WITH_YOUR_NAME`,
-   `REPLACE_WITH_YOUR_EMAIL`, and both
-   `REPLACE_WITH_YOUR_GITHUB_USER` placeholders with your own details and
-   your actual release download URL.
-3. Push. `repo.xml` is now fetchable at:
-   ```
-   https://raw.githubusercontent.com/<you>/lms-spotify-soloist/main/repo.xml
-   ```
-4. In Lyrion: **Settings → Plugins → Additional Plugin Repositories**,
+## Install:
+          
+   https://raw.githubusercontent.com/denieuwevorst/lms-spotify-soloist/main/repo.xml
+   
+  1.In Lyrion: **Settings → Plugins → Additional Plugin Repositories**,
    paste that raw URL, click Apply, refresh the plugin list. "Spotify
    Soloist (Connect)" should now appear as an installable third-party
    plugin.
 
-**If you ever change the plugin and cut a new version:** rebuild the zip
-from the *contents* of the plugin folder (not a wrapping folder — Lyrion's
-own docs are explicit that `install.xml` etc. need to be at the zip root),
-recompute its sha1, and update both the version number and sha1 in
-`repo.xml` — an unmatched sha1 will make Lyrion refuse the download.
-```bash
-cd lms-spotify-soloist
-zip -r ../SpotifySoloist-<new-version>.zip install.xml strings.txt Plugin.pm Settings.pm ProtocolHandler.pm HTML Bin
-sha1sum ../SpotifySoloist-<new-version>.zip
-```
-All text files inside a release archive must use UTF-8 without a BOM and LF
-line endings. This is required for the Bash bridge and Lyrion localization
-parser on Linux.
-Lyrion's repository docs specifically warn that the version number must be
-in the filename, or it may reuse cached data and silently fail to upgrade
-existing installs.
 
-## Install
-
-1. Clone this repo directly into Lyrion's `Plugins` directory, named
-   `SpotifySoloist`:
-   ```bash
-   git clone https://github.com/<you>/lms-spotify-soloist.git \
-       /var/lib/squeezeboxserver/cache/InstalledPlugins/Plugins/SpotifySoloist
-   ```
-   (Adjust the path for your install — common locations are
-   `/usr/share/squeezeboxserver/Plugins/` or wherever `Plugins/` lives
-   under your Lyrion base directory. Check Settings → Information in the
-   web UI, or `find / -iname "Plugin.pm" -path "*Plugins*"`, if unsure.)
-2. Make sure the helper scripts kept their executable bit (git preserves
-   this from the repo, but double-check after cloning):
-   ```bash
-   chmod +x Plugins/SpotifySoloist/Bin/soloist-bridge.sh
-   chmod +x Plugins/SpotifySoloist/Bin/audio-relay.py
-   ```
-3. Set up PipeWire/PulseAudio if this host doesn't have it yet — see
-   [below](#setting-up-pulseaudio-headless-hosts).
-4. Restart Lyrion Music Server.
-5. Settings → Advanced → Plugins → **Spotify Soloist (Connect)** → open
+2. Settings → Advanced → Plugins → **Spotify Soloist (Connect)** → open
    its settings page. Fill in the Soloist binary path, ffmpeg path, and
    your API key.
-6. Check the box next to each Squeezebox player you want its own
+3. Check the box next to each Squeezebox player you want its own
    dedicated Spotify Connect device — takes effect immediately per
    checkbox.
-7. Open the Spotify app on the same network. You should see one device
+4. Open the Spotify app on the same network. You should see one device
    per checked player (e.g. "Kitchen (Soloist)"). Pick one and hit play —
    one-time pairing per player; the session persists under that player's
    own data directory afterward.
