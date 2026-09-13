@@ -60,8 +60,9 @@ For EACH selected player (its own stable "slot", persisted across restarts):
   the stream from Radios" step.
 - Lyrion controls: while a player is on its own Soloist stream, its play,
   pause, stop, next, and previous controls are forwarded to that Spotify
-  Connect session. Volume remains controlled locally by Lyrion. Controls for
-  other Lyrion sources are not forwarded.
+  Connect session. Each newly started Soloist session begins at 100%; volume
+  thereafter remains controlled locally by Lyrion. Controls for other Lyrion
+  sources are not forwarded.
 - Idle disconnect: after 30 seconds paused by default, Soloist disconnects
   from Spotify and clears its cached artwork before restarting the selected
   player's Connect device. Set **Disconnect after pause** to `0` to keep it
@@ -127,8 +128,8 @@ and other third-party plugins are — paste a repository URL, tick a box,
 done. This repo already includes a ready-to-use `repo.xml` and a correctly
 packaged release zip; you just need to host both somewhere.
 
-1. Create a GitHub Release (e.g. `v0.3.19`) and upload
-   `SpotifySoloist-0.3.19.zip` (in this repo) as a release asset. Its
+1. Create a GitHub Release (e.g. `v0.3.20`) and upload
+   `SpotifySoloist-0.3.20.zip` (in this repo) as a release asset. Its
    sha1 is the value published in `repo.xml` — matches what's
    already in `repo.xml`, **only if you upload this exact file**.
 2. Edit `repo.xml`: replace `REPLACE_WITH_YOUR_NAME`,

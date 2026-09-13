@@ -153,6 +153,14 @@ if ! kill -0 "$SOLOIST_PID" 2>/dev/null; then
 	log "soloist exited immediately -- check API key / binary path / glibc compatibility"
 fi
 
+# Set the Connect session's baseline once at startup. Lyrion's mixer volume
+# remains local and is never forwarded after this initial Soloist setting.
+if "$SOLOIST_BIN" ctl -w "$WS_ENDPOINT" volume 100 >/dev/null 2>&1; then
+	log "set Soloist session volume to 100%"
+else
+	log "WARNING: couldn't set initial Soloist session volume on ${WS_ENDPOINT}"
+fi
+
 # Explicitly route Soloist's PulseAudio stream to our sink, safe under
 # concurrent per-player instances (unlike relying on "default sink" -- see
 # comment above). Real PipeWire with --pipewire-device already routes
