@@ -207,7 +207,8 @@ sub streamUrlFor {
 	my $bind = $prefs->get('relayBind');
 	my $host = ( !$bind || $bind eq '0.0.0.0' ) ? Slim::Utils::Network::serverAddr() : $bind;
 
-	my $ext = $prefs->get('format');
+	my $format = $prefs->get('format');
+	my $ext = $format eq 'pcm' ? 'wav' : $format;
 
 	return 'soloist://' . $host . ':' . $cfg->{relayPort} . '/soloist.' . $ext;
 }

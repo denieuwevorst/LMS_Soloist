@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.3.23
+
+- Use the `.wav` URL extension for PCM/WAV streams so Lyrion selects the WAV
+  decoder that matches the relay's `audio/wav` content type.
+
 ## 0.3.22
 
 - Add a PCM/WAV stream format for players that support uncompressed WAV. It
