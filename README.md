@@ -59,9 +59,9 @@ For EACH selected player (its own stable "slot", persisted across restarts):
   the Soloist stream when playback is paused in Spotify — no manual "select
   the stream from Radios" step.
 - Lyrion controls: while a player is on its own Soloist stream, its play,
-  pause, stop, next, previous, and volume controls are forwarded to that
-  Spotify Connect session. Controls for other Lyrion sources are not
-  forwarded.
+  pause, stop, next, and previous controls are forwarded to that Spotify
+  Connect session. Volume remains controlled locally by Lyrion. Controls for
+  other Lyrion sources are not forwarded.
 - Idle disconnect: after 30 seconds paused by default, Soloist disconnects
   from Spotify and clears its cached artwork before restarting the selected
   player's Connect device. Set **Disconnect after pause** to `0` to keep it
@@ -127,8 +127,8 @@ and other third-party plugins are — paste a repository URL, tick a box,
 done. This repo already includes a ready-to-use `repo.xml` and a correctly
 packaged release zip; you just need to host both somewhere.
 
-1. Create a GitHub Release (e.g. `v0.3.13`) and upload
-   `SpotifySoloist-0.3.13.zip` (in this repo) as a release asset. Its
+1. Create a GitHub Release (e.g. `v0.3.14`) and upload
+   `SpotifySoloist-0.3.14.zip` (in this repo) as a release asset. Its
    sha1 is `32576c561575b37a5d8ec2c06e78d52181e23797` — matches what's
    already in `repo.xml`, **only if you upload this exact file**.
 2. Edit `repo.xml`: replace `REPLACE_WITH_YOUR_NAME`,

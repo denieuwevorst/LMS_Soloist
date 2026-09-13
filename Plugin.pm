@@ -87,7 +87,6 @@ my %bridges;      # playerID => { proc, wsPort, relayPort, sink, dataDir, cacheD
 my $baseDataDir;
 my $baseCacheDir;
 my $originalButtonCommand;
-my $originalMixerVolumeCommand;
 my $originalPauseCommand;
 my $originalPlayCommand;
 my $originalStopCommand;
@@ -118,10 +117,6 @@ sub initPlugin {
 	$originalButtonCommand = Slim::Control::Request::addDispatch(
 		[ 'button', '_buttoncode', '_time', '_orFunction' ],
 		[ 1, 0, 0, \&soloistButtonCommand ],
-	);
-	$originalMixerVolumeCommand = Slim::Control::Request::addDispatch(
-		[ 'mixer', 'volume', '_newvalue' ],
-		[ 1, 0, 1, \&soloistMixerVolumeCommand ],
 	);
 	$originalPauseCommand = Slim::Control::Request::addDispatch(
 		[ 'pause', '_newvalue', '_fadein', '_suppressShowBriefly' ],
@@ -398,13 +393,6 @@ sub _forwardLyrionTransport {
 		$log->debug('forwarding Lyrion stop to Soloist as pause');
 		return _runSoloistCtl( $b, 'pause' );
 	}
-	elsif ( $command eq 'mixer volume' ) {
-		my $volume = $request->getParam('_newvalue');
-		return unless defined $volume && $volume =~ /\A\d+\z/ && $volume <= 100;
-
-		$log->debug("forwarding Lyrion volume to Soloist: $volume");
-		return _runSoloistCtl( $b, 'volume', $volume );
-	}
 	elsif ( $command eq 'button' ) {
 		my $button = $request->getParam('_buttoncode') || '';
 		my %buttonCommands = (
@@ -426,12 +414,6 @@ sub _forwardLyrionTransport {
 sub soloistButtonCommand {
 	my ($request) = @_;
 	return $originalButtonCommand->($request) unless _forwardLyrionTransport($request);
-	$request->setStatusDone();
-}
-
-sub soloistMixerVolumeCommand {
-	my ($request) = @_;
-	return $originalMixerVolumeCommand->($request) unless _forwardLyrionTransport($request);
 	$request->setStatusDone();
 }
 
