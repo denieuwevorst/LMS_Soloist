@@ -127,8 +127,8 @@ and other third-party plugins are — paste a repository URL, tick a box,
 done. This repo already includes a ready-to-use `repo.xml` and a correctly
 packaged release zip; you just need to host both somewhere.
 
-1. Create a GitHub Release (e.g. `v0.3.15`) and upload
-   `SpotifySoloist-0.3.15.zip` (in this repo) as a release asset. Its
+1. Create a GitHub Release (e.g. `v0.3.16`) and upload
+   `SpotifySoloist-0.3.16.zip` (in this repo) as a release asset. Its
    sha1 is the value published in `repo.xml` — matches what's
    already in `repo.xml`, **only if you upload this exact file**.
 2. Edit `repo.xml`: replace `REPLACE_WITH_YOUR_NAME`,
