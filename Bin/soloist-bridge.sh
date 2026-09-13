@@ -241,6 +241,14 @@ case "$FORMAT" in
 		MUX_FORMAT="flac"
 		CONTENT_TYPE="audio/flac"
 		;;
+	pcm)
+		# WAV supplies the PCM stream's format to Lyrion while avoiding an
+		# encoder, making this the low-latency format for capable players.
+		ENCODE_ARGS=(-c:a pcm_s16le -ar 44100 -ac 2)
+		MUX_ARGS=()
+		MUX_FORMAT="wav"
+		CONTENT_TYPE="audio/wav"
+		;;
 	*)
 		ENCODE_ARGS=(-c:a libmp3lame -b:a "$BITRATE")
 		MUX_ARGS=()

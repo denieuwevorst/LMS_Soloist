@@ -128,8 +128,8 @@ and other third-party plugins are — paste a repository URL, tick a box,
 done. This repo already includes a ready-to-use `repo.xml` and a correctly
 packaged release zip; you just need to host both somewhere.
 
-1. Create a GitHub Release (e.g. `v0.3.20`) and upload
-   `SpotifySoloist-0.3.20.zip` (in this repo) as a release asset. Its
+1. Create a GitHub Release (e.g. `v0.3.22`) and upload
+   `SpotifySoloist-0.3.22.zip` (in this repo) as a release asset. Its
    sha1 is the value published in `repo.xml` — matches what's
    already in `repo.xml`, **only if you upload this exact file**.
 2. Edit `repo.xml`: replace `REPLACE_WITH_YOUR_NAME`,
@@ -266,16 +266,23 @@ exec distrobox enter soloist-box -- soloist "$@"
 `chmod +x` that wrapper and point the plugin at it. Distrobox forwards the
 PipeWire/PulseAudio socket automatically — nothing else needs to change.
 
-## Format: mp3 vs flac
+## Format: mp3, flac, or PCM/WAV
 
 The `flac` option sends a native, continuous FLAC stream (`audio/flac`),
 not Ogg-FLAC. It uses fast, low-buffer encoder settings for live playback;
 select it only for players with FLAC decoding support.
 
-| Format | FLAC-capable players | Other players |
+The `pcm` option sends uncompressed 44.1 kHz, stereo, signed 16-bit PCM
+inside a continuous WAV stream (`audio/wav`). It avoids encoder latency and
+is intended for diagnosing or minimizing startup delay on players with
+WAV/PCM support. It uses approximately 1.4 Mbit/s, so use MP3 or FLAC when
+bandwidth matters.
+
+| Format | Compatible players | Tradeoff |
 |---|---|---|
-| `mp3` | Works | Works |
-| `flac` | Works | Use `mp3` |
+| `mp3` | All Squeezebox generations | Lowest bandwidth |
+| `flac` | Players with FLAC support | Lossless bridge encoding |
+| `pcm` | Players with WAV/PCM support | Lowest encoder latency; highest bandwidth |
 
 Changing the format setting does not take effect on an already-running
 instance. Toggle that player checkbox off and back on (or restart Lyrion)
@@ -342,7 +349,7 @@ time you toggled that player's checkbox.
 
 **Connects, logs in, shows correct status/metadata, but there's no
 sound** — work through these in order:
-1. Confirm you're not hitting the [format/hardware mismatch](#format-mp3-vs-flac--read-this-before-picking-flac)
+1. Confirm you're not hitting the [format/hardware mismatch](#format-mp3-flac-or-pcmwav)
    above (classic hardware + flac).
 2. Check whether real audio is actually reaching the relay:
    ```bash

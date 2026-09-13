@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.3.22
+
+- Add a PCM/WAV stream format for players that support uncompressed WAV. It
+  avoids FLAC encoder latency by relaying 44.1 kHz stereo signed 16-bit PCM,
+  at approximately 1.4 Mbit/s.
+
 ## 0.3.21
 
 - Add an Initial Soloist volume setting (0-100%, default 100%) applied once

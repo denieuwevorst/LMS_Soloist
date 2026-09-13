@@ -59,6 +59,7 @@
 	<select class="stdedit" name="pref_format" id="pref_format">
 		<option value="mp3"  [% IF prefs.pref_format == 'mp3'  %]selected[% END %]>mp3</option>
 		<option value="flac" [% IF prefs.pref_format == 'flac' %]selected[% END %]>flac</option>
+		<option value="pcm"  [% IF prefs.pref_format == 'pcm'  %]selected[% END %]>PCM/WAV (low latency)</option>
 	</select>
 [% END %]
 

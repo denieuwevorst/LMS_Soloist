@@ -72,7 +72,7 @@ $prefs->init({
 	pipewireSink    => 'soloist_sink',    # base name; each player gets _<slot> appended
 	wsPortBase      => 9091,              # each player gets +<slot>
 	relayPortBase   => 9077,              # each player gets +<slot>
-	format          => 'mp3',             # mp3 | flac
+	format          => 'mp3',             # mp3 | flac | pcm
 	bitrate         => '320k',            # only used when format = mp3
 	initialVolume   => 100,               # applied once when a bridge starts
 	deviceNameSuffix => ' (Soloist)',     # appended to each player's own name
