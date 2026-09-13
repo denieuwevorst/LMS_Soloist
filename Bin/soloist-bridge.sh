@@ -225,12 +225,16 @@ SINK_ROUTER_PID=$!
 
 case "$FORMAT" in
 	flac)
-		ENCODE_ARGS=(-c:a flac)
+		# Live FLAC should emit frames promptly rather than favoring archive
+		# compression, otherwise Lyrion can wait several seconds for audio.
+		ENCODE_ARGS=(-c:a flac -compression_level 0)
+		MUX_ARGS=(-flush_packets 1)
 		MUX_FORMAT="flac"
 		CONTENT_TYPE="audio/flac"
 		;;
 	*)
 		ENCODE_ARGS=(-c:a libmp3lame -b:a "$BITRATE")
+		MUX_ARGS=()
 		FORMAT="mp3"
 		MUX_FORMAT="mp3"
 		CONTENT_TYPE="audio/mpeg"
@@ -270,6 +274,7 @@ ffmpeg_supervisor() {
 			-f pulse -i "${PIPEWIRE_SINK}.monitor" \
 			-af "aresample=async=1:min_hard_comp=0.100000:first_pts=0" \
 			"${ENCODE_ARGS[@]}" \
+			"${MUX_ARGS[@]}" \
 			-f "$MUX_FORMAT" \
 			"$FIFO_PATH" &
 		CUR_FFMPEG_PID=$!

@@ -127,8 +127,8 @@ and other third-party plugins are — paste a repository URL, tick a box,
 done. This repo already includes a ready-to-use `repo.xml` and a correctly
 packaged release zip; you just need to host both somewhere.
 
-1. Create a GitHub Release (e.g. `v0.3.18`) and upload
-   `SpotifySoloist-0.3.18.zip` (in this repo) as a release asset. Its
+1. Create a GitHub Release (e.g. `v0.3.19`) and upload
+   `SpotifySoloist-0.3.19.zip` (in this repo) as a release asset. Its
    sha1 is the value published in `repo.xml` — matches what's
    already in `repo.xml`, **only if you upload this exact file**.
 2. Edit `repo.xml`: replace `REPLACE_WITH_YOUR_NAME`,
@@ -268,7 +268,8 @@ PipeWire/PulseAudio socket automatically — nothing else needs to change.
 ## Format: mp3 vs flac
 
 The `flac` option sends a native, continuous FLAC stream (`audio/flac`),
-not Ogg-FLAC. Select it only for players with FLAC decoding support.
+not Ogg-FLAC. It uses fast, low-buffer encoder settings for live playback;
+select it only for players with FLAC decoding support.
 
 | Format | FLAC-capable players | Other players |
 |---|---|---|
