@@ -1,11 +1,15 @@
 # Changelog
 
+## 0.3.16
+
+- Restore Soloist's established two-second startup readiness window and
+  PulseAudio routing cadence, avoiding aggressive startup-time audio-server
+  polling that could prevent the Connect device from becoming available.
+
 ## 0.3.15
 
 - Reduce startup latency by keeping only 10 ms of warm-sink silence ahead of
   Soloist audio and using low-latency PulseAudio and FFmpeg capture settings.
-- Check for a fallback PulseAudio stream to route every 100 ms instead of
-  every two seconds.
 
 ## 0.3.14
 

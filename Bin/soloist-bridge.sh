@@ -150,7 +150,9 @@ log "starting soloist: device='${DEVICE_NAME}' sink=${PIPEWIRE_SINK} ws=${WS_END
 	--ws "$WS_ENDPOINT" &
 SOLOIST_PID=$!
 
-sleep 0.1
+# Give Soloist time to initialize its Spotify Connect service before the
+# PulseAudio watcher begins querying the audio server.
+sleep 2
 
 if ! kill -0 "$SOLOIST_PID" 2>/dev/null; then
 	log "soloist exited immediately -- check API key / binary path / glibc compatibility"
@@ -213,9 +215,7 @@ sink_router() {
 			fi
 		fi
 
-		# On plain PulseAudio, moving the newly-created Soloist stream
-		# promptly avoids sending it to the default sink first.
-		sleep 0.1
+		sleep 2
 	done
 }
 
