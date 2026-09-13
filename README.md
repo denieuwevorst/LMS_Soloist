@@ -127,8 +127,8 @@ and other third-party plugins are — paste a repository URL, tick a box,
 done. This repo already includes a ready-to-use `repo.xml` and a correctly
 packaged release zip; you just need to host both somewhere.
 
-1. Create a GitHub Release (e.g. `v0.3.17`) and upload
-   `SpotifySoloist-0.3.17.zip` (in this repo) as a release asset. Its
+1. Create a GitHub Release (e.g. `v0.3.18`) and upload
+   `SpotifySoloist-0.3.18.zip` (in this repo) as a release asset. Its
    sha1 is the value published in `repo.xml` — matches what's
    already in `repo.xml`, **only if you upload this exact file**.
 2. Edit `repo.xml`: replace `REPLACE_WITH_YOUR_NAME`,
@@ -154,6 +154,9 @@ cd lms-spotify-soloist
 zip -r ../SpotifySoloist-<new-version>.zip install.xml strings.txt Plugin.pm Settings.pm ProtocolHandler.pm HTML Bin
 sha1sum ../SpotifySoloist-<new-version>.zip
 ```
+All text files inside a release archive must use UTF-8 without a BOM and LF
+line endings. This is required for the Bash bridge and Lyrion localization
+parser on Linux.
 Lyrion's repository docs specifically warn that the version number must be
 in the filename, or it may reuse cached data and silently fail to upgrade
 existing installs.
