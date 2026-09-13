@@ -67,6 +67,9 @@ For EACH selected player (its own stable "slot", persisted across restarts):
   from Spotify and clears its cached artwork before restarting the selected
   player's Connect device. Set **Disconnect after pause** to `0` to keep it
   continuously connected.
+- Spotify metadata is shown only while that player is actively on its own
+  Soloist stream. Switching to another source clears the plugin's cached
+  title and artwork without removing the Soloist account session.
 - Real Now Playing metadata: title, artist, album, and cover art, via
   Lyrion's native remote-metadata mechanism (not just an ICY text title).
 - Stream details: Lyrion metadata includes the configured format and, for

@@ -315,12 +315,20 @@ sub stopBridgeForPlayer {
 	eval { $b->{proc}->die if $b->{proc}->alive; };
 
 	if ( my $client = Slim::Player::Client::getClient($playerId) ) {
-		my $master = $client->master;
-		$master->pluginData( metadata => {} );
-		Slim::Control::Request::notifyFromArray( $master, ['newmetadata'] );
+		_clearMetadataForPlayer($client);
 	}
 
 	delete $bridges{$playerId};
+}
+
+sub _clearMetadataForPlayer {
+	my ($client) = @_;
+	my $master = $client->master;
+	my $metadata = $master->pluginData('metadata') || {};
+	return unless %$metadata;
+
+	$master->pluginData( metadata => {} );
+	Slim::Control::Request::notifyFromArray( $master, ['newmetadata'] );
 }
 
 sub reconcileBridges {
@@ -520,15 +528,16 @@ sub pollMetadata {
 		next unless $b->{proc} && $b->{proc}->alive;
 
 		my $client = Slim::Player::Client::getClient($playerId) or next;
+		my $url = streamUrlFor($b);
+		my $playing = eval { Slim::Player::Playlist::url($client) };
+		_clearMetadataForPlayer($client) unless $playing && $playing eq $url;
 
 		my $json = _fetchNowPlaying( $b->{wsPort} );
 		next unless $json;
 
 		my $state = eval { decode_json($json) };
 		next unless ref $state eq 'HASH';
-
 		my $status = $state->{status} // '';
-		my $url    = streamUrlFor($b);
 
 		if ( $status eq 'playing' && ( $b->{lastStatus} // '' ) ne 'playing' ) {
 			$log->info( 'auto-tuning ' . $client->name . ' to its Spotify Soloist instance' );
@@ -539,7 +548,7 @@ sub pollMetadata {
 		}
 		elsif ( $status eq 'paused' ) {
 			if ( ( $b->{lastStatus} // '' ) eq 'playing' ) {
-				my $playing = eval { Slim::Player::Playlist::url($client) };
+				$playing = eval { Slim::Player::Playlist::url($client) };
 				if ( $playing && $playing eq $url ) {
 					$log->info( 'stopping ' . $client->name . ' after Spotify Soloist was paused' );
 					$b->{suppressLyrionTransportUntil} = time() + 1;
@@ -570,7 +579,8 @@ sub pollMetadata {
 		}
 
 		# Only push metadata if this player is actually on ITS OWN stream
-		# right now -- it may have been switched to something else manually.
+		# right now. The cached plugin metadata was cleared above if it was
+		# switched to another source manually.
 		my $playing = eval { Slim::Player::Playlist::url($client) };
 		next unless $playing && $playing eq $url;
 
