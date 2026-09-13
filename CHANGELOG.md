@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.3.21
+
+- Add an Initial Soloist volume setting (0-100%, default 100%) applied once
+  when a bridge starts; later Lyrion volume adjustments remain local.
+
 ## 0.3.20
 
 - Set each newly started Soloist Connect session to 100% volume once, while

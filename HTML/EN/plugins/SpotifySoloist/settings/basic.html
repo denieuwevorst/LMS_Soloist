@@ -66,6 +66,10 @@
 	<input name="pref_bitrate" id="pref_bitrate" type="text" size="8" value="[% prefs.pref_bitrate %]">
 [% END %]
 
+[% WRAPPER setting title="PLUGIN_SPOTIFYSOLOIST_INITIALVOLUME" desc="PLUGIN_SPOTIFYSOLOIST_INITIALVOLUME_DESC" %]
+	<input name="pref_initialVolume" id="pref_initialVolume" type="number" min="0" max="100" step="1" value="[% prefs.pref_initialVolume %]"> %
+[% END %]
+
 [% WRAPPER setting title="PLUGIN_SPOTIFYSOLOIST_DEVICENAMESUFFIX" desc="PLUGIN_SPOTIFYSOLOIST_DEVICENAMESUFFIX_DESC" %]
 	<input name="pref_deviceNameSuffix" id="pref_deviceNameSuffix" type="text" size="20" value="[% prefs.pref_deviceNameSuffix %]">
 [% END %]

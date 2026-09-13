@@ -60,9 +60,9 @@ For EACH selected player (its own stable "slot", persisted across restarts):
   the stream from Radios" step.
 - Lyrion controls: while a player is on its own Soloist stream, its play,
   pause, stop, next, and previous controls are forwarded to that Spotify
-  Connect session. Each newly started Soloist session begins at 100%; volume
-  thereafter remains controlled locally by Lyrion. Controls for other Lyrion
-  sources are not forwarded.
+  Connect session. **Initial Soloist volume** sets the new session's level
+  (100% by default); volume thereafter remains controlled locally by Lyrion.
+  Controls for other Lyrion sources are not forwarded.
 - Idle disconnect: after 30 seconds paused by default, Soloist disconnects
   from Spotify and clears its cached artwork before restarting the selected
   player's Connect device. Set **Disconnect after pause** to `0` to keep it

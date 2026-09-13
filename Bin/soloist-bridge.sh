@@ -28,6 +28,7 @@ set -u
 
 FORMAT="${FORMAT:-mp3}"
 BITRATE="${BITRATE:-320k}"
+SOLOIST_INITIAL_VOLUME="${SOLOIST_INITIAL_VOLUME:-100}"
 WS_PORT="${WS_PORT:-9091}"
 SOLOIST_DATA_DIR="${SOLOIST_DATA_DIR:-$HOME/.local/share/soloist-lyrion}"
 SOLOIST_CACHE_DIR="${SOLOIST_CACHE_DIR:-$HOME/.cache/soloist-lyrion}"
@@ -155,8 +156,8 @@ fi
 
 # Set the Connect session's baseline once at startup. Lyrion's mixer volume
 # remains local and is never forwarded after this initial Soloist setting.
-if "$SOLOIST_BIN" ctl -w "$WS_ENDPOINT" volume 100 >/dev/null 2>&1; then
-	log "set Soloist session volume to 100%"
+if "$SOLOIST_BIN" ctl -w "$WS_ENDPOINT" volume "$SOLOIST_INITIAL_VOLUME" >/dev/null 2>&1; then
+	log "set Soloist session volume to ${SOLOIST_INITIAL_VOLUME}%"
 else
 	log "WARNING: couldn't set initial Soloist session volume on ${WS_ENDPOINT}"
 fi
