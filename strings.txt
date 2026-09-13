@@ -52,6 +52,12 @@ PLUGIN_SPOTIFYSOLOIST_BITRATE
 PLUGIN_SPOTIFYSOLOIST_BITRATE_DESC
 	EN	Only used when format is mp3.
 
+PLUGIN_SPOTIFYSOLOIST_INITIALVOLUME
+	EN	Initial Soloist volume
+
+PLUGIN_SPOTIFYSOLOIST_INITIALVOLUME_DESC
+	EN	Sets Soloist's volume (0-100%) once when an instance starts. Later volume changes remain local to Lyrion.
+
 PLUGIN_SPOTIFYSOLOIST_DEVICENAMESUFFIX
 	EN	Connect device name suffix
 
@@ -101,4 +107,4 @@ PLUGIN_SPOTIFYSOLOIST_STOPPED
 	EN	stopped
 
 PLUGIN_SPOTIFYSOLOIST_RESTART_NOTE
-	EN	Toggling a player's checkbox takes effect immediately (starts/stops just that instance). Changes to binary paths, port bases, or the sink prefix only apply the next time an instance is (re)started.
+	EN	Toggling a player's checkbox takes effect immediately (starts/stops just that instance). Changes to binary paths, port bases, the sink prefix, or initial Soloist volume only apply the next time an instance is (re)started.

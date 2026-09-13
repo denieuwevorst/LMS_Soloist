@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.3.21
+
+- Add an Initial Soloist volume setting (0-100%, default 100%) applied once
+  when a bridge starts; later Lyrion volume adjustments remain local.
+
+## 0.3.20
+
+- Set each newly started Soloist Connect session to 100% volume once, while
+  continuing to keep all later Lyrion volume adjustments local.
+
+## 0.3.19
+
+- Reduce FLAC-only startup latency by using FFmpeg's fastest FLAC compression
+  level and flushing each encoded packet to the live relay immediately.
+
 ## 0.3.18
 
 - Package all plugin text files with LF line endings. Previous Windows-built

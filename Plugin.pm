@@ -74,6 +74,7 @@ $prefs->init({
 	relayPortBase   => 9077,              # each player gets +<slot>
 	format          => 'mp3',             # mp3 | flac
 	bitrate         => '320k',            # only used when format = mp3
+	initialVolume   => 100,               # applied once when a bridge starts
 	deviceNameSuffix => ' (Soloist)',     # appended to each player's own name
 	apiKey          => '',
 	relayBind       => '0.0.0.0',
@@ -241,6 +242,14 @@ sub _scriptPath {
 	return catfile( dirname(__FILE__), 'Bin', 'soloist-bridge.sh' );
 }
 
+sub _initialVolume {
+	my $volume = $prefs->get('initialVolume');
+	return int($volume) if defined $volume && $volume =~ /\A\d+\z/ && $volume <= 100;
+
+	$log->warn('invalid initial Soloist volume; using 100%');
+	return 100;
+}
+
 sub startBridgeForPlayer {
 	my ($playerId) = @_;
 
@@ -261,6 +270,7 @@ sub startBridgeForPlayer {
 	local $ENV{PIPEWIRE_SINK}     = $cfg->{sink};
 	local $ENV{FORMAT}            = $prefs->get('format');
 	local $ENV{BITRATE}           = $prefs->get('bitrate');
+	local $ENV{SOLOIST_INITIAL_VOLUME} = _initialVolume();
 	local $ENV{WS_PORT}           = $cfg->{wsPort};
 	local $ENV{DEVICE_NAME}       = $cfg->{deviceName};
 	local $ENV{SOLOIST_API_KEY}   = $prefs->get('apiKey');

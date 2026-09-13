@@ -28,6 +28,7 @@ set -u
 
 FORMAT="${FORMAT:-mp3}"
 BITRATE="${BITRATE:-320k}"
+SOLOIST_INITIAL_VOLUME="${SOLOIST_INITIAL_VOLUME:-100}"
 WS_PORT="${WS_PORT:-9091}"
 SOLOIST_DATA_DIR="${SOLOIST_DATA_DIR:-$HOME/.local/share/soloist-lyrion}"
 SOLOIST_CACHE_DIR="${SOLOIST_CACHE_DIR:-$HOME/.cache/soloist-lyrion}"
@@ -153,6 +154,14 @@ if ! kill -0 "$SOLOIST_PID" 2>/dev/null; then
 	log "soloist exited immediately -- check API key / binary path / glibc compatibility"
 fi
 
+# Set the Connect session's baseline once at startup. Lyrion's mixer volume
+# remains local and is never forwarded after this initial Soloist setting.
+if "$SOLOIST_BIN" ctl -w "$WS_ENDPOINT" volume "$SOLOIST_INITIAL_VOLUME" >/dev/null 2>&1; then
+	log "set Soloist session volume to ${SOLOIST_INITIAL_VOLUME}%"
+else
+	log "WARNING: couldn't set initial Soloist session volume on ${WS_ENDPOINT}"
+fi
+
 # Explicitly route Soloist's PulseAudio stream to our sink, safe under
 # concurrent per-player instances (unlike relying on "default sink" -- see
 # comment above). Real PipeWire with --pipewire-device already routes
@@ -225,12 +234,16 @@ SINK_ROUTER_PID=$!
 
 case "$FORMAT" in
 	flac)
-		ENCODE_ARGS=(-c:a flac)
+		# Live FLAC should emit frames promptly rather than favoring archive
+		# compression, otherwise Lyrion can wait several seconds for audio.
+		ENCODE_ARGS=(-c:a flac -compression_level 0)
+		MUX_ARGS=(-flush_packets 1)
 		MUX_FORMAT="flac"
 		CONTENT_TYPE="audio/flac"
 		;;
 	*)
 		ENCODE_ARGS=(-c:a libmp3lame -b:a "$BITRATE")
+		MUX_ARGS=()
 		FORMAT="mp3"
 		MUX_FORMAT="mp3"
 		CONTENT_TYPE="audio/mpeg"
@@ -270,6 +283,7 @@ ffmpeg_supervisor() {
 			-f pulse -i "${PIPEWIRE_SINK}.monitor" \
 			-af "aresample=async=1:min_hard_comp=0.100000:first_pts=0" \
 			"${ENCODE_ARGS[@]}" \
+			"${MUX_ARGS[@]}" \
 			-f "$MUX_FORMAT" \
 			"$FIFO_PATH" &
 		CUR_FFMPEG_PID=$!
