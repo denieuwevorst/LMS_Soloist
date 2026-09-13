@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.3.24
+
+- Clear cached Spotify metadata as soon as a player is switched away from its
+  Soloist stream, without deleting its persisted Soloist account data.
+
 ## 0.3.23
 
 - Use the `.wav` URL extension for PCM/WAV streams so Lyrion selects the WAV
