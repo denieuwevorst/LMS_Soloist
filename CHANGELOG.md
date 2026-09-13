@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.3.14
+
+- Keep volume control local to Lyrion instead of forwarding it to Soloist.
+
 ## 0.3.13
 
 - Publish configured stream format and MP3 bitrate in Lyrion metadata.
