@@ -240,6 +240,7 @@ case "$FORMAT" in
 		MUX_ARGS=(-flush_packets 1)
 		MUX_FORMAT="flac"
 		CONTENT_TYPE="audio/flac"
+		STREAM_EXTENSION="flac"
 		;;
 	pcm)
 		# WAV supplies the PCM stream's format to Lyrion while avoiding an
@@ -248,6 +249,7 @@ case "$FORMAT" in
 		MUX_ARGS=()
 		MUX_FORMAT="wav"
 		CONTENT_TYPE="audio/wav"
+		STREAM_EXTENSION="wav"
 		;;
 	*)
 		ENCODE_ARGS=(-c:a libmp3lame -b:a "$BITRATE")
@@ -255,6 +257,7 @@ case "$FORMAT" in
 		FORMAT="mp3"
 		MUX_FORMAT="mp3"
 		CONTENT_TYPE="audio/mpeg"
+		STREAM_EXTENSION="mp3"
 		;;
 esac
 
@@ -308,7 +311,7 @@ ffmpeg_supervisor() {
 ffmpeg_supervisor &
 FFMPEG_SUP_PID=$!
 
-log "stream ready: http://$(hostname -I 2>/dev/null | awk '{print $1}'):${RELAY_PORT}/soloist.${FORMAT}"
+log "stream ready: http://$(hostname -I 2>/dev/null | awk '{print $1}'):${RELAY_PORT}/soloist.${STREAM_EXTENSION}"
 
 # ---------------------------------------------------------------------------
 # Supervise: only Soloist dying is fatal for the whole bridge.
