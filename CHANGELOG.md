@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.3.18
+
+- Package all plugin text files with LF line endings. Previous Windows-built
+  archives used CRLF, which prevents the Bash bridge from starting on Linux.
+
 ## 0.3.17
 
 - Restore the complete known-working 0.3.14 audio pipeline after the
