@@ -125,12 +125,9 @@ fi
 # else too. Instead, wait for Soloist's own PulseAudio stream to appear
 # and move it to our sink explicitly, by matching its process ID.
 
-# Keep the sink continuously "warm" so it never suspends mid-capture. Keep
-# the PulseAudio buffer small: a large silence queue would otherwise sit in
-# front of newly-started Spotify audio and add audible startup latency.
+# Keep the sink continuously "warm" so it never suspends mid-capture.
 if command -v pacat >/dev/null 2>&1; then
-	pacat --playback -d "${PIPEWIRE_SINK}" --rate=44100 --channels=2 --format=s16le \
-		--latency-msec=10 --process-time-msec=10 < /dev/zero &
+	pacat --playback -d "${PIPEWIRE_SINK}" --rate=44100 --channels=2 --format=s16le < /dev/zero &
 	SILENCE_PID=$!
 	log "keeping '${PIPEWIRE_SINK}' warm with silence (pid $SILENCE_PID)"
 else
@@ -150,8 +147,6 @@ log "starting soloist: device='${DEVICE_NAME}' sink=${PIPEWIRE_SINK} ws=${WS_END
 	--ws "$WS_ENDPOINT" &
 SOLOIST_PID=$!
 
-# Give Soloist time to initialize its Spotify Connect service before the
-# PulseAudio watcher begins querying the audio server.
 sleep 2
 
 if ! kill -0 "$SOLOIST_PID" 2>/dev/null; then
@@ -271,11 +266,11 @@ ffmpeg_supervisor() {
 
 	while kill -0 "$SOLOIST_PID" 2>/dev/null; do
 		"$FFMPEG_BIN" -nostdin -hide_banner -loglevel warning -y \
-			-fflags +genpts+nobuffer -use_wallclock_as_timestamps 1 \
-			-thread_queue_size 64 -f pulse -fragment_size 2048 -i "${PIPEWIRE_SINK}.monitor" \
+			-fflags +genpts -use_wallclock_as_timestamps 1 \
+			-f pulse -i "${PIPEWIRE_SINK}.monitor" \
 			-af "aresample=async=1:min_hard_comp=0.100000:first_pts=0" \
 			"${ENCODE_ARGS[@]}" \
-			-flush_packets 1 -f "$MUX_FORMAT" \
+			-f "$MUX_FORMAT" \
 			"$FIFO_PATH" &
 		CUR_FFMPEG_PID=$!
 		wait "$CUR_FFMPEG_PID"

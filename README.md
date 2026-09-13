@@ -127,8 +127,8 @@ and other third-party plugins are — paste a repository URL, tick a box,
 done. This repo already includes a ready-to-use `repo.xml` and a correctly
 packaged release zip; you just need to host both somewhere.
 
-1. Create a GitHub Release (e.g. `v0.3.16`) and upload
-   `SpotifySoloist-0.3.16.zip` (in this repo) as a release asset. Its
+1. Create a GitHub Release (e.g. `v0.3.17`) and upload
+   `SpotifySoloist-0.3.17.zip` (in this repo) as a release asset. Its
    sha1 is the value published in `repo.xml` — matches what's
    already in `repo.xml`, **only if you upload this exact file**.
 2. Edit `repo.xml`: replace `REPLACE_WITH_YOUR_NAME`,
@@ -285,9 +285,8 @@ after changing it.
   Lyrion displays any live internet radio station. Track duration is
   passed through where available, which may improve the displayed total
   in some UIs, but doesn't change the underlying elapsed-time behavior.
-- A small amount of latency is inherent to any capture → encode → stream
-  bridge. The bridge uses low-latency PulseAudio and FFmpeg buffers to
-  minimize it.
+- A few seconds of latency are inherent to any capture → encode → stream
+  bridge, not specific to this design.
 - Each per-player relay has no authentication — fine on a trusted home
   LAN.
 - Soloist builds expire 90 days after their build date (exit code 10) —

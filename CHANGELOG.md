@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.3.17
+
+- Restore the complete known-working 0.3.14 audio pipeline after the
+  low-latency PulseAudio and FFmpeg options in 0.3.15 prevented Soloist
+  from becoming available on some systems.
+
 ## 0.3.16
 
 - Restore Soloist's established two-second startup readiness window and
@@ -8,8 +14,9 @@
 
 ## 0.3.15
 
-- Reduce startup latency by keeping only 10 ms of warm-sink silence ahead of
-  Soloist audio and using low-latency PulseAudio and FFmpeg capture settings.
+- Attempted a low-latency audio-pipeline tuning. This was reverted in 0.3.17
+  because the added PulseAudio and FFmpeg options are not compatible with all
+  supported systems.
 
 ## 0.3.14
 
