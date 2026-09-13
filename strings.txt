@@ -44,7 +44,7 @@ PLUGIN_SPOTIFYSOLOIST_FORMAT
 	EN	Stream format
 
 PLUGIN_SPOTIFYSOLOIST_FORMAT_DESC
-	EN	mp3 works on every Squeezebox generation, including classic fixed-firmware hardware (Boom, Classic, Receiver). flac sends a native FLAC stream and requires a player with FLAC decoding support.
+	EN	mp3 works on every Squeezebox generation, including classic fixed-firmware hardware (Boom, Classic, Receiver). flac sends a native FLAC stream and requires a player with FLAC decoding support. pcm sends uncompressed 44.1 kHz stereo 16-bit PCM in a WAV stream to minimize encoder latency; it requires WAV/PCM support and uses about 1.4 Mbit/s.
 
 PLUGIN_SPOTIFYSOLOIST_BITRATE
 	EN	MP3 bitrate
