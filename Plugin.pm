@@ -578,20 +578,29 @@ sub pollMetadata {
 			$b->{pausedSince} = undef;
 			$b->{idleDisconnectArmed} = 1;
 		}
-		elsif ( $status eq 'paused' ) {
+		elsif ( $status ne 'playing' ) {
+			# Covers 'paused' AND any other non-'playing' status Soloist
+			# reports (e.g. 'stopped'/'idle' when Spotify Connect hands
+			# playback to a DIFFERENT device) -- any of these means this
+			# player must stop too, not only the literal 'paused' value.
+			# Without this, a player that lost the Connect session to
+			# another device never got told to stop, so it kept reporting
+			# isPlaying(1) true and kept showing/playing its stale stream.
 			if ( ( $b->{lastStatus} // '' ) eq 'playing' ) {
 				my $playing = eval { Slim::Player::Playlist::url($client) };
 				if ( $playing && $playing eq $url ) {
-					$log->info( 'stopping ' . $client->name . ' after Spotify Soloist was paused' );
+					$log->info( "stopping " . $client->name . " after Spotify Soloist status changed to '$status'" );
 					$b->{suppressLyrionTransportUntil} = time() + 1;
 					$client->execute( [ 'playlist', 'stop' ] );
 					$client->execute( [ 'playlist', 'clear' ] );
 				}
 			}
-			$b->{pausedSince} //= time() if $b->{idleDisconnectArmed};
-		}
-		elsif ( $status ne 'paused' ) {
-			$b->{pausedSince} = undef;
+			if ( $status eq 'paused' ) {
+				$b->{pausedSince} //= time() if $b->{idleDisconnectArmed};
+			}
+			else {
+				$b->{pausedSince} = undef;
+			}
 		}
 		$b->{lastStatus} = $status;
 
