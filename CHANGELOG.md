@@ -1,5 +1,22 @@
 # Changelog
 
+## 0.3.32
+
+- Revert the entire "force-disconnect the losing player on device
+  handoff" feature added in 0.3.28 (and its follow-up attempts in
+  0.3.29-0.3.31). Each attempt at a safe eviction mechanism regressed
+  actual playback in a new way: 0.3.28 caused a stop/restart ping-pong
+  between players, 0.3.29's fix caused a newly selected player to
+  connect but never start playing, and 0.3.30/0.3.31's follow-ups still
+  ended with a player connecting and showing progress but producing no
+  sound. Rather than attempt yet another variant blind (this environment
+  can't run or reproduce the actual Spotify Connect/audio pipeline),
+  `Plugin.pm`, `Bin/soloist-bridge.sh`, and `README.md` are reverted to
+  their last confirmed-working state from 0.3.27: playback works, only
+  the (cosmetic) stale-coverart/still-playing-when-not-active-anymore
+  behavior on a previously selected player returns until a better,
+  properly-tested fix is available.
+
 ## 0.3.31
 
 - Diagnostics only, no behavior change: `soloist-bridge.sh`'s

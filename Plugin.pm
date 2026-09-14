@@ -64,7 +64,6 @@ my $prefs = preferences('plugin.spotifysoloist');
 
 use constant METADATA_POLL_INTERVAL => 0.5; # seconds
 use constant IDLE_RESTART_DELAY     => 1;   # seconds
-use constant RELEASE_IGNORE_WINDOW  => 3;   # seconds -- see _forceDisconnectPlayer
 
 $prefs->init({
 	soloistBin      => '/usr/local/bin/soloist',
@@ -92,13 +91,6 @@ my $originalButtonCommand;
 my $originalPauseCommand;
 my $originalPlayCommand;
 my $originalStopCommand;
-
-# Spotify Connect only ever has ONE active device at a time. This tracks
-# which player currently holds that single active session, so that when a
-# DIFFERENT player's bridge becomes the active one, the previous holder can
-# be forced to fully disconnect (see _forceDisconnectPlayer) instead of
-# being left in a stale, half-connected state.
-my $activeStreamPlayerId;
 
 sub getDisplayName { 'PLUGIN_SPOTIFYSOLOIST' }
 
@@ -350,50 +342,6 @@ sub stopBridgeForPlayer {
 	}
 
 	delete $bridges{$playerId};
-	$activeStreamPlayerId = undef if defined $activeStreamPlayerId && $activeStreamPlayerId eq $playerId;
-}
-
-# A DIFFERENT player just took over the single active Spotify Connect
-# session this player previously held. Immediately stop showing/playing
-# its now-stale stream in Lyrion and tell ITS OWN Soloist instance (via
-# ctl) to pause, releasing that Connect session -- WITHOUT killing/
-# restarting its bridge process here. A restart's fresh Soloist instance
-# can itself very briefly report a 'playing' status while starting up,
-# which would immediately re-trigger this same handler against the
-# player that just took over, causing the two players to endlessly evict
-# each other instead of settling ("connects, then goes down again").
-# Reusing the already-armed idle-disconnect timer instead means the full
-# stop + cache wipe + restart (see pollMetadata) still happens, just on
-# its normal, already-proven schedule rather than immediately/racily.
-#
-# ignorePlayingUntil guards against a related race: Soloist's own
-# reported status may not flip away from 'playing' the instant our pause
-# ctl call returns (Spotify's backend needs to actually confirm the
-# handoff first). Without this guard, this same bridge briefly still
-# reporting 'playing' next poll would look like a FRESH transition into
-# playing and evict the player that just took over -- the exact same
-# ping-pong this function exists to prevent.
-sub _forceDisconnectPlayer {
-	my ($playerId) = @_;
-	my $b = $bridges{$playerId} or return;
-
-	if ( my $client = Slim::Player::Client::getClient($playerId) ) {
-		my $url = streamUrlFor($b);
-		my $playing = eval { Slim::Player::Playlist::url($client) };
-		if ( $playing && $playing eq $url ) {
-			$log->info( 'releasing ' . $client->name . ' -- Spotify Connect session moved to another player' );
-			$b->{suppressLyrionTransportUntil} = time() + 1;
-			$client->execute( [ 'playlist', 'stop' ] );
-			$client->execute( [ 'playlist', 'clear' ] );
-		}
-		_clearMetadataForPlayer($client);
-	}
-
-	_runSoloistCtl( $b, 'pause' );
-
-	$b->{ignorePlayingUntil}  = time() + RELEASE_IGNORE_WINDOW;
-	$b->{pausedSince}         = time();
-	$b->{idleDisconnectArmed} = 1;
 }
 
 sub _clearMetadataForPlayer {
@@ -623,37 +571,12 @@ sub pollMetadata {
 		next unless ref $state eq 'HASH';
 		my $status = $state->{status} // '';
 
-		if ( $status eq 'playing'
-			&& ( $b->{lastStatus} // '' ) ne 'playing'
-			&& ( $b->{ignorePlayingUntil} // 0 ) < time() )
-		{
+		if ( $status eq 'playing' && ( $b->{lastStatus} // '' ) ne 'playing' ) {
 			$log->info( 'auto-tuning ' . $client->name . ' to its Spotify Soloist instance' );
-
-			# Start THIS player's playback first, unconditionally and
-			# immediately -- nothing below this point may block or delay
-			# it. Releasing a previous player runs a blocking external
-			# "soloist ctl ... pause" call (see _forceDisconnectPlayer);
-			# if that were run inline here before starting playback, a
-			# slow/unresponsive ctl call would stall this poll cycle and
-			# the new player would connect on Spotify's side but never
-			# actually start playing in Lyrion ("connects but doesn't
-			# play"). So it's deferred to its own timer tick instead.
 			$b->{suppressLyrionTransportUntil} = time() + 1;
 			$client->execute( [ 'playlist', 'play', $url ] );
 			$b->{pausedSince} = undef;
 			$b->{idleDisconnectArmed} = 1;
-
-			# Spotify Connect allows only ONE active device at a time. If a
-			# DIFFERENT player was holding that session, it just lost it to
-			# this one -- release it rather than leaving it merely
-			# paused/half-connected (see _forceDisconnectPlayer).
-			if ( defined $activeStreamPlayerId && $activeStreamPlayerId ne $playerId ) {
-				my $previousPlayerId = $activeStreamPlayerId;
-				Slim::Utils::Timers::setTimer( undef, time(), sub {
-					_forceDisconnectPlayer($previousPlayerId);
-				} );
-			}
-			$activeStreamPlayerId = $playerId;
 		}
 		elsif ( $status ne 'playing' ) {
 			# Covers 'paused' AND any other non-'playing' status Soloist
