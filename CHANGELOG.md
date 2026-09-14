@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.3.27
+
+- Treat any Soloist status other than `playing` (not just the literal
+  `paused` value) as "this player must stop": when Spotify Connect hands
+  playback to a different device, the losing player's status may not be
+  reported as `paused`, so it previously never got told to stop and kept
+  showing/playing its stale stream.
+
 ## 0.3.26
 
 - Clear a player's cache directory every time its Soloist bridge starts,
