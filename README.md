@@ -66,7 +66,10 @@ For EACH selected player (its own stable "slot", persisted across restarts):
 - Idle disconnect: after 30 seconds paused by default, Soloist disconnects
   from Spotify and clears its cached artwork before restarting the selected
   player's Connect device. Set **Disconnect after pause** to `0` to keep it
-  continuously connected.
+  continuously connected. Every bridge (re)start -- boot, idle-restart, or
+  toggling a player's checkbox -- also wipes that player's on-disk cache
+  directory first, so no stale Spotify Connect device identity or cached
+  state can survive into the new instance.
 - Spotify metadata is shown only while that player is actively playing its
   own Soloist stream. Switching to another source, or pausing/stopping while
   still parked on the stream, clears the plugin's cached title and artwork
@@ -296,9 +299,11 @@ first selected (first player = 0, second = 1, ...). If the directory
 doesn't exist at all, the bridge process likely never launched — check
 Lyrion's own server log for `plugin.spotifysoloist` errors around the
 time you toggled that player's checkbox. Note that this cache directory
-(and its `bridge.log`) is wiped on every Lyrion boot, so an old log won't
-still be there after a restart; the persistent Soloist login/session data
-lives in a separate `data` directory and is never touched.
+(and its `bridge.log`) is wiped every time that player's bridge (re)starts
+-- at Lyrion boot, on an idle-restart, or when its checkbox is toggled --
+so an old log won't still be there afterward; the persistent Soloist
+login/session data lives in a separate `data` directory and is never
+touched.
 
 **Connects, logs in, shows correct status/metadata, but there's no
 sound** — work through these in order:

@@ -273,6 +273,19 @@ sub startBridgeForPlayer {
 	}
 
 	my $cfg = _configFor( $playerId, $client->name );
+
+	# Wipe this player's cache dir (Soloist's own --cache-dir contents,
+	# bridge.log, the audio FIFO) every time its bridge starts -- including
+	# idle-restarts -- so a lingering Spotify Connect session identity or
+	# stale device state from before can't keep this device "known" to
+	# Spotify and cause it to keep pushing status/metadata for whichever
+	# player was previously selected. $cfg->{dataDir} (Soloist's persistent
+	# login/session) is never touched.
+	if ( -d $cfg->{cacheDir} ) {
+		eval { remove_tree( $cfg->{cacheDir}, { safe => 1 } ) };
+		$log->warn("failed to clear cache dir '$cfg->{cacheDir}' for player $playerId: $@") if $@;
+	}
+
 	make_path( $cfg->{dataDir}, $cfg->{cacheDir} );
 
 	local $ENV{SOLOIST_BIN}       = $prefs->get('soloistBin');
