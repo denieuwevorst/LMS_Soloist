@@ -175,6 +175,8 @@ fi
 # after launch can easily miss it entirely.
 sink_router() {
 	local target_index=""
+	local missed_iterations=0
+	local confirmed_once=0
 	while kill -0 "$SOLOIST_PID" 2>/dev/null; do
 		local listing
 		listing="$(pactl list sink-inputs 2>/dev/null)"
@@ -193,6 +195,7 @@ sink_router() {
 		')"
 
 		if [ -n "$sink_input_id" ]; then
+			missed_iterations=0
 			target_index="$(pactl list short sinks 2>/dev/null | awk -v name="$PIPEWIRE_SINK" '$2==name{print $1}')"
 
 			local current_sink
@@ -216,6 +219,27 @@ sink_router() {
 			if [ -n "$target_index" ] && [ "$current_sink" != "$target_index" ]; then
 				log "routing soloist's PulseAudio stream (sink-input #${sink_input_id}) to '${PIPEWIRE_SINK}' (was sink #${current_sink:-?})"
 				pactl move-sink-input "$sink_input_id" "$PIPEWIRE_SINK" 2>/dev/null
+				confirmed_once=1
+			elif [ "$confirmed_once" -eq 0 ]; then
+				# Already on the right sink from the start (e.g. Soloist's
+				# own --pipewire-device routed it correctly) -- confirm
+				# this once so the log clearly shows audio IS flowing into
+				# the sink ffmpeg captures, ruling that half of the
+				# pipeline out if there's still no sound downstream.
+				log "confirmed: soloist's PulseAudio stream (sink-input #${sink_input_id}) is already on '${PIPEWIRE_SINK}'"
+				confirmed_once=1
+			fi
+		else
+			# Soloist hasn't created its PulseAudio playback stream yet --
+			# normal before actual playback starts, but if this persists
+			# *while Spotify shows something playing*, ffmpeg is only
+			# capturing the sink's silence (see the pacat keep-warm below)
+			# and no audio will ever reach Lyrion, no matter how healthy
+			# everything else in the pipeline looks. Surface that clearly
+			# instead of looping silently forever.
+			missed_iterations=$((missed_iterations + 1))
+			if [ "$missed_iterations" -eq 15 ]; then
+				log "WARNING: still haven't seen soloist (pid ${SOLOIST_PID}) create a PulseAudio playback stream after ~30s -- if Spotify shows active playback right now, audio can't reach '${PIPEWIRE_SINK}' and there will be no sound. Check that soloist actually links against/reaches the same PulseAudio/PipeWire-pulse server this script uses (HOME=${HOME})."
 			fi
 		fi
 

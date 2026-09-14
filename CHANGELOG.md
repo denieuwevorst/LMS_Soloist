@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.3.31
+
+- Diagnostics only, no behavior change: `soloist-bridge.sh`'s
+  `sink_router` (which routes Soloist's own PulseAudio playback stream
+  into the per-player null-sink ffmpeg captures) previously looped
+  silently forever if it never found that stream. If Soloist's audio
+  never reaches the sink, ffmpeg only ever captures the sink's warm-up
+  silence, producing exactly "connects, progress moves in the Spotify
+  app, but no sound" -- with nothing in the log to point at why. Added:
+  a one-time confirmation log line once the stream is found (whether it
+  needed moving or was already on the right sink), and a clear warning
+  after ~30s if it's never found at all while a player is presumably
+  active, so this failure mode is immediately diagnosable from
+  bridge.log next time it happens.
+
 ## 0.3.30
 
 - Fix a "connects but doesn't play" regression from 0.3.29: releasing the
