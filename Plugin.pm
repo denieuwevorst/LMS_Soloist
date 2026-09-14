@@ -629,19 +629,31 @@ sub pollMetadata {
 		{
 			$log->info( 'auto-tuning ' . $client->name . ' to its Spotify Soloist instance' );
 
+			# Start THIS player's playback first, unconditionally and
+			# immediately -- nothing below this point may block or delay
+			# it. Releasing a previous player runs a blocking external
+			# "soloist ctl ... pause" call (see _forceDisconnectPlayer);
+			# if that were run inline here before starting playback, a
+			# slow/unresponsive ctl call would stall this poll cycle and
+			# the new player would connect on Spotify's side but never
+			# actually start playing in Lyrion ("connects but doesn't
+			# play"). So it's deferred to its own timer tick instead.
+			$b->{suppressLyrionTransportUntil} = time() + 1;
+			$client->execute( [ 'playlist', 'play', $url ] );
+			$b->{pausedSince} = undef;
+			$b->{idleDisconnectArmed} = 1;
+
 			# Spotify Connect allows only ONE active device at a time. If a
 			# DIFFERENT player was holding that session, it just lost it to
 			# this one -- release it rather than leaving it merely
 			# paused/half-connected (see _forceDisconnectPlayer).
 			if ( defined $activeStreamPlayerId && $activeStreamPlayerId ne $playerId ) {
-				_forceDisconnectPlayer($activeStreamPlayerId);
+				my $previousPlayerId = $activeStreamPlayerId;
+				Slim::Utils::Timers::setTimer( undef, time(), sub {
+					_forceDisconnectPlayer($previousPlayerId);
+				} );
 			}
 			$activeStreamPlayerId = $playerId;
-
-			$b->{suppressLyrionTransportUntil} = time() + 1;
-			$client->execute( [ 'playlist', 'play', $url ] );
-			$b->{pausedSince} = undef;
-			$b->{idleDisconnectArmed} = 1;
 		}
 		elsif ( $status ne 'playing' ) {
 			# Covers 'paused' AND any other non-'playing' status Soloist

@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.3.30
+
+- Fix a "connects but doesn't play" regression from 0.3.29: releasing the
+  previous player ran a blocking external `soloist ctl ... pause` call
+  *before* starting playback on the player that just took over the
+  Spotify Connect session. A slow or unresponsive `ctl` call could stall
+  that poll cycle, so the new player would show as connected on
+  Spotify's side but never actually start playing in Lyrion. Playback on
+  the new player now starts immediately/unconditionally, and releasing
+  the previous player is deferred to its own timer tick so it can never
+  block or delay it.
+
 ## 0.3.29
 
 - Fix a device-handoff regression from 0.3.28: forcibly killing and
