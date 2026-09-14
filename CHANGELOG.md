@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.3.25
+
+- Only push Now Playing metadata to a player while it is actually playing its
+  own Soloist stream; a player that is merely parked on the stream URL while
+  paused or stopped no longer keeps stale metadata.
+- Clear each plugin's on-disk cache directory (bridge logs, FIFOs, and
+  Soloist's own cache) at server boot, leaving persisted Soloist login/session
+  data untouched.
+
 ## 0.3.24
 
 - Clear cached Spotify metadata as soon as a player is switched away from its
