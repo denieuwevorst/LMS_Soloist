@@ -92,6 +92,13 @@ my $originalPauseCommand;
 my $originalPlayCommand;
 my $originalStopCommand;
 
+# Spotify Connect only ever has ONE active device at a time. This tracks
+# which player currently holds that single active session, so that when a
+# DIFFERENT player's bridge becomes the active one, the previous holder can
+# be forced to fully disconnect (see _forceDisconnectPlayer) instead of
+# being left in a stale, half-connected state.
+my $activeStreamPlayerId;
+
 sub getDisplayName { 'PLUGIN_SPOTIFYSOLOIST' }
 
 sub initPlugin {
@@ -342,6 +349,35 @@ sub stopBridgeForPlayer {
 	}
 
 	delete $bridges{$playerId};
+	$activeStreamPlayerId = undef if defined $activeStreamPlayerId && $activeStreamPlayerId eq $playerId;
+}
+
+# Fully disconnects a player from Spotify: stops its Lyrion playback,
+# clears its cached metadata, kills its bridge/Soloist process (whose
+# cache directory gets wiped as soon as it's restarted, see
+# startBridgeForPlayer), then restarts it as a fresh Soloist instance --
+# same as a newly selected player, not a paused/half-connected one.
+# Called when a DIFFERENT player takes over the single Spotify Connect
+# session this player previously held.
+sub _forceDisconnectPlayer {
+	my ($playerId) = @_;
+	my $b = $bridges{$playerId} or return;
+
+	if ( my $client = Slim::Player::Client::getClient($playerId) ) {
+		my $url = streamUrlFor($b);
+		my $playing = eval { Slim::Player::Playlist::url($client) };
+		if ( $playing && $playing eq $url ) {
+			$log->info( 'fully disconnecting ' . $client->name . ' -- Spotify Connect session moved to another player' );
+			$b->{suppressLyrionTransportUntil} = time() + 1;
+			$client->execute( [ 'playlist', 'stop' ] );
+			$client->execute( [ 'playlist', 'clear' ] );
+		}
+	}
+
+	stopBridgeForPlayer($playerId);
+	Slim::Utils::Timers::setTimer( undef, time() + IDLE_RESTART_DELAY, sub {
+		restartBridgeForPlayer($playerId);
+	} );
 }
 
 sub _clearMetadataForPlayer {
@@ -573,6 +609,16 @@ sub pollMetadata {
 
 		if ( $status eq 'playing' && ( $b->{lastStatus} // '' ) ne 'playing' ) {
 			$log->info( 'auto-tuning ' . $client->name . ' to its Spotify Soloist instance' );
+
+			# Spotify Connect allows only ONE active device at a time. If a
+			# DIFFERENT player was holding that session, it just lost it to
+			# this one -- fully disconnect it rather than leaving it merely
+			# paused/half-connected (see _forceDisconnectPlayer).
+			if ( defined $activeStreamPlayerId && $activeStreamPlayerId ne $playerId ) {
+				_forceDisconnectPlayer($activeStreamPlayerId);
+			}
+			$activeStreamPlayerId = $playerId;
+
 			$b->{suppressLyrionTransportUntil} = time() + 1;
 			$client->execute( [ 'playlist', 'play', $url ] );
 			$b->{pausedSince} = undef;

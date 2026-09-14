@@ -70,6 +70,12 @@ For EACH selected player (its own stable "slot", persisted across restarts):
   toggling a player's checkbox -- also wipes that player's on-disk cache
   directory first, so no stale Spotify Connect device identity or cached
   state can survive into the new instance.
+- Only one player can hold the single Spotify Connect session at a time.
+  Picking a different Soloist player in the Spotify app immediately and
+  fully disconnects whichever player held it before: its Lyrion playback
+  stops, its cached artwork/title are cleared, and its bridge is restarted
+  from scratch (cache wiped) so it comes back exactly like a newly
+  selected player rather than sitting in a stale, half-connected state.
 - Spotify metadata is shown only while that player is actively playing its
   own Soloist stream. Switching to another source, or pausing/stopping while
   still parked on the stream, clears the plugin's cached title and artwork

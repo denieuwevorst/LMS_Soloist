@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.3.28
+
+- When Spotify Connect hands the single active session to a DIFFERENT
+  player, the player that lost it is now fully disconnected -- Lyrion
+  playback stopped, cached metadata cleared, its bridge/Soloist process
+  killed, its cache wiped, and restarted fresh -- instead of only being
+  told to stop its Lyrion playlist while its underlying Soloist session
+  stayed alive. It comes back exactly like a newly selected player.
+
 ## 0.3.27
 
 - Treat any Soloist status other than `playing` (not just the literal
