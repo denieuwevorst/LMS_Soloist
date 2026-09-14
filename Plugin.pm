@@ -36,7 +36,7 @@ use warnings;
 use base qw(Slim::Plugin::OPMLBased);
 
 use File::Spec::Functions qw(catdir catfile);
-use File::Path qw(make_path);
+use File::Path qw(make_path remove_tree);
 use File::Basename qw(dirname);
 use JSON::XS qw(decode_json);
 use Proc::Background;
@@ -102,6 +102,16 @@ sub initPlugin {
 
 	$baseDataDir  = catdir( Slim::Utils::OSDetect::dirsFor('prefs'), 'plugin-spotifysoloist', 'data' );
 	$baseCacheDir = catdir( Slim::Utils::OSDetect::dirsFor('cache'), 'plugin-spotifysoloist', 'cache' );
+
+	# Wipe stale per-player cache (bridge.log, audio.fifo, Soloist's own
+	# --cache-dir contents) on every boot so old data can't interfere with
+	# a fresh session. Never touch $baseDataDir -- that holds Soloist's
+	# persistent login/session state and must survive restarts.
+	if ( -d $baseCacheDir ) {
+		eval { remove_tree( $baseCacheDir, { safe => 1 } ) };
+		$log->warn("failed to clear cache dir '$baseCacheDir': $@") if $@;
+	}
+
 	make_path( $baseDataDir, $baseCacheDir );
 
 	if ( main::WEBUI ) {
@@ -529,8 +539,17 @@ sub pollMetadata {
 
 		my $client = Slim::Player::Client::getClient($playerId) or next;
 		my $url = streamUrlFor($b);
-		my $playing = eval { Slim::Player::Playlist::url($client) };
-		_clearMetadataForPlayer($client) unless $playing && $playing eq $url;
+
+		# "Active" means this player's playlist is actually parked on ITS
+		# OWN Soloist stream AND it's really playing (not just paused or
+		# stopped while still sitting on the URL) -- otherwise it must not
+		# keep receiving/holding Now Playing metadata pushes.
+		my $isActive = sub {
+			my $playing = eval { Slim::Player::Playlist::url($client) };
+			return $playing && $playing eq $url && eval { $client->isPlaying(1) };
+		};
+
+		_clearMetadataForPlayer($client) unless $isActive->();
 
 		my $json = _fetchNowPlaying( $b->{wsPort} );
 		next unless $json;
@@ -548,7 +567,7 @@ sub pollMetadata {
 		}
 		elsif ( $status eq 'paused' ) {
 			if ( ( $b->{lastStatus} // '' ) eq 'playing' ) {
-				$playing = eval { Slim::Player::Playlist::url($client) };
+				my $playing = eval { Slim::Player::Playlist::url($client) };
 				if ( $playing && $playing eq $url ) {
 					$log->info( 'stopping ' . $client->name . ' after Spotify Soloist was paused' );
 					$b->{suppressLyrionTransportUntil} = time() + 1;
@@ -578,11 +597,10 @@ sub pollMetadata {
 			next;
 		}
 
-		# Only push metadata if this player is actually on ITS OWN stream
-		# right now. The cached plugin metadata was cleared above if it was
-		# switched to another source manually.
-		my $playing = eval { Slim::Player::Playlist::url($client) };
-		next unless $playing && $playing eq $url;
+		# Only push metadata if this player is actually playing ITS OWN
+		# stream right now (not just parked on the URL while paused or
+		# stopped). The cached plugin metadata was cleared above otherwise.
+		next unless $isActive->();
 
 		my $item = $state->{item} || {};
 		my $deco = $item->{decorations} || {};

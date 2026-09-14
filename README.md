@@ -67,9 +67,10 @@ For EACH selected player (its own stable "slot", persisted across restarts):
   from Spotify and clears its cached artwork before restarting the selected
   player's Connect device. Set **Disconnect after pause** to `0` to keep it
   continuously connected.
-- Spotify metadata is shown only while that player is actively on its own
-  Soloist stream. Switching to another source clears the plugin's cached
-  title and artwork without removing the Soloist account session.
+- Spotify metadata is shown only while that player is actively playing its
+  own Soloist stream. Switching to another source, or pausing/stopping while
+  still parked on the stream, clears the plugin's cached title and artwork
+  without removing the Soloist account session.
 - Real Now Playing metadata: title, artist, album, and cover art, via
   Lyrion's native remote-metadata mechanism (not just an ICY text title).
 - Stream details: Lyrion metadata includes the configured format and, for
@@ -294,7 +295,10 @@ No PulseAudio/PipeWire-pulse server is reachable. See
 first selected (first player = 0, second = 1, ...). If the directory
 doesn't exist at all, the bridge process likely never launched — check
 Lyrion's own server log for `plugin.spotifysoloist` errors around the
-time you toggled that player's checkbox.
+time you toggled that player's checkbox. Note that this cache directory
+(and its `bridge.log`) is wiped on every Lyrion boot, so an old log won't
+still be there after a restart; the persistent Soloist login/session data
+lives in a separate `data` directory and is never touched.
 
 **Connects, logs in, shows correct status/metadata, but there's no
 sound** — work through these in order:
