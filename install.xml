@@ -8,7 +8,7 @@
   </targetApplication>
   <optionsURL>plugins/SpotifySoloist/settings/basic.html</optionsURL>
   <creator>cortegedusage</creator>
-  <version>0.3.30</version>
+  <version>0.3.31</version>
   <name>PLUGIN_SPOTIFYSOLOIST</name>
   <description>PLUGIN_SPOTIFYSOLOIST_DESC</description>
   <homepageURL>https://github.com/denieuwevorst/LMS_Soloist</homepageURL>
