@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.3.26
+
+- Clear a player's cache directory every time its Soloist bridge starts,
+  including idle-restarts, not just once at server boot -- so a lingering
+  Spotify Connect device identity or cached state can't keep causing a
+  restarted instance to report status for whichever player was previously
+  selected on that slot.
+
 ## 0.3.25
 
 - Only push Now Playing metadata to a player while it is actually playing its
