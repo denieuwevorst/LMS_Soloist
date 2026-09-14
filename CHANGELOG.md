@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.3.29
+
+- Fix a device-handoff regression from 0.3.28: forcibly killing and
+  immediately restarting the losing player's bridge could have its fresh
+  Soloist instance briefly re-report a 'playing' status, which looked
+  like a new device switch and evicted the player that had just taken
+  over -- an endless back-and-forth ("connects, then goes down again").
+  The losing player is now released via its own Soloist `ctl pause`
+  command instead of a process kill, with a short cooldown guarding
+  against that same stale-status race, while the existing idle-disconnect
+  timer still performs the full stop + cache wipe + restart afterward.
+
 ## 0.3.28
 
 - When Spotify Connect hands the single active session to a DIFFERENT
