@@ -34,6 +34,33 @@ sub canSeek { 0 }
 sub canHandleTranscode { 0 }
 sub isAudioURL { 1 }
 
+sub bufferThreshold {
+	my ( $class, $client, $url ) = @_;
+	my $format = $prefs->get('format') || 'mp3';
+
+	# LMS applies this only when the continuous remote stream itself
+	# starts buffering, not at per-track boundaries inside the stream
+	# (there aren't any transport-level song starts here, only metadata
+	# changes). Still, a slightly larger format-aware startup buffer helps
+	# absorb brief starvation around track transitions without changing the
+	# bridge's continuous-stream design.
+	if ( $format eq 'pcm' ) {
+		return 255;
+	}
+	elsif ( $format eq 'flac' ) {
+		return 192;
+	}
+
+	my $bitrate = $prefs->get('bitrate') || '320k';
+	my ($kbps) = $bitrate =~ /(\d+)/;
+	my $threshold = $kbps ? int( ( $kbps / 8 ) * 2 ) : 64;
+
+	$threshold = 32  if $threshold < 32;
+	$threshold = 255 if $threshold > 255;
+
+	return $threshold;
+}
+
 sub new {
 	my $class = shift;
 	my $args  = shift;

@@ -82,6 +82,13 @@ For EACH selected player (its own stable "slot", persisted across restarts):
 - Stream details: Lyrion metadata includes the configured format and, for
   MP3, bitrate. The source type is displayed as, for example, `Spotify
   Soloist (MP3 320k)` or `Spotify Soloist (FLAC)`.
+- Soloist streams now ask Lyrion for a slightly larger **startup**
+  prebuffer than a generic remote stream, scaled by format/bitrate. This
+  helps absorb brief starvation around track changes without changing the
+  bridge's continuous-stream design. Because Lyrion sees this as one
+  long live stream, not separate per-song files, this buffer is applied
+  when the Soloist stream starts — not individually at every song
+  boundary inside it.
 - No Icecast, no extra system service — a small embedded Python relay
   handles multiple simultaneous listeners per player.
 - Works with both real PipeWire and plain PulseAudio-only hosts.

@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.3.35
+
+- Add a format-aware `bufferThreshold` to `ProtocolHandler.pm` so
+  Lyrion prebuffers more of the Soloist stream before starting playback:
+  MP3 now buffers roughly 2 seconds based on the configured bitrate
+  (bounded to 32..255 KB), FLAC uses 192 KB, and PCM/WAV uses the LMS
+  maximum of 255 KB. This doesn't create true per-song buffering — the
+  Soloist bridge is one continuous live stream — but it gives the player
+  a larger startup cushion, which can help mask brief starvation around
+  track transitions.
+
 ## 0.3.34
 
 - Add `Bin/setup-debian-prereqs.sh`, an idempotent Debian helper that
