@@ -71,8 +71,11 @@ For EACH selected player (its own stable "slot", persisted across restarts):
   directory first, so no stale Spotify Connect device identity or cached
   state can survive into the new instance.
 - Spotify metadata is shown only while that player is actively playing its
-  own Soloist stream. Switching to another source, or pausing/stopping while
-  still parked on the stream, clears the plugin's cached title and artwork
+  own Soloist stream **and** its own Soloist instance reports that it is
+  the active Spotify Connect device (`is_active`), not merely because the
+  shared Spotify account session reports a `playing` status somewhere
+  else. Switching to another source, pausing/stopping, or losing the
+  active device handoff clears the plugin's cached title and artwork
   without removing the Soloist account session.
 - Real Now Playing metadata: title, artist, album, and cover art, via
   Lyrion's native remote-metadata mechanism (not just an ICY text title).

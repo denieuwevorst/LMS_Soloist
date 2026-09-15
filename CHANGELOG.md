@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.3.33
+
+- Use Soloist's `is_active` flag together with `status` when deciding
+  whether a per-player Soloist instance is truly playing here. `status`
+  alone reflects the Spotify account's current session, so every running
+  instance on the same account can report `playing` at once even when
+  only one device is actually outputting audio. The metadata/autotune
+  poller now treats a player as active only when `status` is `playing`
+  **and** that specific instance reports `is_active`, which stops stale
+  cover art / Now Playing state from being pushed to players that are no
+  longer the real output device, while avoiding the playback regressions
+  from the reverted 0.3.28-0.3.32 force-disconnect attempts.
+
 ## 0.3.32
 
 - Revert the entire "force-disconnect the losing player on device
