@@ -125,6 +125,22 @@ sub initPlugin {
 		[ 'soloistbridge', '_action' ],
 		[ 0, 1, 0, \&cliBridge ]
 	);
+	# These are GLOBAL command wrappers by necessity, not by accident:
+	# Lyrion's web UI transport controls still come through the core
+	# play/pause/stop/button command dispatch path. LMS protocol handlers
+	# can influence transport capability checks (e.g. canDoAction for
+	# pause), but they do not get their own per-protocol pause/stop/play
+	# implementation hook here that would let us forward those actions to
+	# Soloist only when a soloist:// stream is active. So if Soloist
+	# playback must respond from the web UI as well as player buttons, we
+	# need these wrappers and must scope them carefully inside
+	# _forwardLyrionTransport.
+	#
+	# This is safe in one important respect: Slim::Control::Request::
+	# addDispatch explicitly returns the previous callback for the same
+	# command slot, so falling back to $original...Command is an intended
+	# LMS-supported pattern, not a guess. The remaining real risk is load
+	# order if another plugin also globally overrides the same commands.
 	$originalButtonCommand = Slim::Control::Request::addDispatch(
 		[ 'button', '_buttoncode', '_time', '_orFunction' ],
 		[ 1, 0, 0, \&soloistButtonCommand ],
