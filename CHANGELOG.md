@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.3.34
+
+- Add `Bin/setup-debian-prereqs.sh`, an idempotent Debian helper that
+  installs the packages this plugin needs for its current
+  Pulse/PipeWire-compatible bridge design, detects the Lyrion runtime
+  user, starts a simple system-mode PulseAudio service only when no
+  Pulse-compatible server is already reachable, grants the Lyrion user
+  `pulse-access` (and `audio` if present), and restarts Lyrion so the
+  new permissions take effect. Update the README to prefer that helper
+  over the long manual headless-PulseAudio setup steps.
+
 ## 0.3.33
 
 - Use Soloist's `is_active` flag together with `status` when deciding

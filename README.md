@@ -129,6 +129,37 @@ Lyrion's server log, install them directly:
 ```bash
 sudo apt install -y libjson-xs-perl libproc-background-perl
 ```
+
+## Debian helper script
+
+To install the Debian-side prerequisites and grant the Lyrion service
+user the needed audio permissions automatically, run:
+
+```bash
+curl -fsSL -o setup-debian-prereqs.sh \
+  https://raw.githubusercontent.com/denieuwevorst/LMS_Soloist/main/Bin/setup-debian-prereqs.sh
+chmod +x setup-debian-prereqs.sh
+sudo ./setup-debian-prereqs.sh
+```
+
+What it does:
+- installs the required Debian packages for the current
+  Pulse/PipeWire-based bridge design
+- detects the Lyrion systemd service and its runtime user
+- starts a simple system-mode PulseAudio service **only if** no
+  Pulse-compatible server is already reachable
+- adds the Lyrion user to `pulse-access` (and `audio` if that group
+  exists)
+- restarts Lyrion so the new group membership takes effect
+
+Use `sudo ./setup-debian-prereqs.sh --lyrion-user <user>` if your Lyrion
+service user can't be auto-detected, or `--skip-apt` if you already
+installed the packages yourself and only want the permissions/service
+setup.
+
+The helper intentionally does **not** download the Soloist binary or set
+your API key; those stay manual because they're tied to your architecture
+and Spotify developer account.
 ## Install:
           
    https://raw.githubusercontent.com/denieuwevorst/lms-spotify-soloist/main/repo.xml
@@ -156,8 +187,10 @@ Minimal images like DietPi often ship with neither PipeWire nor
 PulseAudio running. Soloist requires one of them for audio output — there
 is no raw-ALSA fallback. On a headless box, run PulseAudio in **system
 mode** (there's no desktop login session to auto-spawn a per-user one).
-This assumes `pulseaudio`/`pulseaudio-utils` are already installed from
-the [Debian packages](#debian-packages) step above:
+The recommended path is the [Debian helper script](#debian-helper-script)
+above. If you want to do it manually instead, this assumes
+`pulseaudio`/`pulseaudio-utils` are already installed from the
+[Debian packages](#debian-packages) step above:
 
 ```bash
 sudo tee /etc/systemd/system/pulseaudio.service > /dev/null << 'EOF'
