@@ -45,18 +45,18 @@ sub bufferThreshold {
 	# absorb brief starvation around track transitions without changing the
 	# bridge's continuous-stream design.
 	if ( $format eq 'pcm' ) {
-		return 128;
+		return 35;
 	}
 	elsif ( $format eq 'flac' ) {
-		return 96;
+		return 24;
 	}
 
 	my $bitrate = $prefs->get('bitrate') || '320k';
 	my ($kbps) = $bitrate =~ /(\d+)/;
-	my $threshold = $kbps ? int( ( $kbps / 8 ) * 0.75 ) : 24;
+	my $threshold = $kbps ? int( ( $kbps / 8 ) * 0.2 + 0.5 ) : 8;
 
-	$threshold = 24  if $threshold < 24;
-	$threshold = 128 if $threshold > 128;
+	$threshold = 3  if $threshold < 3;
+	$threshold = 35 if $threshold > 35;
 
 	return $threshold;
 }

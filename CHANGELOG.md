@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.3.37
+
+- Reduce the Soloist startup prebuffer again, per request, to about
+  **200 ms for all formats**. `ProtocolHandler.pm` now asks LMS for
+  roughly 200 ms of MP3 data from the configured bitrate (bounded to
+  3..35 KB), `24 KB` for FLAC, and `35 KB` for PCM/WAV. This keeps the
+  same protocol-level buffering hook while minimizing added startup
+  delay as much as practical.
+
 ## 0.3.36
 
 - Reduce the new Soloist startup prebuffer added in 0.3.35. The first
