@@ -84,7 +84,7 @@ $prefs->init({
 	playerSlots     => {},                # { playerID => slot int }, stable across restarts
 });
 
-my %bridges;      # playerID => { proc, wsPort, relayPort, sink, dataDir, cacheDir, fifoPath, deviceName, lastStatus }
+my %bridges;      # playerID => { proc, wsPort, relayPort, sink, dataDir, cacheDir, fifoPath, deviceName, lastStatus, wasPlayingHere }
 my $baseDataDir;
 my $baseCacheDir;
 my $originalButtonCommand;
@@ -125,6 +125,22 @@ sub initPlugin {
 		[ 'soloistbridge', '_action' ],
 		[ 0, 1, 0, \&cliBridge ]
 	);
+	# These are GLOBAL command wrappers by necessity, not by accident:
+	# Lyrion's web UI transport controls still come through the core
+	# play/pause/stop/button command dispatch path. LMS protocol handlers
+	# can influence transport capability checks (e.g. canDoAction for
+	# pause), but they do not get their own per-protocol pause/stop/play
+	# implementation hook here that would let us forward those actions to
+	# Soloist only when a soloist:// stream is active. So if Soloist
+	# playback must respond from the web UI as well as player buttons, we
+	# need these wrappers and must scope them carefully inside
+	# _forwardLyrionTransport.
+	#
+	# This is safe in one important respect: Slim::Control::Request::
+	# addDispatch explicitly returns the previous callback for the same
+	# command slot, so falling back to $original...Command is an intended
+	# LMS-supported pattern, not a guess. The remaining real risk is load
+	# order if another plugin also globally overrides the same commands.
 	$originalButtonCommand = Slim::Control::Request::addDispatch(
 		[ 'button', '_buttoncode', '_time', '_orFunction' ],
 		[ 1, 0, 0, \&soloistButtonCommand ],
@@ -571,41 +587,56 @@ sub pollMetadata {
 		next unless ref $state eq 'HASH';
 		my $status = $state->{status} // '';
 
-		if ( $status eq 'playing' && ( $b->{lastStatus} // '' ) ne 'playing' ) {
+		# `status` reflects the Spotify ACCOUNT's current session -- every
+		# device logged into that account observes the same status/track/
+		# position via this same call, regardless of which one is actually
+		# producing audio. Only `is_active` (also in this same payload)
+		# tells us whether THIS particular Soloist instance is genuinely
+		# the output device right now. Without checking it, every running
+		# instance on the same account reports "playing" simultaneously
+		# whenever Spotify plays on ANY device -- including ones that
+		# aren't this plugin at all (your phone, a car, etc.) -- and every
+		# selected player would auto-tune and show that track's metadata
+		# at once, regardless of whether it's really the one playing.
+		my $isActiveDevice    = $state->{is_active} ? 1 : 0;
+		my $reallyPlayingHere = ( $status eq 'playing' && $isActiveDevice ) ? 1 : 0;
+
+		if ( $reallyPlayingHere && !$b->{wasPlayingHere} ) {
 			$log->info( 'auto-tuning ' . $client->name . ' to its Spotify Soloist instance' );
 			$b->{suppressLyrionTransportUntil} = time() + 1;
 			$client->execute( [ 'playlist', 'play', $url ] );
 			$b->{pausedSince} = undef;
 			$b->{idleDisconnectArmed} = 1;
 		}
-		elsif ( $status ne 'playing' ) {
-			# Covers 'paused' AND any other non-'playing' status Soloist
-			# reports (e.g. 'stopped'/'idle' when Spotify Connect hands
-			# playback to a DIFFERENT device) -- any of these means this
-			# player must stop too, not only the literal 'paused' value.
-			# Without this, a player that lost the Connect session to
-			# another device never got told to stop, so it kept reporting
-			# isPlaying(1) true and kept showing/playing its stale stream.
-			if ( ( $b->{lastStatus} // '' ) eq 'playing' ) {
-				my $playing = eval { Slim::Player::Playlist::url($client) };
-				if ( $playing && $playing eq $url ) {
-					$log->info( "stopping " . $client->name . " after Spotify Soloist status changed to '$status'" );
-					$b->{suppressLyrionTransportUntil} = time() + 1;
-					$client->execute( [ 'playlist', 'stop' ] );
-					$client->execute( [ 'playlist', 'clear' ] );
-				}
-			}
-			if ( $status eq 'paused' ) {
-				$b->{pausedSince} //= time() if $b->{idleDisconnectArmed};
-			}
-			else {
-				$b->{pausedSince} = undef;
+		elsif ( !$reallyPlayingHere && $b->{wasPlayingHere} ) {
+			# Covers being paused locally, being stopped, AND Spotify
+			# Connect handing the active session to a DIFFERENT device
+			# (status may still say "playing" in that last case -- it's
+			# is_active turning false that actually signals it, which is
+			# exactly why this checks $reallyPlayingHere and not $status
+			# directly). Any of these means this player must stop too.
+			my $playing = eval { Slim::Player::Playlist::url($client) };
+			if ( $playing && $playing eq $url ) {
+				$log->info( "stopping " . $client->name . " after its Spotify Soloist instance stopped being the active device (status='$status', is_active=$isActiveDevice)" );
+				$b->{suppressLyrionTransportUntil} = time() + 1;
+				$client->execute( [ 'playlist', 'stop' ] );
+				$client->execute( [ 'playlist', 'clear' ] );
 			}
 		}
-		$b->{lastStatus} = $status;
+
+		if ( $status eq 'paused' && $isActiveDevice ) {
+			$b->{pausedSince} //= time() if $b->{idleDisconnectArmed};
+		}
+		else {
+			$b->{pausedSince} = undef;
+		}
+
+		$b->{lastStatus}     = $status;
+		$b->{wasPlayingHere} = $reallyPlayingHere;
 
 		my $idleDisconnectSeconds = $prefs->get('idleDisconnectSeconds');
 		if ( $status eq 'paused'
+			&& $isActiveDevice
 			&& $b->{pausedSince}
 			&& $b->{idleDisconnectArmed}
 			&& $idleDisconnectSeconds > 0

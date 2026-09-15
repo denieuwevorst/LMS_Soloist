@@ -4,13 +4,13 @@
 		<title lang="EN">Spotify Soloist Repository</title>
 	</details>
 	<plugins>
-		<plugin name="SpotifySoloist" version="0.3.32" minTarget="8.0" maxTarget="*"
+		<plugin name="SpotifySoloist" version="0.3.33" minTarget="8.0" maxTarget="*"
 			category="musicservices"
 			creator="cortegedusage"
 			email="REPLACE_WITH_YOUR_EMAIL"
 			link="https://github.com/denieuwevorst/LMS_Soloist"
-			url="https://raw.githubusercontent.com/denieuwevorst/LMS_Soloist/refs/heads/main/SpotifySoloist-0.3.32.zip"
-			sha="bb71b612d416f1d7d3366768c320f94028f457a4">
+			url="https://raw.githubusercontent.com/denieuwevorst/LMS_Soloist/refs/heads/main/SpotifySoloist-0.3.33.zip"
+			sha="ffef9f92ae554eff2c846718af1b16b494eff1de">
 			<title lang="EN">Spotify Soloist (Connect)</title>
 			<desc lang="EN">Run Spotify Soloist as a Spotify Connect target for your Lyrion players. One independent Connect device per selected Squeezebox player, real Now Playing metadata including cover art, no Icecast or other separate streaming server required. Requires Spotify Soloist, ffmpeg, Python 3, and PipeWire/PulseAudio to already be set up on this host -- see the project README for prerequisites.</desc>
 		</plugin>
