@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.3.39
+
+- Add a safer Soloist build-expiry warning path instead of any automatic
+  binary downloader/updater. The plugin now checks the configured
+  `soloistBin` file's age, warns in the settings page and LMS log once it
+  is about 80 days old, and points users to Spotify's official
+  "Downloads and updates" page so they can replace the binary manually
+  before Soloist's own roughly 90-day build expiry is reached.
+
 ## 0.3.38
 
 - Stop wiping the Soloist cache tree automatically on LMS/plugin boot

@@ -108,3 +108,12 @@ PLUGIN_SPOTIFYSOLOIST_STOPPED
 
 PLUGIN_SPOTIFYSOLOIST_RESTART_NOTE
 	EN	Toggling a player's checkbox takes effect immediately (starts/stops just that instance). Changes to binary paths, port bases, the sink prefix, or initial Soloist volume only apply the next time an instance is (re)started.
+
+PLUGIN_SPOTIFYSOLOIST_BINARY_STALE
+	EN	Soloist binary nearing expiry.
+
+PLUGIN_SPOTIFYSOLOIST_BINARY_STALE_DESC
+	EN	Spotify Soloist builds expire after about 90 days; this plugin warns at 80 days but does not auto-update the executable for you.
+
+PLUGIN_SPOTIFYSOLOIST_BINARY_STALE_LINK
+	EN	Open Spotify's official Downloads and updates page.

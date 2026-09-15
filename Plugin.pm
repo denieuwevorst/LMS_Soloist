@@ -64,6 +64,8 @@ my $prefs = preferences('plugin.spotifysoloist');
 
 use constant METADATA_POLL_INTERVAL => 0.5; # seconds
 use constant IDLE_RESTART_DELAY     => 1;   # seconds
+use constant SOLOIST_BINARY_WARN_AFTER_DAYS => 80;
+use constant SOLOIST_DOWNLOADS_URL          => 'https://developer.spotify.com/documentation/soloist/reference/downloads-and-updates';
 
 $prefs->init({
 	soloistBin      => '/usr/local/bin/soloist',
@@ -91,8 +93,59 @@ my $originalButtonCommand;
 my $originalPauseCommand;
 my $originalPlayCommand;
 my $originalStopCommand;
+my $soloistBinaryAgeWarningLogged = 0;
 
 sub getDisplayName { 'PLUGIN_SPOTIFYSOLOIST' }
+
+sub soloistBinaryStatus {
+	my $path = $prefs->get('soloistBin') || '';
+	return {
+		path             => $path,
+		warnAfterDays    => SOLOIST_BINARY_WARN_AFTER_DAYS,
+		downloadsUrl     => SOLOIST_DOWNLOADS_URL,
+		ageCheckPossible => 0,
+		stale            => 0,
+	} unless length $path && -f $path;
+
+	my @stat = stat($path);
+	return {
+		path             => $path,
+		warnAfterDays    => SOLOIST_BINARY_WARN_AFTER_DAYS,
+		downloadsUrl     => SOLOIST_DOWNLOADS_URL,
+		ageCheckPossible => 0,
+		stale            => 0,
+	} unless @stat && $stat[9];
+
+	my $ageSeconds = time() - $stat[9];
+	$ageSeconds = 0 if $ageSeconds < 0;
+	my $ageDays = int( $ageSeconds / 86400 );
+	my $stale = $ageSeconds >= SOLOIST_BINARY_WARN_AFTER_DAYS * 86400 ? 1 : 0;
+
+	return {
+		path             => $path,
+		ageSeconds       => $ageSeconds,
+		ageDays          => $ageDays,
+		warnAfterDays    => SOLOIST_BINARY_WARN_AFTER_DAYS,
+		downloadsUrl     => SOLOIST_DOWNLOADS_URL,
+		ageCheckPossible => 1,
+		stale            => $stale,
+	};
+}
+
+sub _maybeWarnAboutSoloistBinaryAge {
+	return if $soloistBinaryAgeWarningLogged;
+
+	my $status = soloistBinaryStatus();
+	return unless $status->{ageCheckPossible} && $status->{stale};
+
+	$soloistBinaryAgeWarningLogged = 1;
+	$log->warn(
+		"configured Soloist executable '$status->{path}' is $status->{ageDays} days old; " .
+		'Spotify Soloist builds expire after about 90 days. Download a newer build from ' .
+		$status->{downloadsUrl} .
+		'. If this path is a wrapper script, check the real Soloist binary behind it.'
+	);
+}
 
 sub initPlugin {
 	my $class = shift;
@@ -111,6 +164,7 @@ sub initPlugin {
 	# ungraceful LMS shutdown, and also lets the currently playing device
 	# resume more cleanly after LMS restarts.
 	make_path( $baseDataDir, $baseCacheDir );
+	_maybeWarnAboutSoloistBinaryAge();
 
 	if ( main::WEBUI ) {
 		require Plugins::SpotifySoloist::Settings;
@@ -287,6 +341,7 @@ sub startBridgeForPlayer {
 	}
 
 	my $cfg = _configFor( $playerId, $client->name );
+	_maybeWarnAboutSoloistBinaryAge();
 
 	# Preserve this player's cache dir across bridge starts/restarts. The
 	# stale-player metadata/display issue is now handled via `is_active`,

@@ -107,7 +107,10 @@ For EACH selected player (its own stable "slot", persisted across restarts):
   [Spotify for Developers dashboard](https://developer.spotify.com/dashboard/soloist)
   (Premium account required) and download a build for your architecture
   from Soloist's own distribution page. Keep the key private — it's tied
-  to your account.
+  to your account. Soloist builds expire after about 90 days; this
+  plugin does **not** auto-download replacements, but it now warns in its
+  settings page and server log once the configured executable file is
+  about 80 days old so you can replace it manually before expiry.
 - The Debian packages below, and PulseAudio actually running and
   reachable by Lyrion's own service account.
 - Optional: if your host's glibc is too old for the prebuilt Soloist
@@ -304,7 +307,11 @@ after changing it.
   LAN.
 - Soloist builds expire 90 days after their build date (exit code 10) —
   each instance's log notes this explicitly when it happens; install a
-  newer build.
+  newer build. This plugin also raises an earlier warning in its
+  settings page and server log once the configured executable file is
+  about 80 days old. If your configured `soloistBin` path is a wrapper
+  script, that age check only reflects the wrapper file itself, not the
+  real Soloist binary behind it.
 - Disabling the whole plugin from Lyrion's UI doesn't stop running bridge
   processes — uncheck each player first, or restart Lyrion.
 - Auto-tune fires once per transition into "playing" for that player's
