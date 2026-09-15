@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.3.40
+
+- Label the low-latency PCM relay as `WAV` in published metadata so the
+  browser/UI shows the actual stream container users see on the wire.
+- Clarify in the README that finite per-track duration is intentionally
+  not published for the continuous Soloist relay stream, because doing so
+  made Lyrion stop playback at track boundaries.
+
 ## 0.3.39
 
 - Add a safer Soloist build-expiry warning path instead of any automatic

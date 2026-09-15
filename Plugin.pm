@@ -718,8 +718,9 @@ sub pollMetadata {
 
 		my $master = $client->master;
 		my $meta   = $master->pluginData('metadata') || {};
-		my $format = uc( $prefs->get('format') );
-		my $bitrate = $prefs->get('format') eq 'mp3' ? $prefs->get('bitrate') : undef;
+		my $rawFormat = $prefs->get('format') || 'mp3';
+		my $format = $rawFormat eq 'pcm' ? 'WAV' : uc($rawFormat);
+		my $bitrate = $rawFormat eq 'mp3' ? $prefs->get('bitrate') : undef;
 		my $streamType = 'Spotify Soloist (' . $format
 			. ( defined $bitrate ? " $bitrate" : '' ) . ')';
 

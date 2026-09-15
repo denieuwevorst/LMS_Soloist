@@ -82,7 +82,8 @@ For EACH selected player (its own stable "slot", persisted across restarts):
   Lyrion's native remote-metadata mechanism (not just an ICY text title).
 - Stream details: Lyrion metadata includes the configured format and, for
   MP3, bitrate. The source type is displayed as, for example, `Spotify
-  Soloist (MP3 320k)` or `Spotify Soloist (FLAC)`.
+  Soloist (MP3 320k)`, `Spotify Soloist (FLAC)`, or `Spotify Soloist
+  (WAV)` when the low-latency PCM/WAV relay mode is selected.
 - Soloist streams now ask Lyrion for a slightly larger **startup**
   prebuffer than a generic remote stream, scaled by format/bitrate. This
   helps absorb brief starvation around track changes without changing the
@@ -299,8 +300,9 @@ after changing it.
   no transport-level way to detect that a new song started inside the
   byte stream, only that the *metadata* changed. This is identical to how
   Lyrion displays any live internet radio station. Track duration is
-  passed through where available, which may improve the displayed total
-  in some UIs, but doesn't change the underlying elapsed-time behavior.
+  intentionally **not** published for the continuous relay stream,
+  because giving Lyrion a finite song length caused it to stop playback
+  at song boundaries.
 - A few seconds of latency are inherent to any capture → encode → stream
   bridge, not specific to this design.
 - Each per-player relay has no authentication — fine on a trusted home
