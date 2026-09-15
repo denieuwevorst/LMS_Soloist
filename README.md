@@ -88,7 +88,10 @@ For EACH selected player (its own stable "slot", persisted across restarts):
   bridge's continuous-stream design. Because Lyrion sees this as one
   long live stream, not separate per-song files, this buffer is applied
   when the Soloist stream starts — not individually at every song
-  boundary inside it.
+  boundary inside it. The current targets are intentionally modest:
+  roughly **750 ms for MP3**, about **730 ms for PCM/WAV** (`128 KB` at
+  44.1 kHz stereo 16-bit PCM), and roughly **500-1000 ms for FLAC**
+  depending on the encoded bitrate.
 - No Icecast, no extra system service — a small embedded Python relay
   handles multiple simultaneous listeners per player.
 - Works with both real PipeWire and plain PulseAudio-only hosts.
