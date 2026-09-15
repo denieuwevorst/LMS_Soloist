@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.3.38
+
+- Stop wiping the Soloist cache tree automatically on LMS/plugin boot
+  and on every per-player bridge start/restart. That cache wipe was
+  originally added to suppress stale-player state, but stale metadata
+  display is now handled via Soloist's `is_active` flag instead. Keeping
+  the cache avoids tearing down bridge-local files after an ungraceful
+  LMS shutdown and improves recovery when LMS restarts while a player is
+  already actively playing through Soloist.
+
 ## 0.3.37
 
 - Reduce the Soloist startup prebuffer again, per request, to about

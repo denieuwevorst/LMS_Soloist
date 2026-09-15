@@ -36,7 +36,7 @@ use warnings;
 use base qw(Slim::Plugin::OPMLBased);
 
 use File::Spec::Functions qw(catdir catfile);
-use File::Path qw(make_path remove_tree);
+use File::Path qw(make_path);
 use File::Basename qw(dirname);
 use JSON::XS qw(decode_json);
 use Proc::Background;
@@ -103,15 +103,13 @@ sub initPlugin {
 	$baseDataDir  = catdir( Slim::Utils::OSDetect::dirsFor('prefs'), 'plugin-spotifysoloist', 'data' );
 	$baseCacheDir = catdir( Slim::Utils::OSDetect::dirsFor('cache'), 'plugin-spotifysoloist', 'cache' );
 
-	# Wipe stale per-player cache (bridge.log, audio.fifo, Soloist's own
-	# --cache-dir contents) on every boot so old data can't interfere with
-	# a fresh session. Never touch $baseDataDir -- that holds Soloist's
-	# persistent login/session state and must survive restarts.
-	if ( -d $baseCacheDir ) {
-		eval { remove_tree( $baseCacheDir, { safe => 1 } ) };
-		$log->warn("failed to clear cache dir '$baseCacheDir': $@") if $@;
-	}
-
+	# Preserve the plugin cache tree across LMS restarts. The earlier
+	# cache-wipe logic was added to suppress stale-player state, but that
+	# is now handled from Soloist's own reported active-device state
+	# (`is_active`) instead. Keeping the cache avoids yanking bridge-local
+	# files out from under a still-running/orphaned bridge after an
+	# ungraceful LMS shutdown, and also lets the currently playing device
+	# resume more cleanly after LMS restarts.
 	make_path( $baseDataDir, $baseCacheDir );
 
 	if ( main::WEBUI ) {
@@ -290,18 +288,10 @@ sub startBridgeForPlayer {
 
 	my $cfg = _configFor( $playerId, $client->name );
 
-	# Wipe this player's cache dir (Soloist's own --cache-dir contents,
-	# bridge.log, the audio FIFO) every time its bridge starts -- including
-	# idle-restarts -- so a lingering Spotify Connect session identity or
-	# stale device state from before can't keep this device "known" to
-	# Spotify and cause it to keep pushing status/metadata for whichever
-	# player was previously selected. $cfg->{dataDir} (Soloist's persistent
-	# login/session) is never touched.
-	if ( -d $cfg->{cacheDir} ) {
-		eval { remove_tree( $cfg->{cacheDir}, { safe => 1 } ) };
-		$log->warn("failed to clear cache dir '$cfg->{cacheDir}' for player $playerId: $@") if $@;
-	}
-
+	# Preserve this player's cache dir across bridge starts/restarts. The
+	# stale-player metadata/display issue is now handled via `is_active`,
+	# so wiping Soloist's own cache here is no longer needed and can make
+	# post-restart recovery of an already-playing device less reliable.
 	make_path( $cfg->{dataDir}, $cfg->{cacheDir} );
 
 	local $ENV{SOLOIST_BIN}       = $prefs->get('soloistBin');
