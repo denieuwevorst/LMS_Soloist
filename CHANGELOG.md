@@ -1,5 +1,41 @@
 # Changelog
 
+## 0.3.40
+
+- Label the low-latency PCM relay as `WAV` in published metadata so the
+  browser/UI shows the actual stream container users see on the wire.
+- Clarify in the README that finite per-track duration is intentionally
+  not published for the continuous Soloist relay stream, because doing so
+  made Lyrion stop playback at track boundaries.
+
+## 0.3.39
+
+- Add a safer Soloist build-expiry warning path instead of any automatic
+  binary downloader/updater. The plugin now checks the configured
+  `soloistBin` file's age, warns in the settings page and LMS log once it
+  is about 80 days old, and points users to Spotify's official
+  "Downloads and updates" page so they can replace the binary manually
+  before Soloist's own roughly 90-day build expiry is reached.
+
+## 0.3.38
+
+- Stop wiping the Soloist cache tree automatically on LMS/plugin boot
+  and on every per-player bridge start/restart. That cache wipe was
+  originally added to suppress stale-player state, but stale metadata
+  display is now handled via Soloist's `is_active` flag instead. Keeping
+  the cache avoids tearing down bridge-local files after an ungraceful
+  LMS shutdown and improves recovery when LMS restarts while a player is
+  already actively playing through Soloist.
+
+## 0.3.37
+
+- Reduce the Soloist startup prebuffer again, per request, to about
+  **200 ms for all formats**. `ProtocolHandler.pm` now asks LMS for
+  roughly 200 ms of MP3 data from the configured bitrate (bounded to
+  3..35 KB), `24 KB` for FLAC, and `35 KB` for PCM/WAV. This keeps the
+  same protocol-level buffering hook while minimizing added startup
+  delay as much as practical.
+
 ## 0.3.36
 
 - Reduce the new Soloist startup prebuffer added in 0.3.35. The first

@@ -79,6 +79,7 @@ sub handler {
 		$player->{streamUrl} = Plugins::SpotifySoloist::Plugin::bridgeStreamUrlFor($id);
 	}
 	$params->{players} = \@players;
+	$params->{soloistBinaryStatus} = Plugins::SpotifySoloist::Plugin::soloistBinaryStatus();
 
 	return $callback->( $client, $params, $class->SUPER::handler( $client, $params ), @args );
 }

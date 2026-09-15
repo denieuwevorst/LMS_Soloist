@@ -66,10 +66,11 @@ For EACH selected player (its own stable "slot", persisted across restarts):
 - Idle disconnect: after 30 seconds paused by default, Soloist disconnects
   from Spotify and clears its cached artwork before restarting the selected
   player's Connect device. Set **Disconnect after pause** to `0` to keep it
-  continuously connected. Every bridge (re)start -- boot, idle-restart, or
-  toggling a player's checkbox -- also wipes that player's on-disk cache
-  directory first, so no stale Spotify Connect device identity or cached
-  state can survive into the new instance.
+  continuously connected. The plugin now preserves each player's
+  `--cache-dir` across LMS and bridge restarts instead of wiping it on
+  boot/startup, because stale-player display is now handled from
+  Soloist's reported active-device state and preserving the cache lets a
+  currently playing device recover more cleanly after an LMS restart.
 - Spotify metadata is shown only while that player is actively playing its
   own Soloist stream **and** its own Soloist instance reports that it is
   the active Spotify Connect device (`is_active`), not merely because the
@@ -81,17 +82,19 @@ For EACH selected player (its own stable "slot", persisted across restarts):
   Lyrion's native remote-metadata mechanism (not just an ICY text title).
 - Stream details: Lyrion metadata includes the configured format and, for
   MP3, bitrate. The source type is displayed as, for example, `Spotify
-  Soloist (MP3 320k)` or `Spotify Soloist (FLAC)`.
+  Soloist (MP3 320k)`, `Spotify Soloist (FLAC)`, or `Spotify Soloist
+  (WAV)` when the low-latency PCM/WAV relay mode is selected.
 - Soloist streams now ask Lyrion for a slightly larger **startup**
   prebuffer than a generic remote stream, scaled by format/bitrate. This
   helps absorb brief starvation around track changes without changing the
   bridge's continuous-stream design. Because Lyrion sees this as one
   long live stream, not separate per-song files, this buffer is applied
   when the Soloist stream starts — not individually at every song
-  boundary inside it. The current targets are intentionally modest:
-  roughly **750 ms for MP3**, about **730 ms for PCM/WAV** (`128 KB` at
-  44.1 kHz stereo 16-bit PCM), and roughly **500-1000 ms for FLAC**
-  depending on the encoded bitrate.
+  boundary inside it. The current targets are intentionally very small:
+  roughly **200 ms for MP3** (from the configured bitrate), about
+  **200 ms for PCM/WAV** (`35 KB` at 44.1 kHz stereo 16-bit PCM), and
+  roughly **200 ms for FLAC** (`24 KB`) depending on the encoded
+  bitrate.
 - No Icecast, no extra system service — a small embedded Python relay
   handles multiple simultaneous listeners per player.
 - Works with both real PipeWire and plain PulseAudio-only hosts.
@@ -105,7 +108,10 @@ For EACH selected player (its own stable "slot", persisted across restarts):
   [Spotify for Developers dashboard](https://developer.spotify.com/dashboard/soloist)
   (Premium account required) and download a build for your architecture
   from Soloist's own distribution page. Keep the key private — it's tied
-  to your account.
+  to your account. Soloist builds expire after about 90 days; this
+  plugin does **not** auto-download replacements, but it now warns in its
+  settings page and server log once the configured executable file is
+  about 80 days old so you can replace it manually before expiry.
 - The Debian packages below, and PulseAudio actually running and
   reachable by Lyrion's own service account.
 - Optional: if your host's glibc is too old for the prebuilt Soloist
@@ -294,15 +300,20 @@ after changing it.
   no transport-level way to detect that a new song started inside the
   byte stream, only that the *metadata* changed. This is identical to how
   Lyrion displays any live internet radio station. Track duration is
-  passed through where available, which may improve the displayed total
-  in some UIs, but doesn't change the underlying elapsed-time behavior.
+  intentionally **not** published for the continuous relay stream,
+  because giving Lyrion a finite song length caused it to stop playback
+  at song boundaries.
 - A few seconds of latency are inherent to any capture → encode → stream
   bridge, not specific to this design.
 - Each per-player relay has no authentication — fine on a trusted home
   LAN.
 - Soloist builds expire 90 days after their build date (exit code 10) —
   each instance's log notes this explicitly when it happens; install a
-  newer build.
+  newer build. This plugin also raises an earlier warning in its
+  settings page and server log once the configured executable file is
+  about 80 days old. If your configured `soloistBin` path is a wrapper
+  script, that age check only reflects the wrapper file itself, not the
+  real Soloist binary behind it.
 - Disabling the whole plugin from Lyrion's UI doesn't stop running bridge
   processes — uncheck each player first, or restart Lyrion.
 - Auto-tune fires once per transition into "playing" for that player's
@@ -344,11 +355,10 @@ No PulseAudio/PipeWire-pulse server is reachable. See
 first selected (first player = 0, second = 1, ...). If the directory
 doesn't exist at all, the bridge process likely never launched — check
 Lyrion's own server log for `plugin.spotifysoloist` errors around the
-time you toggled that player's checkbox. Note that this cache directory
-(and its `bridge.log`) is wiped every time that player's bridge (re)starts
--- at Lyrion boot, on an idle-restart, or when its checkbox is toggled --
-so an old log won't still be there afterward; the persistent Soloist
-login/session data lives in a separate `data` directory and is never
+time you toggled that player's checkbox. This cache directory now
+persists across LMS and bridge restarts, so old `bridge.log` content can
+still be there from earlier runs; the persistent Soloist login/session
+data lives in a separate `data` directory and is never
 touched.
 
 **Connects, logs in, shows correct status/metadata, but there's no

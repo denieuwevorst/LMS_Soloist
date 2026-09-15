@@ -4,6 +4,19 @@
 	[% "PLUGIN_SPOTIFYSOLOIST_RESTART_NOTE" | string %]
 </div>
 
+[% IF soloistBinaryStatus && soloistBinaryStatus.ageCheckPossible && soloistBinaryStatus.stale %]
+<div class="prefDesc" style="margin:0.75em 0; padding:0.75em; border:1px solid #d9a441; background:#fff7df; color:#6b4a00;">
+	<strong>[% "PLUGIN_SPOTIFYSOLOIST_BINARY_STALE" | string %]</strong>
+	[% "PLUGIN_SPOTIFYSOLOIST_BINARY_STALE_DESC" | string %]
+	<br>
+	The configured executable file <code>[% soloistBinaryStatus.path %]</code> is
+	about <strong>[% soloistBinaryStatus.ageDays %] days</strong> old. Replace it
+	before Spotify Soloist playback stops working. If this path is only a wrapper
+	script, check the real Soloist binary behind it.
+	<a href="[% soloistBinaryStatus.downloadsUrl %]" target="_blank" rel="noopener noreferrer">[% "PLUGIN_SPOTIFYSOLOIST_BINARY_STALE_LINK" | string %]</a>
+</div>
+[% END %]
+
 [% WRAPPER setting title="PLUGIN_SPOTIFYSOLOIST_PLAYERS" desc="PLUGIN_SPOTIFYSOLOIST_PLAYERS_DESC" %]
 	<input name="startAll" type="submit" value="[% 'PLUGIN_SPOTIFYSOLOIST_STARTALL' | string %]">
 	<input name="stopAll" type="submit" value="[% 'PLUGIN_SPOTIFYSOLOIST_STOPALL' | string %]">
