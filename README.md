@@ -82,6 +82,16 @@ For EACH selected player (its own stable "slot", persisted across restarts):
 - Stream details: Lyrion metadata includes the configured format and, for
   MP3, bitrate. The source type is displayed as, for example, `Spotify
   Soloist (MP3 320k)` or `Spotify Soloist (FLAC)`.
+- Soloist streams now ask Lyrion for a slightly larger **startup**
+  prebuffer than a generic remote stream, scaled by format/bitrate. This
+  helps absorb brief starvation around track changes without changing the
+  bridge's continuous-stream design. Because Lyrion sees this as one
+  long live stream, not separate per-song files, this buffer is applied
+  when the Soloist stream starts — not individually at every song
+  boundary inside it. The current targets are intentionally modest:
+  roughly **750 ms for MP3**, about **730 ms for PCM/WAV** (`128 KB` at
+  44.1 kHz stereo 16-bit PCM), and roughly **500-1000 ms for FLAC**
+  depending on the encoded bitrate.
 - No Icecast, no extra system service — a small embedded Python relay
   handles multiple simultaneous listeners per player.
 - Works with both real PipeWire and plain PulseAudio-only hosts.
@@ -129,6 +139,37 @@ Lyrion's server log, install them directly:
 ```bash
 sudo apt install -y libjson-xs-perl libproc-background-perl
 ```
+
+## Debian helper script
+
+To install the Debian-side prerequisites and grant the Lyrion service
+user the needed audio permissions automatically, run:
+
+```bash
+curl -fsSL -o setup-debian-prereqs.sh \
+  https://raw.githubusercontent.com/denieuwevorst/LMS_Soloist/main/Bin/setup-debian-prereqs.sh
+chmod +x setup-debian-prereqs.sh
+sudo ./setup-debian-prereqs.sh
+```
+
+What it does:
+- installs the required Debian packages for the current
+  Pulse/PipeWire-based bridge design
+- detects the Lyrion systemd service and its runtime user
+- starts a simple system-mode PulseAudio service **only if** no
+  Pulse-compatible server is already reachable
+- adds the Lyrion user to `pulse-access` (and `audio` if that group
+  exists)
+- restarts Lyrion so the new group membership takes effect
+
+Use `sudo ./setup-debian-prereqs.sh --lyrion-user <user>` if your Lyrion
+service user can't be auto-detected, or `--skip-apt` if you already
+installed the packages yourself and only want the permissions/service
+setup.
+
+The helper intentionally does **not** download the Soloist binary or set
+your API key; those stay manual because they're tied to your architecture
+and Spotify developer account.
 ## Install:
           
    https://raw.githubusercontent.com/denieuwevorst/lms-spotify-soloist/main/repo.xml
@@ -156,8 +197,10 @@ Minimal images like DietPi often ship with neither PipeWire nor
 PulseAudio running. Soloist requires one of them for audio output — there
 is no raw-ALSA fallback. On a headless box, run PulseAudio in **system
 mode** (there's no desktop login session to auto-spawn a per-user one).
-This assumes `pulseaudio`/`pulseaudio-utils` are already installed from
-the [Debian packages](#debian-packages) step above:
+The recommended path is the [Debian helper script](#debian-helper-script)
+above. If you want to do it manually instead, this assumes
+`pulseaudio`/`pulseaudio-utils` are already installed from the
+[Debian packages](#debian-packages) step above:
 
 ```bash
 sudo tee /etc/systemd/system/pulseaudio.service > /dev/null << 'EOF'

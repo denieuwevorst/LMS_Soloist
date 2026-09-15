@@ -1,5 +1,36 @@
 # Changelog
 
+## 0.3.36
+
+- Reduce the new Soloist startup prebuffer added in 0.3.35. The first
+  pass proved too large in practice. `ProtocolHandler.pm` now asks LMS
+  for a much smaller format-aware startup cushion: MP3 targets roughly
+  750 ms from the configured bitrate (bounded to 24..128 KB), FLAC uses
+  96 KB, and PCM/WAV uses 128 KB. This keeps some underrun protection
+  while pulling startup latency back down substantially.
+
+## 0.3.35
+
+- Add a format-aware `bufferThreshold` to `ProtocolHandler.pm` so
+  Lyrion prebuffers more of the Soloist stream before starting playback:
+  MP3 now buffers roughly 2 seconds based on the configured bitrate
+  (bounded to 32..255 KB), FLAC uses 192 KB, and PCM/WAV uses the LMS
+  maximum of 255 KB. This doesn't create true per-song buffering — the
+  Soloist bridge is one continuous live stream — but it gives the player
+  a larger startup cushion, which can help mask brief starvation around
+  track transitions.
+
+## 0.3.34
+
+- Add `Bin/setup-debian-prereqs.sh`, an idempotent Debian helper that
+  installs the packages this plugin needs for its current
+  Pulse/PipeWire-compatible bridge design, detects the Lyrion runtime
+  user, starts a simple system-mode PulseAudio service only when no
+  Pulse-compatible server is already reachable, grants the Lyrion user
+  `pulse-access` (and `audio` if present), and restarts Lyrion so the
+  new permissions take effect. Update the README to prefer that helper
+  over the long manual headless-PulseAudio setup steps.
+
 ## 0.3.33
 
 - Use Soloist's `is_active` flag together with `status` when deciding
