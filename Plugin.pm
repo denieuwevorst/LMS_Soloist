@@ -64,6 +64,7 @@ my $prefs = preferences('plugin.spotifysoloist');
 
 use constant METADATA_POLL_INTERVAL => 0.5; # seconds
 use constant IDLE_RESTART_DELAY     => 1;   # seconds
+use constant PLAYBACK_TRANSITION_GRACE => 1.5; # seconds
 use constant SOLOIST_BINARY_WARN_AFTER_DAYS => 80;
 use constant SOLOIST_DOWNLOADS_URL          => 'https://developer.spotify.com/documentation/soloist/reference/downloads-and-updates';
 
@@ -386,6 +387,7 @@ sub startBridgeForPlayer {
 		%$cfg,
 		proc                => $proc,
 		lastStatus          => '',
+		notPlayingSince     => undef,
 		pausedSince         => undef,
 		idleDisconnectArmed => 0,
 	};
@@ -650,23 +652,38 @@ sub pollMetadata {
 			$log->info( 'auto-tuning ' . $client->name . ' to its Spotify Soloist instance' );
 			$b->{suppressLyrionTransportUntil} = time() + 1;
 			$client->execute( [ 'playlist', 'play', $url ] );
+			$b->{notPlayingSince} = undef;
 			$b->{pausedSince} = undef;
 			$b->{idleDisconnectArmed} = 1;
 		}
 		elsif ( !$reallyPlayingHere && $b->{wasPlayingHere} ) {
-			# Covers being paused locally, being stopped, AND Spotify
-			# Connect handing the active session to a DIFFERENT device
-			# (status may still say "playing" in that last case -- it's
-			# is_active turning false that actually signals it, which is
-			# exactly why this checks $reallyPlayingHere and not $status
-			# directly). Any of these means this player must stop too.
-			my $playing = eval { Slim::Player::Playlist::url($client) };
-			if ( $playing && $playing eq $url ) {
-				$log->info( "stopping " . $client->name . " after its Spotify Soloist instance stopped being the active device (status='$status', is_active=$isActiveDevice)" );
-				$b->{suppressLyrionTransportUntil} = time() + 1;
-				$client->execute( [ 'playlist', 'stop' ] );
-				$client->execute( [ 'playlist', 'clear' ] );
+			# With 500 ms polling, Soloist can briefly report a same-device
+			# non-'playing' state around a track boundary even though the
+			# stream is about to continue on this exact device. Only a real
+			# loss of the active device should stop immediately; otherwise
+			# give short same-device transitions a small grace window so a
+			# song change does not look like stop -> clear -> re-tune.
+			if ($isActiveDevice) {
+				$b->{notPlayingSince} //= time();
 			}
+			else {
+				$b->{notPlayingSince} = time();
+			}
+
+			if ( !$isActiveDevice
+				|| time() - ( $b->{notPlayingSince} || 0 ) >= PLAYBACK_TRANSITION_GRACE ) {
+				my $playing = eval { Slim::Player::Playlist::url($client) };
+				if ( $playing && $playing eq $url ) {
+					$log->info( "stopping " . $client->name . " after its Spotify Soloist instance left active playback (status='$status', is_active=$isActiveDevice)" );
+					$b->{suppressLyrionTransportUntil} = time() + 1;
+					$client->execute( [ 'playlist', 'stop' ] );
+					$client->execute( [ 'playlist', 'clear' ] );
+				}
+				$b->{wasPlayingHere} = 0;
+			}
+		}
+		else {
+			$b->{notPlayingSince} = undef;
 		}
 
 		if ( $status eq 'paused' && $isActiveDevice ) {
@@ -676,8 +693,8 @@ sub pollMetadata {
 			$b->{pausedSince} = undef;
 		}
 
-		$b->{lastStatus}     = $status;
-		$b->{wasPlayingHere} = $reallyPlayingHere;
+		$b->{lastStatus} = $status;
+		$b->{wasPlayingHere} = $reallyPlayingHere if $reallyPlayingHere;
 
 		my $idleDisconnectSeconds = $prefs->get('idleDisconnectSeconds');
 		if ( $status eq 'paused'
