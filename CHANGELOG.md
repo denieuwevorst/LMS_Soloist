@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.3.41
+
+- Add a short same-device playback-transition grace window before
+  stopping/clearing a Soloist stream. This avoids brief track-boundary
+  status blips from looking like a full disconnect/reconnect when the
+  same Soloist device is still active, while still stopping immediately
+  on a real active-device handoff.
+
 ## 0.3.40
 
 - Label the low-latency PCM relay as `WAV` in published metadata so the
