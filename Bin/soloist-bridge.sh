@@ -9,8 +9,9 @@
 # broadcaster, plays the same role Icecast played before, embedded instead
 # of a separate service -- see Bin/audio-relay.py for why a FIFO).
 #
-# Metadata is NOT handled here -- Plugin.pm polls `soloist ctl ... now
-# --json` directly and writes into Lyrion's native metadata mechanism.
+# Metadata is NOT handled here -- Plugin.pm consumes Soloist's pushed
+# `ctl trace` event stream (with an occasional snapshot resync fallback)
+# and writes into Lyrion's native metadata mechanism.
 #
 # Required env vars: SOLOIST_BIN FFMPEG_BIN PIPEWIRE_SINK DEVICE_NAME
 #                     SOLOIST_API_KEY
@@ -148,10 +149,27 @@ log "starting soloist: device='${DEVICE_NAME}' sink=${PIPEWIRE_SINK} ws=${WS_END
 	--ws "$WS_ENDPOINT" &
 SOLOIST_PID=$!
 
-sleep 2
+# Poll for actual readiness instead of blindly sleeping a fixed amount.
+# Soloist writes ws.port when its control WebSocket is really listening,
+# which is the same discovery file used by `soloist ctl` itself.
+READY=0
+ELAPSED_MS=0
+for _try in $(seq 1 40); do
+	if [ -f "${SOLOIST_DATA_DIR}/ws.port" ]; then
+		READY=1
+		break
+	fi
+	if ! kill -0 "$SOLOIST_PID" 2>/dev/null; then
+		break
+	fi
+	sleep 0.05
+	ELAPSED_MS=$(( _try * 50 ))
+done
 
-if ! kill -0 "$SOLOIST_PID" 2>/dev/null; then
-	log "soloist exited immediately -- check API key / binary path / glibc compatibility"
+if [ "$READY" = "1" ]; then
+	log "soloist ready after ~${ELAPSED_MS}ms"
+else
+	log "soloist exited immediately or wasn't ready within 2s -- check API key / binary path / glibc compatibility"
 fi
 
 # Set the Connect session's baseline once at startup. Lyrion's mixer volume
@@ -173,6 +191,10 @@ fi
 # actually begins -- which can happen an arbitrary amount of time later
 # (whenever you hit play in the Spotify app). A one-shot check shortly
 # after launch can easily miss it entirely.
+#
+# Poll at 0.3s so real playback gets moved onto the correct sink quickly
+# even on plain PulseAudio hosts where Soloist briefly lands on the
+# server's current default sink first.
 sink_router() {
 	local target_index=""
 	while kill -0 "$SOLOIST_PID" 2>/dev/null; do
@@ -219,7 +241,7 @@ sink_router() {
 			fi
 		fi
 
-		sleep 2
+		sleep 0.3
 	done
 }
 
@@ -269,8 +291,22 @@ log "starting relay on ${RELAY_BIND}:${RELAY_PORT} (content-type ${CONTENT_TYPE}
 	--content-type "$CONTENT_TYPE" &
 RELAY_PID=$!
 
-sleep 1
-if ! kill -0 "$RELAY_PID" 2>/dev/null; then
+# Confirm that the relay is actually listening instead of sleeping a
+# fixed amount and only checking whether the process still exists.
+RELAY_READY=0
+for _try in $(seq 1 10); do
+	if ! kill -0 "$RELAY_PID" 2>/dev/null; then
+		break
+	fi
+	if ( exec 3<>"/dev/tcp/127.0.0.1/${RELAY_PORT}" ) 2>/dev/null; then
+		exec 3>&- 3<&- 2>/dev/null
+		RELAY_READY=1
+		break
+	fi
+	sleep 0.1
+done
+
+if [ "$RELAY_READY" != "1" ]; then
 	log "ERROR: relay failed to start -- check python3 is available and the port isn't in use"
 	exit 1
 fi
