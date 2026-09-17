@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.3.43
+
+- Stop tracking packaged `SpotifySoloist-*.zip` artifacts in the Git
+  tree. The plugin repository feed now points at a GitHub release asset
+  instead, which keeps future checkouts smaller and avoids growing the
+  working tree with one committed ZIP per release.
+
 ## 0.3.42
 
 - Refactor format handling behind one shared format table so the relay URL

@@ -10,3 +10,6 @@ Thumbs.db
 # Anything accidentally left over from local testing
 *.log
 *.fifo
+
+# Release artifacts are published as GitHub release assets, not tracked in-tree
+SpotifySoloist-*.zip
