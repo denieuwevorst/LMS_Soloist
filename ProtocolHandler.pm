@@ -21,13 +21,11 @@ use warnings;
 use base qw(Slim::Player::Protocols::HTTP);
 
 use Slim::Utils::Log;
-use Slim::Utils::Prefs;
 use Slim::Utils::Strings qw(cstring);
 
 Slim::Player::ProtocolHandlers->registerHandler( 'soloist', __PACKAGE__ );
 
 my $log   = logger('plugin.spotifysoloist');
-my $prefs = preferences('plugin.spotifysoloist');
 
 sub isRemote { 1 }
 sub canSeek { 0 }
@@ -36,7 +34,7 @@ sub isAudioURL { 1 }
 
 sub bufferThreshold {
 	my ( $class, $client, $url ) = @_;
-	my $format = $prefs->get('format') || 'mp3';
+	my $format = Plugins::SpotifySoloist::Plugin::currentFormatSpec();
 
 	# LMS applies this only when the continuous remote stream itself
 	# starts buffering, not at per-track boundaries inside the stream
@@ -44,21 +42,7 @@ sub bufferThreshold {
 	# changes). Still, a slightly larger format-aware startup buffer helps
 	# absorb brief starvation around track transitions without changing the
 	# bridge's continuous-stream design.
-	if ( $format eq 'pcm' ) {
-		return 35;
-	}
-	elsif ( $format eq 'flac' ) {
-		return 24;
-	}
-
-	my $bitrate = $prefs->get('bitrate') || '320k';
-	my ($kbps) = $bitrate =~ /(\d+)/;
-	my $threshold = $kbps ? int( ( $kbps / 8 ) * 0.2 + 0.5 ) : 8;
-
-	$threshold = 3  if $threshold < 3;
-	$threshold = 35 if $threshold > 35;
-
-	return $threshold;
+	return $format->{bufferKb};
 }
 
 sub new {

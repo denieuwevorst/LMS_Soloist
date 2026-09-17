@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.3.42
+
+- Refactor format handling behind one shared format table so the relay URL
+  extension, displayed format label, and startup prebuffer all come from
+  the same definition instead of separate `mp3`/`flac`/`pcm` branches.
+- Split the metadata poll loop into explicit helpers for playback-state
+  derivation, transition handling, idle-disconnect evaluation, and
+  metadata publication.
+- Unify bridge start/stop/restart/reconcile behind a single desired-state
+  flow, while preserving the current per-player bridge behavior.
+
 ## 0.3.41
 
 - Add a short same-device playback-transition grace window before

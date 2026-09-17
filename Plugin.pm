@@ -95,8 +95,47 @@ my $originalPauseCommand;
 my $originalPlayCommand;
 my $originalStopCommand;
 my $soloistBinaryAgeWarningLogged = 0;
+my %FORMAT_SPECS = (
+	mp3 => {
+		wireExt       => 'mp3',
+		displayFormat => 'MP3',
+		bufferKb      => sub {
+			my ($bitrate) = @_;
+			my ($kbps) = ( $bitrate || '' ) =~ /(\d+)/;
+			my $threshold = $kbps ? int( ( $kbps / 8 ) * 0.2 + 0.5 ) : 8;
+			$threshold = 3  if $threshold < 3;
+			$threshold = 35 if $threshold > 35;
+			return $threshold;
+		},
+	},
+	flac => {
+		wireExt       => 'flac',
+		displayFormat => 'FLAC',
+		bufferKb      => 24,
+	},
+	pcm => {
+		wireExt       => 'wav',
+		displayFormat => 'WAV',
+		bufferKb      => 35,
+	},
+);
 
 sub getDisplayName { 'PLUGIN_SPOTIFYSOLOIST' }
+
+sub currentFormatSpec {
+	my $format = $prefs->get('format') || 'mp3';
+	my $spec = $FORMAT_SPECS{$format} || $FORMAT_SPECS{mp3};
+	my $bitrate = $format eq 'mp3' ? ( $prefs->get('bitrate') || '320k' ) : undef;
+	my $bufferKb = ref $spec->{bufferKb} eq 'CODE' ? $spec->{bufferKb}->($bitrate) : $spec->{bufferKb};
+
+	return {
+		key           => $format,
+		wireExt       => $spec->{wireExt},
+		displayFormat => $spec->{displayFormat},
+		bufferKb      => $bufferKb,
+		( defined $bitrate ? ( bitrate => $bitrate ) : () ),
+	};
+}
 
 sub soloistBinaryStatus {
 	my $path = $prefs->get('soloistBin') || '';
@@ -285,11 +324,9 @@ sub streamUrlFor {
 	my ($cfg) = @_;
 	my $bind = $prefs->get('relayBind');
 	my $host = ( !$bind || $bind eq '0.0.0.0' ) ? Slim::Utils::Network::serverAddr() : $bind;
+	my $format = currentFormatSpec();
 
-	my $format = $prefs->get('format');
-	my $ext = $format eq 'pcm' ? 'wav' : $format;
-
-	return 'soloist://' . $host . ':' . $cfg->{relayPort} . '/soloist.' . $ext;
+	return 'soloist://' . $host . ':' . $cfg->{relayPort} . '/soloist.' . $format->{wireExt};
 }
 
 # ---------------------------------------------------------------------------
@@ -330,10 +367,32 @@ sub _initialVolume {
 	return 100;
 }
 
-sub startBridgeForPlayer {
+sub _bridgeRunning {
 	my ($playerId) = @_;
+	return $bridges{$playerId} && $bridges{$playerId}{proc} && $bridges{$playerId}{proc}->alive ? 1 : 0;
+}
 
-	return if $bridges{$playerId} && $bridges{$playerId}{proc} && $bridges{$playerId}{proc}->alive;
+sub _bridgeExists {
+	my ($playerId) = @_;
+	return exists $bridges{$playerId} ? 1 : 0;
+}
+
+sub _stopBridge {
+	my ( $playerId, $reason ) = @_;
+	my $b = $bridges{$playerId} or return;
+
+	$log->info( ( $reason || 'stopping' ) . " soloist bridge for player $playerId" );
+	eval { $b->{proc}->die if $b->{proc}->alive; };
+
+	if ( my $client = Slim::Player::Client::getClient($playerId) ) {
+		_clearMetadataForPlayer($client);
+	}
+
+	delete $bridges{$playerId};
+}
+
+sub _startBridge {
+	my ($playerId) = @_;
 
 	my $client = Slim::Player::Client::getClient($playerId);
 	unless ($client) {
@@ -393,18 +452,40 @@ sub startBridgeForPlayer {
 	};
 }
 
-sub stopBridgeForPlayer {
+sub _isSelectedPlayer {
 	my ($playerId) = @_;
-	my $b = $bridges{$playerId} or return;
+	my $sel = $prefs->get('selectedPlayers') || {};
+	return $sel->{$playerId} ? 1 : 0;
+}
 
-	$log->info("stopping soloist bridge for player $playerId");
-	eval { $b->{proc}->die if $b->{proc}->alive; };
+sub _ensureBridgeState {
+	my ( $playerId, %args ) = @_;
+	my $shouldRun = $args{shouldRun} ? 1 : 0;
+	my $restart   = $args{restart} ? 1 : 0;
+	my $running   = _bridgeRunning($playerId);
 
-	if ( my $client = Slim::Player::Client::getClient($playerId) ) {
-		_clearMetadataForPlayer($client);
+	if ($restart) {
+		_stopBridge( $playerId, $args{stopReason} || 'restarting' ) if _bridgeExists($playerId);
+		$running = 0;
 	}
 
-	delete $bridges{$playerId};
+	if ($shouldRun) {
+		return if $running;
+		return _startBridge($playerId);
+	}
+
+	_stopBridge( $playerId, $args{stopReason} ) if _bridgeExists($playerId);
+	return;
+}
+
+sub startBridgeForPlayer {
+	my ($playerId) = @_;
+	return _ensureBridgeState( $playerId, shouldRun => 1 );
+}
+
+sub stopBridgeForPlayer {
+	my ($playerId) = @_;
+	return _ensureBridgeState( $playerId, shouldRun => 0, stopReason => 'stopping' );
 }
 
 sub _clearMetadataForPlayer {
@@ -419,22 +500,25 @@ sub _clearMetadataForPlayer {
 
 sub reconcileBridges {
 	my %selected = map { $_ => 1 } selectedPlayerIds();
+	my %playerIds = map { $_ => 1 } ( keys %bridges, keys %selected );
 
-	stopBridgeForPlayer($_) for grep { !$selected{$_} } keys %bridges;
-	startBridgeForPlayer($_) for keys %selected;
+	_ensureBridgeState( $_, shouldRun => $selected{$_} ? 1 : 0 ) for keys %playerIds;
 }
 
 sub restartBridgeForPlayer {
 	my ($playerId) = @_;
-	my %selected = map { $_ => 1 } selectedPlayerIds();
-
-	unless ( $selected{$playerId} ) {
+	unless ( _isSelectedPlayer($playerId) ) {
 		$log->debug("not restarting idle Soloist bridge for deselected player $playerId");
 		return;
 	}
 
 	$log->info("restarting idle Soloist bridge for player $playerId");
-	startBridgeForPlayer($playerId);
+	_ensureBridgeState(
+		$playerId,
+		shouldRun  => 1,
+		restart    => 1,
+		stopReason => 'restarting idle'
+	);
 }
 
 sub _bridgeForSoloistStream {
@@ -534,7 +618,7 @@ sub soloistPlayControlCommand {
 
 sub bridgeRunning {
 	my ($playerId) = @_;
-	return $bridges{$playerId} && $bridges{$playerId}{proc} && $bridges{$playerId}{proc}->alive ? 1 : 0;
+	return _bridgeRunning($playerId);
 }
 
 sub bridgeStreamUrlFor {
@@ -606,6 +690,156 @@ sub _fetchNowPlaying {
 	return $json;
 }
 
+sub _clientIsOnOwnSoloistStream {
+	my ( $client, $url ) = @_;
+	my $playing = eval { Slim::Player::Playlist::url($client) };
+	return $playing && $playing eq $url;
+}
+
+sub _clientIsActivelyPlayingOwnSoloistStream {
+	my ( $client, $url ) = @_;
+	return _clientIsOnOwnSoloistStream( $client, $url ) && eval { $client->isPlaying(1) };
+}
+
+sub _playbackStateForBridge {
+	my ( $state, $b ) = @_;
+	my $status = $state->{status} // '';
+	my $isActiveDevice = $state->{is_active} ? 1 : 0;
+	my $reallyPlayingHere = ( $status eq 'playing' && $isActiveDevice ) ? 1 : 0;
+	my $effectiveState = !$isActiveDevice            ? 'inactive'
+	                   : $status eq 'playing'        ? 'playing'
+	                   : $status eq 'paused'         ? 'paused'
+	                   :                               'transitioning';
+
+	return {
+		status            => $status,
+		isActiveDevice    => $isActiveDevice,
+		reallyPlayingHere => $reallyPlayingHere,
+		wasPlayingHere    => $b->{wasPlayingHere} ? 1 : 0,
+		effectiveState    => $effectiveState,
+	};
+}
+
+sub _applyPlaybackTransition {
+	my ( $playerId, $b, $client, $url, $playback ) = @_;
+
+	if ( $playback->{reallyPlayingHere} && !$playback->{wasPlayingHere} ) {
+		$log->info( 'auto-tuning ' . $client->name . ' to its Spotify Soloist instance' );
+		$b->{suppressLyrionTransportUntil} = time() + 1;
+		$client->execute( [ 'playlist', 'play', $url ] );
+		$b->{notPlayingSince} = undef;
+		$b->{pausedSince} = undef;
+		$b->{idleDisconnectArmed} = 1;
+		$b->{wasPlayingHere} = 1;
+		return;
+	}
+
+	return unless !$playback->{reallyPlayingHere} && $playback->{wasPlayingHere};
+
+	if ( $playback->{isActiveDevice} ) {
+		$b->{notPlayingSince} //= time();
+	}
+	else {
+		$b->{notPlayingSince} = time();
+	}
+
+	return if $playback->{isActiveDevice}
+		&& time() - ( $b->{notPlayingSince} || 0 ) < PLAYBACK_TRANSITION_GRACE;
+
+	if ( _clientIsOnOwnSoloistStream( $client, $url ) ) {
+		$log->info( "stopping " . $client->name . " after its Spotify Soloist instance left active playback (status='$playback->{status}', is_active=$playback->{isActiveDevice})" );
+		$b->{suppressLyrionTransportUntil} = time() + 1;
+		$client->execute( [ 'playlist', 'stop' ] );
+		$client->execute( [ 'playlist', 'clear' ] );
+	}
+
+	$b->{wasPlayingHere} = 0;
+}
+
+sub _updateIdleDisconnectState {
+	my ( $b, $playback ) = @_;
+
+	if ( $playback->{effectiveState} eq 'paused' ) {
+		$b->{pausedSince} //= time() if $b->{idleDisconnectArmed};
+	}
+	else {
+		$b->{pausedSince} = undef;
+	}
+
+	$b->{lastStatus} = $playback->{status};
+	$b->{notPlayingSince} = undef if $playback->{reallyPlayingHere};
+}
+
+sub _maybeRestartIdleBridge {
+	my ( $playerId, $b, $client, $playback ) = @_;
+	my $idleDisconnectSeconds = $prefs->get('idleDisconnectSeconds');
+
+	return 0 unless $playback->{effectiveState} eq 'paused'
+		&& $b->{pausedSince}
+		&& $b->{idleDisconnectArmed}
+		&& $idleDisconnectSeconds > 0
+		&& time() - $b->{pausedSince} >= $idleDisconnectSeconds;
+
+	$log->info( 'disconnecting ' . $client->name . " after $idleDisconnectSeconds seconds paused" );
+	stopBridgeForPlayer($playerId);
+	$log->debug("scheduling Soloist bridge restart for player $playerId");
+	Slim::Utils::Timers::setTimer( undef, time() + IDLE_RESTART_DELAY, sub {
+		restartBridgeForPlayer($playerId);
+	} );
+	return 1;
+}
+
+sub _coverUrlFromDecorations {
+	my ($deco) = @_;
+	return '' unless my $covers = $deco->{visual_identity}->{cover};
+
+	my ($large)  = grep { ( $_->{size} // '' ) eq 'large' }  @$covers;
+	my ($xlarge) = grep { ( $_->{size} // '' ) eq 'xlarge' } @$covers;
+	return ( $large || $xlarge || $covers->[0] || {} )->{url} // '';
+}
+
+sub _publishMetadataForPlayer {
+	my ( $client, $url, $state ) = @_;
+	return unless _clientIsActivelyPlayingOwnSoloistStream( $client, $url );
+
+	my $item = $state->{item} || {};
+	my $deco = $item->{decorations} || {};
+	my $title = $deco->{identity}->{name} // '';
+	return unless length $title;
+
+	my $artist = $deco->{creators}->[0]->{entity}->{decorations}->{identity}->{name} // '';
+	my $album  = $deco->{parent}->{entity}->{decorations}->{identity}->{name} // '';
+	my $cover  = _coverUrlFromDecorations($deco);
+	my $format = currentFormatSpec();
+	my $master = $client->master;
+	my $meta   = $master->pluginData('metadata') || {};
+	my $streamType = 'Spotify Soloist (' . $format->{displayFormat}
+		. ( defined $format->{bitrate} ? " $format->{bitrate}" : '' ) . ')';
+
+	return if ( $meta->{title}  // '' ) eq $title
+	     && ( $meta->{artist} // '' ) eq $artist
+	     && ( $meta->{cover}  // '' ) eq $cover
+	     && ( $meta->{format} // '' ) eq $format->{displayFormat}
+	     && ( $meta->{bitrate} // '' ) eq ( $format->{bitrate} // '' );
+
+	$master->pluginData( metadata => {
+		title    => $title,
+		artist   => $artist,
+		album    => $album,
+		cover    => $cover,
+		icon     => $cover,
+		type     => $streamType,
+		format   => $format->{displayFormat},
+		( defined $format->{bitrate} ? ( bitrate => $format->{bitrate} ) : () ),
+	} );
+
+	Slim::Music::Info::setCurrentTitle( $url, $title, $client );
+	$master->currentPlaylistUpdateTime( Time::HiRes::time() );
+	Slim::Control::Request::notifyFromArray( $master, ['newmetadata'] );
+
+	$log->debug( 'metadata updated for ' . $client->name . ": $artist - $title" );
+}
+
 sub pollMetadata {
 	Slim::Utils::Timers::setTimer( undef, time() + METADATA_POLL_INTERVAL, \&pollMetadata );
 
@@ -615,154 +849,24 @@ sub pollMetadata {
 
 		my $client = Slim::Player::Client::getClient($playerId) or next;
 		my $url = streamUrlFor($b);
-
-		# "Active" means this player's playlist is actually parked on ITS
-		# OWN Soloist stream AND it's really playing (not just paused or
-		# stopped while still sitting on the URL) -- otherwise it must not
-		# keep receiving/holding Now Playing metadata pushes.
-		my $isActive = sub {
-			my $playing = eval { Slim::Player::Playlist::url($client) };
-			return $playing && $playing eq $url && eval { $client->isPlaying(1) };
-		};
-
-		_clearMetadataForPlayer($client) unless $isActive->();
+		_clearMetadataForPlayer($client) unless _clientIsActivelyPlayingOwnSoloistStream( $client, $url );
 
 		my $json = _fetchNowPlaying( $b->{wsPort} );
 		next unless $json;
 
 		my $state = eval { decode_json($json) };
 		next unless ref $state eq 'HASH';
-		my $status = $state->{status} // '';
+		my $playback = _playbackStateForBridge( $state, $b );
 
-		# `status` reflects the Spotify ACCOUNT's current session -- every
-		# device logged into that account observes the same status/track/
-		# position via this same call, regardless of which one is actually
-		# producing audio. Only `is_active` (also in this same payload)
-		# tells us whether THIS particular Soloist instance is genuinely
-		# the output device right now. Without checking it, every running
-		# instance on the same account reports "playing" simultaneously
-		# whenever Spotify plays on ANY device -- including ones that
-		# aren't this plugin at all (your phone, a car, etc.) -- and every
-		# selected player would auto-tune and show that track's metadata
-		# at once, regardless of whether it's really the one playing.
-		my $isActiveDevice    = $state->{is_active} ? 1 : 0;
-		my $reallyPlayingHere = ( $status eq 'playing' && $isActiveDevice ) ? 1 : 0;
-
-		if ( $reallyPlayingHere && !$b->{wasPlayingHere} ) {
-			$log->info( 'auto-tuning ' . $client->name . ' to its Spotify Soloist instance' );
-			$b->{suppressLyrionTransportUntil} = time() + 1;
-			$client->execute( [ 'playlist', 'play', $url ] );
-			$b->{notPlayingSince} = undef;
-			$b->{pausedSince} = undef;
-			$b->{idleDisconnectArmed} = 1;
-		}
-		elsif ( !$reallyPlayingHere && $b->{wasPlayingHere} ) {
-			# With 500 ms polling, Soloist can briefly report a same-device
-			# non-'playing' state around a track boundary even though the
-			# stream is about to continue on this exact device. Only a real
-			# loss of the active device should stop immediately; otherwise
-			# give short same-device transitions a small grace window so a
-			# song change does not look like stop -> clear -> re-tune.
-			if ($isActiveDevice) {
-				$b->{notPlayingSince} //= time();
-			}
-			else {
-				$b->{notPlayingSince} = time();
-			}
-
-			if ( !$isActiveDevice
-				|| time() - ( $b->{notPlayingSince} || 0 ) >= PLAYBACK_TRANSITION_GRACE ) {
-				my $playing = eval { Slim::Player::Playlist::url($client) };
-				if ( $playing && $playing eq $url ) {
-					$log->info( "stopping " . $client->name . " after its Spotify Soloist instance left active playback (status='$status', is_active=$isActiveDevice)" );
-					$b->{suppressLyrionTransportUntil} = time() + 1;
-					$client->execute( [ 'playlist', 'stop' ] );
-					$client->execute( [ 'playlist', 'clear' ] );
-				}
-				$b->{wasPlayingHere} = 0;
-			}
-		}
-		else {
-			$b->{notPlayingSince} = undef;
-		}
-
-		if ( $status eq 'paused' && $isActiveDevice ) {
-			$b->{pausedSince} //= time() if $b->{idleDisconnectArmed};
-		}
-		else {
-			$b->{pausedSince} = undef;
-		}
-
-		$b->{lastStatus} = $status;
-		$b->{wasPlayingHere} = $reallyPlayingHere if $reallyPlayingHere;
-
-		my $idleDisconnectSeconds = $prefs->get('idleDisconnectSeconds');
-		if ( $status eq 'paused'
-			&& $isActiveDevice
-			&& $b->{pausedSince}
-			&& $b->{idleDisconnectArmed}
-			&& $idleDisconnectSeconds > 0
-			&& time() - $b->{pausedSince} >= $idleDisconnectSeconds ) {
-			$log->info( 'disconnecting ' . $client->name . " after $idleDisconnectSeconds seconds paused" );
-			stopBridgeForPlayer($playerId);
-			$log->debug("scheduling Soloist bridge restart for player $playerId");
-			Slim::Utils::Timers::setTimer( undef, time() + IDLE_RESTART_DELAY, sub {
-				restartBridgeForPlayer($playerId);
-			} );
-			next;
-		}
-
-		# Only push metadata if this player is actually playing ITS OWN
-		# stream right now (not just parked on the URL while paused or
-		# stopped). The cached plugin metadata was cleared above otherwise.
-		next unless $isActive->();
-
-		my $item = $state->{item} || {};
-		my $deco = $item->{decorations} || {};
-
-		my $title = $deco->{identity}->{name} // '';
-		next unless length $title;
-
-		my $artist = $deco->{creators}->[0]->{entity}->{decorations}->{identity}->{name} // '';
-		my $album  = $deco->{parent}->{entity}->{decorations}->{identity}->{name} // '';
-
-		my $cover = '';
-		if ( my $covers = $deco->{visual_identity}->{cover} ) {
-			my ($large)  = grep { ( $_->{size} // '' ) eq 'large' }  @$covers;
-			my ($xlarge) = grep { ( $_->{size} // '' ) eq 'xlarge' } @$covers;
-			$cover = ( $large || $xlarge || $covers->[0] || {} )->{url} // '';
-		}
-
-		my $master = $client->master;
-		my $meta   = $master->pluginData('metadata') || {};
-		my $rawFormat = $prefs->get('format') || 'mp3';
-		my $format = $rawFormat eq 'pcm' ? 'WAV' : uc($rawFormat);
-		my $bitrate = $rawFormat eq 'mp3' ? $prefs->get('bitrate') : undef;
-		my $streamType = 'Spotify Soloist (' . $format
-			. ( defined $bitrate ? " $bitrate" : '' ) . ')';
-
-		next if ( $meta->{title}  // '' ) eq $title
-		     && ( $meta->{artist} // '' ) eq $artist
-		     && ( $meta->{cover}  // '' ) eq $cover
-		     && ( $meta->{format} // '' ) eq $format
-		     && ( $meta->{bitrate} // '' ) eq ( $bitrate // '' );
-
-		$master->pluginData( metadata => {
-			title    => $title,
-			artist   => $artist,
-			album    => $album,
-			cover    => $cover,
-			icon     => $cover,
-			type     => $streamType,
-			format   => $format,
-			( defined $bitrate ? ( bitrate => $bitrate ) : () ),
-		} );
-
-		Slim::Music::Info::setCurrentTitle( $url, $title, $client );
-		$master->currentPlaylistUpdateTime( Time::HiRes::time() );
-		Slim::Control::Request::notifyFromArray( $master, ['newmetadata'] );
-
-		$log->debug( 'metadata updated for ' . $client->name . ": $artist - $title" );
+		# `status` reflects the Spotify ACCOUNT's current session, while
+		# `is_active` tells us whether THIS specific Soloist instance is
+		# really the audio device. The effective state machine below keeps
+		# same-device track transitions from looking like a disconnect, but
+		# still stops immediately when the active device is lost.
+		_applyPlaybackTransition( $playerId, $b, $client, $url, $playback );
+		_updateIdleDisconnectState( $b, $playback );
+		next if _maybeRestartIdleBridge( $playerId, $b, $client, $playback );
+		_publishMetadataForPlayer( $client, $url, $state );
 	}
 }
 
