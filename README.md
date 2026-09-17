@@ -44,8 +44,10 @@ For EACH selected player (its own stable "slot", persisted across restarts):
               ProtocolHandler.pm rewrites soloist:// → http:// for the
               actual audio fetch, but Lyrion still asks IT for metadata
 
-  Plugin.pm polls that instance's own `soloist ctl ... now --json` every
-  500ms: writes title/artist/album/cover into that player's Lyrion metadata,
+  Plugin.pm keeps one local state loop per instance, consumes Soloist's
+  pushed `soloist ctl trace` events as the primary source of truth, and
+  does only an occasional `now --json` snapshot resync as a fallback:
+  writes title/artist/album/cover into that player's Lyrion metadata,
   and — the moment Spotify actually starts playing — auto-starts playback
   on that same player.
 ```

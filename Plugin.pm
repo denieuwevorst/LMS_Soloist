@@ -24,8 +24,9 @@ package Plugins::SpotifySoloist::Plugin;
 #     dedicated FIFO. Fully parameterized by env vars -- one script,
 #     launched once per selected player with different env each time.
 #   - This module: allocates a stable port/sink/data-dir "slot" per
-#     player, starts/stops one bridge per selected player, polls each
-#     instance's own `ctl ... now --json`, writes metadata straight into
+#     player, starts/stops one bridge per selected player, consumes each
+#     instance's pushed `soloist ctl ... trace` event stream (with an
+#     occasional snapshot resync fallback), writes metadata straight into
 #     that PLAYER's $client->master->pluginData('metadata'), and
 #     (edge-triggered on that instance's status transitioning into
 #     "playing") auto-starts playback on that same player.
@@ -38,10 +39,11 @@ use base qw(Slim::Plugin::OPMLBased);
 use File::Spec::Functions qw(catdir catfile);
 use File::Path qw(make_path);
 use File::Basename qw(dirname);
+use Fcntl qw(F_GETFL F_SETFL O_NONBLOCK);
 use JSON::XS qw(decode_json);
 use Proc::Background;
 use Time::HiRes ();
-use POSIX qw(dup2);
+use POSIX qw(dup2 WNOHANG);
 
 use Slim::Utils::Log;
 use Slim::Utils::Prefs;
@@ -62,8 +64,10 @@ my $log = Slim::Utils::Log->addLogCategory({
 
 my $prefs = preferences('plugin.spotifysoloist');
 
-use constant METADATA_POLL_INTERVAL => 0.5; # seconds
-use constant IDLE_RESTART_DELAY     => 1;   # seconds
+use constant STATE_LOOP_INTERVAL       => 0.5;  # seconds
+use constant IDLE_RESTART_DELAY        => 1;    # seconds
+use constant STATE_RESYNC_INTERVAL     => 30;   # seconds
+use constant TRACE_RESTART_DELAY       => 5;    # seconds
 use constant PLAYBACK_TRANSITION_GRACE => 1.5; # seconds
 use constant SOLOIST_BINARY_WARN_AFTER_DAYS => 80;
 use constant SOLOIST_DOWNLOADS_URL          => 'https://developer.spotify.com/documentation/soloist/reference/downloads-and-updates';
@@ -382,6 +386,7 @@ sub _stopBridge {
 	my $b = $bridges{$playerId} or return;
 
 	$log->info( ( $reason || 'stopping' ) . " soloist bridge for player $playerId" );
+	_closeTraceObserver( $b, "bridge stop for player $playerId" );
 	eval { $b->{proc}->die if $b->{proc}->alive; };
 
 	if ( my $client = Slim::Player::Client::getClient($playerId) ) {
@@ -444,11 +449,18 @@ sub _startBridge {
 
 	$bridges{$playerId} = {
 		%$cfg,
-		proc                => $proc,
-		lastStatus          => '',
-		notPlayingSince     => undef,
-		pausedSince         => undef,
-		idleDisconnectArmed => 0,
+		proc                  => $proc,
+		lastStatus            => '',
+		lastPlaybackState     => undef,
+		lastSnapshotAt        => 0,
+		lastTraceEventAt      => 0,
+		lastTraceStartAttempt => 0,
+		tracePid              => undef,
+		traceHandle           => undef,
+		traceBuffer           => '',
+		notPlayingSince       => undef,
+		pausedSince           => undef,
+		idleDisconnectArmed   => 0,
 	};
 }
 
@@ -650,11 +662,13 @@ sub selectedPlayerIds {
 }
 
 # ---------------------------------------------------------------------------
-# Metadata + auto-tune: poll EACH running instance's own `now --json`, push
-# metadata into that SAME player's pluginData, and -- edge-triggered on
-# that instance's status transitioning into "playing" -- start playback on
-# that same player. No searching for "whichever client is listening"
-# needed anymore: the player<->instance mapping is direct.
+# Metadata + auto-tune: keep a lightweight timer loop, but consume EACH
+# running instance's pushed `soloist ctl ... trace` event stream as the
+# primary state source instead of asking Soloist for a fresh `now --json`
+# snapshot twice a second. We still do an occasional snapshot resync as a
+# fallback in case the trace observer reconnects mid-playback or an event
+# is missed. No searching for "whichever client is listening" needed
+# anymore: the player<->instance mapping is direct.
 # ---------------------------------------------------------------------------
 
 sub _fetchNowPlaying {
@@ -688,6 +702,178 @@ sub _fetchNowPlaying {
 	close $fh;
 
 	return $json;
+}
+
+sub _closeTraceObserver {
+	my ( $b, $reason ) = @_;
+
+	my $pid = delete $b->{tracePid};
+	kill 'TERM', $pid if $pid;
+
+	if ( my $fh = delete $b->{traceHandle} ) {
+		close $fh;
+	}
+
+	if ($pid) {
+		waitpid( $pid, WNOHANG );
+	}
+
+	$b->{traceBuffer} = '';
+	$log->debug("closed Soloist trace observer: $reason") if $reason;
+}
+
+sub _startTraceObserver {
+	my ($b) = @_;
+	return if $b->{traceHandle};
+	return if time() - ( $b->{lastTraceStartAttempt} || 0 ) < TRACE_RESTART_DELAY;
+
+	$b->{lastTraceStartAttempt} = time();
+	my @cmd = ( $prefs->get('soloistBin'), 'ctl', '-w', "127.0.0.1:$b->{wsPort}", 'trace' );
+
+	my $pid = open( my $fh, '-|' );
+	if ( !defined $pid ) {
+		$log->warn("can't start soloist trace observer for port $b->{wsPort}: $!");
+		return;
+	}
+
+	if ( $pid == 0 ) {
+		if ( open( my $devnull, '>', '/dev/null' ) ) {
+			POSIX::dup2( fileno($devnull), fileno(STDERR) );
+		}
+		exec(@cmd) or exit(1);
+	}
+
+	my $flags = fcntl( $fh, F_GETFL, 0 );
+	if ( defined $flags ) {
+		fcntl( $fh, F_SETFL, $flags | O_NONBLOCK );
+	}
+
+	$b->{traceHandle} = $fh;
+	$b->{tracePid}    = $pid;
+	$b->{traceBuffer} = '';
+}
+
+sub _mergeTraceEventIntoState {
+	my ( $b, $event ) = @_;
+	my $type = $event->{type} || '';
+
+	if ( $type eq 'playback_state' ) {
+		my %snapshot = %$event;
+		delete $snapshot{type};
+		$b->{lastPlaybackState} = \%snapshot;
+		return 1;
+	}
+
+	my $state = $b->{lastPlaybackState} ||= {};
+
+	if ( $type eq 'auth_state' ) {
+		$state->{is_active} = $event->{is_active} ? 1 : 0 if exists $event->{is_active};
+		if ( exists $event->{logged_in} && !$event->{logged_in} ) {
+			$state->{status} = 'idle';
+			delete @{$state}{ qw(item context position available_actions options volume) };
+		}
+		return 1;
+	}
+	elsif ( $type eq 'track_changed' ) {
+		$state->{item} = $event->{item};
+		return 1;
+	}
+	elsif ( $type eq 'playback_changed' ) {
+		$state->{status} = $event->{status} if exists $event->{status};
+		return 1;
+	}
+	elsif ( $type eq 'volume_changed' ) {
+		$state->{volume} = $event->{volume} if exists $event->{volume};
+		return 1;
+	}
+	elsif ( $type eq 'device_changed' ) {
+		$state->{is_active} = $event->{is_active} ? 1 : 0 if exists $event->{is_active};
+		return 1;
+	}
+	elsif ( $type eq 'context_changed' ) {
+		$state->{context} = $event->{context};
+		return 1;
+	}
+	elsif ( $type eq 'options_changed' ) {
+		$state->{options} = $event->{options};
+		return 1;
+	}
+	elsif ( $type eq 'position_sync' ) {
+		$state->{position} = $event->{position};
+		return 1;
+	}
+
+	return 0;
+}
+
+sub _drainTraceObserver {
+	my ($b) = @_;
+	my $fh = $b->{traceHandle} or return 0;
+	my $updated = 0;
+
+	while (1) {
+		my $chunk = '';
+		my $bytes = sysread( $fh, $chunk, 8192 );
+
+		if ( !defined $bytes ) {
+			last if $!{EAGAIN} || $!{EWOULDBLOCK};
+			_closeTraceObserver( $b, "read error on port $b->{wsPort}: $!" );
+			last;
+		}
+
+		if ( $bytes == 0 ) {
+			_closeTraceObserver( $b, "eof on port $b->{wsPort}" );
+			last;
+		}
+
+		$b->{traceBuffer} .= $chunk;
+		while ( $b->{traceBuffer} =~ s/^(.*?\n)// ) {
+			my $line = $1;
+			$line =~ s/\r?\n\z//;
+			next unless length $line;
+
+			my ( $ts, $json ) = split( /\s+/, $line, 2 );
+			next unless defined $json && $ts =~ /^\d+$/;
+
+			my $event = eval { decode_json($json) };
+			next unless ref $event eq 'HASH';
+
+			$b->{lastTraceEventAt} = time();
+			$updated = 1 if _mergeTraceEventIntoState( $b, $event );
+		}
+	}
+
+	return $updated;
+}
+
+sub _refreshPlaybackStateSnapshot {
+	my ($b) = @_;
+	my $json = _fetchNowPlaying( $b->{wsPort} );
+	return unless $json;
+
+	my $state = eval { decode_json($json) };
+	return unless ref $state eq 'HASH';
+
+	$b->{lastPlaybackState} = $state;
+	$b->{lastSnapshotAt}    = time();
+	return 1;
+}
+
+sub _currentPlaybackStateForBridge {
+	my ($b) = @_;
+
+	_startTraceObserver($b) unless $b->{traceHandle};
+	_drainTraceObserver($b);
+
+	my $needsSnapshot = !$b->{lastPlaybackState}
+		|| ( !$b->{traceHandle} && time() - ( $b->{lastSnapshotAt} || 0 ) >= STATE_LOOP_INTERVAL )
+		|| time() - ( $b->{lastSnapshotAt} || 0 ) >= STATE_RESYNC_INTERVAL;
+
+	if ($needsSnapshot) {
+		_refreshPlaybackStateSnapshot($b);
+	}
+
+	return $b->{lastPlaybackState};
 }
 
 sub _clientIsOnOwnSoloistStream {
@@ -841,7 +1027,7 @@ sub _publishMetadataForPlayer {
 }
 
 sub pollMetadata {
-	Slim::Utils::Timers::setTimer( undef, time() + METADATA_POLL_INTERVAL, \&pollMetadata );
+	Slim::Utils::Timers::setTimer( undef, time() + STATE_LOOP_INTERVAL, \&pollMetadata );
 
 	for my $playerId ( keys %bridges ) {
 		my $b = $bridges{$playerId};
@@ -851,10 +1037,7 @@ sub pollMetadata {
 		my $url = streamUrlFor($b);
 		_clearMetadataForPlayer($client) unless _clientIsActivelyPlayingOwnSoloistStream( $client, $url );
 
-		my $json = _fetchNowPlaying( $b->{wsPort} );
-		next unless $json;
-
-		my $state = eval { decode_json($json) };
+		my $state = _currentPlaybackStateForBridge($b);
 		next unless ref $state eq 'HASH';
 		my $playback = _playbackStateForBridge( $state, $b );
 

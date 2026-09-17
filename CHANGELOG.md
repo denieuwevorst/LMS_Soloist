@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.3.44
+
+- Stop asking Soloist for a fresh `now --json` snapshot twice a second.
+  The plugin now consumes each bridge's pushed `soloist ctl trace` event
+  stream as the primary state source, with an occasional snapshot resync
+  fallback so state can recover cleanly after observer reconnects or a
+  missed event.
+- Replace fixed bridge-script sleeps with readiness checks: wait for
+  Soloist's `ws.port` file instead of always sleeping 2 seconds after
+  launch, verify the relay by a real local TCP connect instead of a
+  blind 1-second sleep, and tighten sink-routing checks from 2 seconds
+  to 0.3 seconds so real audio reaches the correct monitored sink
+  sooner on plain PulseAudio hosts.
+
 ## 0.3.43
 
 - Stop tracking packaged `SpotifySoloist-*.zip` artifacts in the Git
