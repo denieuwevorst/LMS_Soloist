@@ -319,6 +319,13 @@ fi
 #    earlier version of this bridge.) ffmpeg itself still gets its own
 #    restart loop for resilience against transient Pulse/relay hiccups --
 #    the FIFO means that doesn't disturb already-connected HTTP clients.
+#    For long-running playback, prefer PulseAudio's own capture clock over
+#    forced wallclock retimestamping: when ffmpeg re-times a live Pulse
+#    source against system wallclock and then continuously async-resamples
+#    to match it, tiny clock mismatches can accumulate into a growing
+#    offset versus Spotify's own app timeline even though the bridge keeps
+#    sounding smooth. Generating fresh PTS is still useful, but keep them
+#    anchored to the source stream rather than re-basing them to wallclock.
 # ---------------------------------------------------------------------------
 ffmpeg_supervisor() {
 	CUR_FFMPEG_PID=""
@@ -326,9 +333,8 @@ ffmpeg_supervisor() {
 
 	while kill -0 "$SOLOIST_PID" 2>/dev/null; do
 		"$FFMPEG_BIN" -nostdin -hide_banner -loglevel warning -y \
-			-fflags +genpts -use_wallclock_as_timestamps 1 \
+			-fflags +genpts \
 			-f pulse -i "${PIPEWIRE_SINK}.monitor" \
-			-af "aresample=async=1:min_hard_comp=0.100000:first_pts=0" \
 			"${ENCODE_ARGS[@]}" \
 			"${MUX_ARGS[@]}" \
 			-f "$MUX_FORMAT" \
