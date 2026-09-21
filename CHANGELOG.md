@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.3.45
+
+- Stop forcing the long-running PulseAudio monitor capture onto system
+  wallclock timing in ffmpeg. The bridge now keeps generated timestamps
+  anchored to PulseAudio's own source clock instead of combining
+  wallclock retimestamping with continuous async resampling, which was a
+  plausible cause of playback gradually drifting further behind
+  Spotify's own app timeline during very long sessions.
+
 ## 0.3.44
 
 - Stop asking Soloist for a fresh `now --json` snapshot twice a second.
