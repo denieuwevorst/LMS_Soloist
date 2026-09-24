@@ -1,5 +1,14 @@
 # Changelog
 
+## Unreleased
+
+- Reapply the configured Initial Soloist volume whenever a Soloist Connect
+  session becomes active again, not only when its bridge first starts. That
+  keeps reconnects from inheriting an old Spotify-side session volume.
+- If a player leaves its own Soloist stream for another Lyrion source,
+  disconnect and restart that Soloist bridge immediately so Spotify does
+  not continue playing in the background on a no-longer-selected source.
+
 ## 0.3.45
 
 - Stop forcing the long-running PulseAudio monitor capture onto system

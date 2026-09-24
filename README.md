@@ -63,8 +63,13 @@ For EACH selected player (its own stable "slot", persisted across restarts):
 - Lyrion controls: while a player is on its own Soloist stream, its play,
   pause, stop, next, and previous controls are forwarded to that Spotify
   Connect session. **Initial Soloist volume** sets the new session's level
-  (100% by default); volume thereafter remains controlled locally by Lyrion.
+  (100% by default), and the plugin reapplies that configured level each
+  time the Soloist Connect session becomes active again. Volume thereafter
+  remains controlled locally by Lyrion.
   Controls for other Lyrion sources are not forwarded.
+- Switching that Squeezebox player to another Lyrion source (radio, local
+  files, etc.) immediately disconnects its Soloist session and restarts the
+  bridge cleanly, so Spotify does not keep playing in the background.
 - Idle disconnect: after 30 seconds paused by default, Soloist disconnects
   from Spotify and clears its cached artwork before restarting the selected
   player's Connect device. Set **Disconnect after pause** to `0` to keep it
