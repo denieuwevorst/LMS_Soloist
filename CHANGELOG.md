@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.3.46
 
 - Reapply the configured Initial Soloist volume whenever a Soloist Connect
   session becomes active again, not only when its bridge first starts. That
