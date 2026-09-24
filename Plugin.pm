@@ -81,7 +81,7 @@ $prefs->init({
 	relayPortBase   => 9077,              # each player gets +<slot>
 	format          => 'mp3',             # mp3 | flac | pcm
 	bitrate         => '320k',            # only used when format = mp3
-	initialVolume   => 100,               # applied once when a bridge starts
+	initialVolume   => 100,               # applied at bridge start and when the Soloist device reconnects
 	deviceNameSuffix => ' (Soloist)',     # appended to each player's own name
 	apiKey          => '',
 	relayBind       => '0.0.0.0',
@@ -568,6 +568,20 @@ sub _runSoloistCtl {
 	return 1;
 }
 
+sub _applyConfiguredSoloistVolume {
+	my ( $b, $reason ) = @_;
+	my $volume = _initialVolume();
+	my $why = $reason ? " ($reason)" : '';
+
+	if ( _runSoloistCtl( $b, 'volume', $volume ) ) {
+		$log->info("set Soloist session volume to ${volume}%$why");
+		return 1;
+	}
+
+	$log->warn("couldn't set Soloist session volume to ${volume}%$why");
+	return;
+}
+
 sub _forwardLyrionTransport {
 	my ($request) = @_;
 	my $client = $request->client or return;
@@ -906,6 +920,16 @@ sub _playbackStateForBridge {
 	};
 }
 
+sub _maybeApplyConfiguredVolumeOnConnect {
+	my ( $b, $playback ) = @_;
+
+	if ( $playback->{isActiveDevice} && !( $b->{wasActiveDevice} || 0 ) ) {
+		_applyConfiguredSoloistVolume( $b, 'Spotify Connect session became active' );
+	}
+
+	$b->{wasActiveDevice} = $playback->{isActiveDevice} ? 1 : 0;
+}
+
 sub _applyPlaybackTransition {
 	my ( $playerId, $b, $client, $url, $playback ) = @_;
 
@@ -969,6 +993,24 @@ sub _maybeRestartIdleBridge {
 	$log->info( 'disconnecting ' . $client->name . " after $idleDisconnectSeconds seconds paused" );
 	stopBridgeForPlayer($playerId);
 	$log->debug("scheduling Soloist bridge restart for player $playerId");
+	Slim::Utils::Timers::setTimer( undef, time() + IDLE_RESTART_DELAY, sub {
+		restartBridgeForPlayer($playerId);
+	} );
+	return 1;
+}
+
+sub _maybeDisconnectBridgeForExternalSource {
+	my ( $playerId, $b, $client, $url, $playback ) = @_;
+	my $onOwnStream = _clientIsOnOwnSoloistStream( $client, $url ) ? 1 : 0;
+	my $leftOwnStream = ( $b->{lastClientOnOwnStream} || 0 ) && !$onOwnStream;
+	$b->{lastClientOnOwnStream} = $onOwnStream;
+
+	return 0 unless $leftOwnStream;
+	return 0 unless $playback->{isActiveDevice};
+	return 0 if ( $b->{suppressLyrionTransportUntil} || 0 ) >= time();
+
+	$log->info( 'disconnecting ' . $client->name . ' from Spotify Soloist because it switched away to another Lyrion source' );
+	stopBridgeForPlayer($playerId);
 	Slim::Utils::Timers::setTimer( undef, time() + IDLE_RESTART_DELAY, sub {
 		restartBridgeForPlayer($playerId);
 	} );
@@ -1046,6 +1088,8 @@ sub pollMetadata {
 		# really the audio device. The effective state machine below keeps
 		# same-device track transitions from looking like a disconnect, but
 		# still stops immediately when the active device is lost.
+		_maybeApplyConfiguredVolumeOnConnect( $b, $playback );
+		next if _maybeDisconnectBridgeForExternalSource( $playerId, $b, $client, $url, $playback );
 		_applyPlaybackTransition( $playerId, $b, $client, $url, $playback );
 		_updateIdleDisconnectState( $b, $playback );
 		next if _maybeRestartIdleBridge( $playerId, $b, $client, $playback );

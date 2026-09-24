@@ -172,8 +172,9 @@ else
 	log "soloist exited immediately or wasn't ready within 2s -- check API key / binary path / glibc compatibility"
 fi
 
-# Set the Connect session's baseline once at startup. Lyrion's mixer volume
-# remains local and is never forwarded after this initial Soloist setting.
+# Set the Connect session's baseline at startup. Plugin.pm also reapplies
+# that configured level whenever this Soloist device later becomes active
+# again, so reconnects don't inherit an old Spotify-side session volume.
 if "$SOLOIST_BIN" ctl -w "$WS_ENDPOINT" volume "$SOLOIST_INITIAL_VOLUME" >/dev/null 2>&1; then
 	log "set Soloist session volume to ${SOLOIST_INITIAL_VOLUME}%"
 else
