@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.3.47
+
+- If LMS autostart runs before all previously selected players have fully
+  registered after a reboot, keep retrying those missing-player bridge
+  starts instead of logging "no such player" once and giving up.
+- If a selected player goes offline after its Soloist bridge already
+  started, stop that bridge after a short grace period and keep retrying
+  until the player comes back.
+
 ## 0.3.46
 
 - Reapply the configured Initial Soloist volume whenever a Soloist Connect

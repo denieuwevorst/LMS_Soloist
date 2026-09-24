@@ -68,6 +68,8 @@ use constant STATE_LOOP_INTERVAL       => 0.5;  # seconds
 use constant IDLE_RESTART_DELAY        => 1;    # seconds
 use constant STATE_RESYNC_INTERVAL     => 30;   # seconds
 use constant TRACE_RESTART_DELAY       => 5;    # seconds
+use constant BRIDGE_START_RETRY_DELAY  => 5;    # seconds
+use constant PLAYER_OFFLINE_STOP_DELAY => 10;   # seconds
 use constant PLAYBACK_TRANSITION_GRACE => 1.5; # seconds
 use constant SOLOIST_BINARY_WARN_AFTER_DAYS => 80;
 use constant SOLOIST_DOWNLOADS_URL          => 'https://developer.spotify.com/documentation/soloist/reference/downloads-and-updates';
@@ -99,6 +101,7 @@ my $originalPauseCommand;
 my $originalPlayCommand;
 my $originalStopCommand;
 my $soloistBinaryAgeWarningLogged = 0;
+my %pendingBridgeStartRetries;
 my %FORMAT_SPECS = (
 	mp3 => {
 		wireExt       => 'mp3',
@@ -381,6 +384,39 @@ sub _bridgeExists {
 	return exists $bridges{$playerId} ? 1 : 0;
 }
 
+sub _cancelBridgeStartRetry {
+	my ($playerId) = @_;
+	delete $pendingBridgeStartRetries{$playerId};
+}
+
+sub _retryStartBridgeForPlayer {
+	my ( $playerId, $expectedWhen ) = @_;
+	return unless ( $pendingBridgeStartRetries{$playerId} || 0 ) == ( $expectedWhen || 0 );
+
+	delete $pendingBridgeStartRetries{$playerId};
+	return unless _isSelectedPlayer($playerId);
+
+	$log->info("retrying delayed Soloist bridge start for player $playerId");
+	_ensureBridgeState( $playerId, shouldRun => 1 );
+}
+
+sub _scheduleBridgeStartRetry {
+	my ( $playerId, $reason ) = @_;
+	return unless _isSelectedPlayer($playerId);
+	return if $pendingBridgeStartRetries{$playerId};
+
+	my $when = time() + BRIDGE_START_RETRY_DELAY;
+	$pendingBridgeStartRetries{$playerId} = $when;
+	$log->info(
+		"delaying Soloist bridge start for player $playerId"
+		. ( $reason ? " ($reason)" : '' )
+		. '; retrying when LMS finishes registering that player'
+	);
+	Slim::Utils::Timers::setTimer( undef, $when, sub {
+		_retryStartBridgeForPlayer( $playerId, $when );
+	} );
+}
+
 sub _stopBridge {
 	my ( $playerId, $reason ) = @_;
 	my $b = $bridges{$playerId} or return;
@@ -401,9 +437,10 @@ sub _startBridge {
 
 	my $client = Slim::Player::Client::getClient($playerId);
 	unless ($client) {
-		$log->warn("can't start bridge -- no such player: $playerId");
+		_scheduleBridgeStartRetry( $playerId, 'player not available yet' );
 		return;
 	}
+	_cancelBridgeStartRetry($playerId);
 
 	my $cfg = _configFor( $playerId, $client->name );
 	_maybeWarnAboutSoloistBinaryAge();
@@ -458,6 +495,7 @@ sub _startBridge {
 		tracePid              => undef,
 		traceHandle           => undef,
 		traceBuffer           => '',
+		missingClientSince    => undef,
 		notPlayingSince       => undef,
 		pausedSince           => undef,
 		idleDisconnectArmed   => 0,
@@ -486,6 +524,7 @@ sub _ensureBridgeState {
 		return _startBridge($playerId);
 	}
 
+	_cancelBridgeStartRetry($playerId);
 	_stopBridge( $playerId, $args{stopReason} ) if _bridgeExists($playerId);
 	return;
 }
@@ -1068,6 +1107,23 @@ sub _publishMetadataForPlayer {
 	$log->debug( 'metadata updated for ' . $client->name . ": $artist - $title" );
 }
 
+sub _handleMissingPlayerClient {
+	my ( $playerId, $b ) = @_;
+
+	$b->{missingClientSince} //= time();
+	return 0 if time() - $b->{missingClientSince} < PLAYER_OFFLINE_STOP_DELAY;
+
+	$log->info(
+		"stopping Soloist bridge for player $playerId after "
+		. PLAYER_OFFLINE_STOP_DELAY
+		. " seconds offline; LMS will keep retrying until that player returns"
+	);
+
+	_stopBridge( $playerId, 'player went offline' );
+	_scheduleBridgeStartRetry( $playerId, 'player offline' );
+	return 1;
+}
+
 sub pollMetadata {
 	Slim::Utils::Timers::setTimer( undef, time() + STATE_LOOP_INTERVAL, \&pollMetadata );
 
@@ -1075,7 +1131,13 @@ sub pollMetadata {
 		my $b = $bridges{$playerId};
 		next unless $b->{proc} && $b->{proc}->alive;
 
-		my $client = Slim::Player::Client::getClient($playerId) or next;
+		my $client = Slim::Player::Client::getClient($playerId);
+		unless ($client) {
+			_handleMissingPlayerClient( $playerId, $b );
+			next;
+		}
+
+		$b->{missingClientSince} = undef;
 		my $url = streamUrlFor($b);
 		_clearMetadataForPlayer($client) unless _clientIsActivelyPlayingOwnSoloistStream( $client, $url );
 

@@ -56,6 +56,14 @@ For EACH selected player (its own stable "slot", persisted across restarts):
 
 - One Spotify Connect device per selected Squeezebox player, shown
   separately in the Spotify app.
+- Autostart: if LMS starts before all previously selected network players
+  have fully re-registered after a reboot, the plugin keeps retrying those
+  delayed bridge starts instead of giving up after one early "no such
+  player" race.
+- Offline players: if a selected player disappears from LMS after its
+  bridge is already running, the plugin gives that outage a short grace
+  period, then stops the Soloist bridge and keeps retrying until the
+  player registers again.
 - Auto-tune: the corresponding Lyrion player starts playing automatically
   the moment Spotify actually starts sending audio, then stops and clears
   the Soloist stream when playback is paused in Spotify — no manual "select
