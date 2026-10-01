@@ -26,12 +26,12 @@ For EACH selected player (its own stable "slot", persisted across restarts):
 
   Spotify app ──(Connect: "<Player Name> (Soloist)")──▶ soloist
                                                             │
-                                             its own PipeWire/PulseAudio
-                                             null-sink
+                                       backend-selected audio target
+                           (Pulse/PipeWire null-sink OR ALSA/apulse loopback)
                                                             │
-                        Bin/soloist-bridge.sh: ffmpeg captures that sink's
-                        monitor continuously, writes into its own named
-                        pipe (FIFO)
+                    Bin/soloist-bridge.sh: ffmpeg captures that backend's
+                    per-player monitor/input continuously, writes into its
+                    own named pipe (FIFO)
                                                             │
                         Bin/audio-relay.py: small persistent multi-client
                         HTTP server, reads that FIFO, broadcasts to any
@@ -98,7 +98,9 @@ For EACH selected player (its own stable "slot", persisted across restarts):
 - Stream details: Lyrion metadata includes the configured format and, for
   MP3, bitrate. The source type is displayed as, for example, `Spotify
   Soloist (MP3 320k)`, `Spotify Soloist (FLAC)`, or `Spotify Soloist
-  (WAV)` when the low-latency PCM/WAV relay mode is selected.
+  (WAV)` when the low-latency PCM/WAV relay mode is selected. Format can
+  now be left on a global default or overridden per player, which is
+  useful when some rooms need a lower-bitrate format for weaker Wi-Fi.
 - Soloist streams now ask Lyrion for a slightly larger **startup**
   prebuffer than a generic remote stream, scaled by format/bitrate. This
   helps absorb brief starvation around track changes without changing the
@@ -112,7 +114,10 @@ For EACH selected player (its own stable "slot", persisted across restarts):
   bitrate.
 - No Icecast, no extra system service — a small embedded Python relay
   handles multiple simultaneous listeners per player.
-- Works with both real PipeWire and plain PulseAudio-only hosts.
+- Default backend preserves the current Pulse/PipeWire null-sink bridge.
+- Optional ALSA/apulse backend removes the hard requirement for a running
+  PulseAudio/PipeWire stack on the host, as long as you provide an
+  apulse-style Soloist wrapper and matching ALSA loopback devices.
 
 ## Prerequisites
 
@@ -127,19 +132,30 @@ For EACH selected player (its own stable "slot", persisted across restarts):
   plugin does **not** auto-download replacements, but it now warns in its
   settings page and server log once the configured executable file is
   about 80 days old so you can replace it manually before expiry.
-- The Debian packages below, and PulseAudio actually running and
-  reachable by Lyrion's own service account.
+- `ffmpeg` and `python3`, plus one of these audio backend setups:
+  - **Default:** a reachable PulseAudio/PipeWire stack for the current
+    null-sink backend.
+  - **Optional no-Pulse path:** an apulse-style wrapper around Soloist and
+    an ALSA loopback device layout the plugin can map per player.
 - Optional: if your host's glibc is too old for the prebuilt Soloist
   binary, see [glibc compatibility](#if-your-hosts-glibc-is-too-old) below.
 
-## Debian packages
+## Backend choices
+
+### 1. PipeWire/PulseAudio backend (default)
+
+This is the existing bridge design. Each selected player gets its own
+virtual null-sink; Soloist plays into that sink and ffmpeg captures the
+matching monitor.
+
+Required packages:
 
 ```bash
 sudo apt install -y pulseaudio pulseaudio-utils ffmpeg python3
 ```
 
 - **`pulseaudio` / `pulseaudio-utils`** — Soloist needs PipeWire or
-  PulseAudio for audio output; there's no raw-ALSA fallback. Minimal
+  PulseAudio for this backend's virtual sinks and capture path. Minimal
   images (DietPi and similar) often have neither installed by default.
   Installing the package alone isn't enough on a headless box — it also
   needs to actually be *running* and reachable by whichever user Lyrion
@@ -152,6 +168,41 @@ sudo apt install -y pulseaudio pulseaudio-utils ffmpeg python3
   (`Bin/audio-relay.py`) that gets audio to Lyrion; almost always already
   installed (`python3 --version` to check).
 
+### 2. ALSA/apulse backend (optional, no Pulse server required)
+
+Use this only if you specifically want to run without a host PulseAudio or
+PipeWire daemon. Soloist still does **not** have native ALSA output, so
+the plugin expects your configured **Soloist binary path** to be an
+apulse-style wrapper (or equivalent launcher) that makes Soloist's Pulse
+client API calls land on ALSA instead.
+
+Required packages:
+
+```bash
+sudo apt install -y alsa-utils ffmpeg python3
+```
+
+Typical setup:
+
+1. Load or persist the ALSA loopback module:
+   ```bash
+   sudo modprobe snd-aloop
+   ```
+2. Point the plugin's **Audio backend** setting at **ALSA/apulse
+   loopback**.
+3. Point **Soloist binary path** at a wrapper that launches Soloist under
+   `apulse` (or an equivalent shim).
+4. Leave **ALSA loopback device prefix** at `hw:Loopback` unless your
+   loopback card uses a different name.
+
+With the default prefix, player slot `N` maps to:
+
+- Soloist playback: `hw:Loopback,0,N`
+- ffmpeg capture: `hw:Loopback,1,N`
+
+That means your ALSA loopback setup must provide enough substreams for the
+number of selected players you plan to run in parallel.
+
 Two Perl modules the plugin's code needs are usually already bundled with
 Lyrion itself, but if the plugin fails to load with a
 `Can't locate .../XS.pm` or `Can't locate Proc/Background.pm` error in
@@ -161,10 +212,11 @@ Lyrion's server log, install them directly:
 sudo apt install -y libjson-xs-perl libproc-background-perl
 ```
 
-## Debian helper script
+## Debian helper script (Pulse backend only)
 
-To install the Debian-side prerequisites and grant the Lyrion service
-user the needed audio permissions automatically, run:
+To install the Debian-side prerequisites for the **default
+PipeWire/PulseAudio backend** and grant the Lyrion service user the needed
+audio permissions automatically, run:
 
 ```bash
 curl -fsSL -o setup-debian-prereqs.sh \
@@ -174,8 +226,7 @@ sudo ./setup-debian-prereqs.sh
 ```
 
 What it does:
-- installs the required Debian packages for the current
-  Pulse/PipeWire-based bridge design
+- installs the required Debian packages for the Pulse/PipeWire backend
 - detects the Lyrion systemd service and its runtime user
 - starts a simple system-mode PulseAudio service **only if** no
   Pulse-compatible server is already reachable
@@ -186,16 +237,18 @@ What it does:
 Use `sudo ./setup-debian-prereqs.sh --lyrion-user <user>` if your Lyrion
 service user can't be auto-detected, or `--skip-apt` if you already
 installed the packages yourself and only want the permissions/service
-setup.
+setup. If you plan to use the ALSA/apulse backend instead, skip this
+helper entirely unless you still want it for some other Pulse-based host
+audio setup.
 
 The helper intentionally does **not** download the Soloist binary or set
 your API key; those stay manual because they're tied to your architecture
 and Spotify developer account.
-## Install:
-          
-   https://raw.githubusercontent.com/denieuwevorst/lms-spotify-soloist/main/repo.xml
-   
-  1.In Lyrion: **Settings → Plugins → Additional Plugin Repositories**,
+## Install
+
+https://raw.githubusercontent.com/denieuwevorst/lms-spotify-soloist/main/repo.xml
+
+1. In Lyrion: **Settings → Plugins → Additional Plugin Repositories**,
    paste that raw URL, click Apply, refresh the plugin list. "Spotify
    Soloist (Connect)" should now appear as an installable third-party
    plugin.
@@ -215,13 +268,13 @@ and Spotify developer account.
 ## Setting up PulseAudio (headless hosts)
 
 Minimal images like DietPi often ship with neither PipeWire nor
-PulseAudio running. Soloist requires one of them for audio output — there
-is no raw-ALSA fallback. On a headless box, run PulseAudio in **system
-mode** (there's no desktop login session to auto-spawn a per-user one).
-The recommended path is the [Debian helper script](#debian-helper-script)
-above. If you want to do it manually instead, this assumes
+PulseAudio running. If you stay on the default backend, run PulseAudio in
+**system mode** (there's no desktop login session to auto-spawn a per-user
+one). The recommended path is the
+[Debian helper script](#debian-helper-script-pulse-backend-only) above. If
+you want to do it manually instead, this assumes
 `pulseaudio`/`pulseaudio-utils` are already installed from the
-[Debian packages](#debian-packages) step above:
+PipeWire/PulseAudio backend package step above:
 
 ```bash
 sudo tee /etc/systemd/system/pulseaudio.service > /dev/null << 'EOF'
@@ -284,7 +337,24 @@ exec distrobox enter soloist-box -- soloist "$@"
 ```
 
 `chmod +x` that wrapper and point the plugin at it. Distrobox forwards the
-PipeWire/PulseAudio socket automatically — nothing else needs to change.
+PipeWire/PulseAudio socket automatically — nothing else needs to change if
+you're staying on the default backend.
+
+## ALSA/apulse wrapper example
+
+If you want the no-Pulse backend, the configured Soloist path should
+usually be a wrapper rather than the raw `soloist` binary itself. The
+plugin sets `APULSE_PLAYBACK_DEVICE` per player instance, so the wrapper
+can stay generic:
+
+```bash
+#!/usr/bin/env bash
+exec apulse /usr/local/bin/soloist "$@"
+```
+
+Point **Soloist binary path** at that wrapper, switch **Audio backend** to
+**ALSA/apulse loopback**, and keep the default `hw:Loopback` device prefix
+unless your loopback card is named differently.
 
 ## Format: mp3, flac, or PCM/WAV
 
@@ -304,9 +374,13 @@ bandwidth matters.
 | `flac` | Players with FLAC support | Lossless bridge encoding |
 | `pcm` | Players with WAV/PCM support | Lowest encoder latency; highest bandwidth |
 
-Changing the format setting does not take effect on an already-running
-instance. Toggle that player checkbox off and back on (or restart Lyrion)
-after changing it.
+The **Default stream format** setting is used by any player left on
+**Default** in the Players table. You can override the format per player
+there, which is useful if one device needs MP3 for compatibility or a
+weaker wireless link while another can use FLAC or WAV.
+
+Saving a format change for a currently selected player restarts only that
+player's Soloist bridge so the new relay format takes effect immediately.
 
 ## Known limitations
 
@@ -335,10 +409,10 @@ after changing it.
   instance. Pausing Spotify stops and clears that player's Soloist stream;
   if the player is manually stopped afterward, it won't re-tune until
   Spotify-side playback stops and restarts.
-- Player slot numbers (and their ports/sink names) are assigned once and
-  persist even after a player is later unchecked, so re-checking it later
-  doesn't disturb any other player's assignment — but slot numbers only
-  grow over time, never get reused.
+- Player slot numbers (and their ports/backend device names) are assigned
+  once and persist even after a player is later unchecked, so re-checking
+  it later doesn't disturb any other player's assignment — but slot
+  numbers only grow over time, never get reused.
 - Resource usage scales with player count: each checked player runs its
   own `soloist` + `ffmpeg` + relay process trio. Fine for a handful of
   rooms; think twice before checking a dozen players on a small Pi.
@@ -349,8 +423,23 @@ Symptoms are listed in the order they tend to actually occur when setting
 this up.
 
 **`pactl not found` / `pactl found but can't reach a running server`**
-No PulseAudio/PipeWire-pulse server is reachable. See
+No PulseAudio/PipeWire-pulse server is reachable **for the default
+backend**. Either switch to the ALSA/apulse backend or see
 [Setting up PulseAudio](#setting-up-pulseaudio-headless-hosts) above.
+
+**ALSA/apulse backend starts but never produces audio**
+- Confirm your configured **Soloist binary path** is actually a wrapper
+  that launches under `apulse` (or an equivalent Pulse-on-ALSA shim), not
+  the raw Soloist binary.
+- Confirm the ALSA loopback module is loaded and that the mapped devices
+  exist for the affected player slot:
+  ```bash
+  aplay -L | grep -i Loopback
+  arecord -L | grep -i Loopback
+  ```
+- Check that player's `bridge.log` for the exact playback/capture devices
+  it tried to use. The ALSA backend logs both `APULSE_PLAYBACK_DEVICE` and
+  the ffmpeg capture device at startup.
 
 **Bridge starts, but the device never shows up in the Spotify app**
 - Check that player's status in the plugin's settings page — "running" or
@@ -389,8 +478,8 @@ sound** — work through these in order:
    sink at all. Anything in the **-20dB to -5dB range is normal** — audio
    is flowing correctly, and the remaining problem is specific to how
    Lyrion hands the stream to that particular player.
-3. If it's silence: check whether Soloist's actual PulseAudio stream is
-   attached to the right sink —
+3. If it's silence on the **Pulse/PipeWire backend**: check whether
+   Soloist's actual PulseAudio stream is attached to the right sink —
    ```bash
    pactl list sink-inputs   # look for application.process.binary = "soloist"
    pactl list short sinks
@@ -402,7 +491,14 @@ sound** — work through these in order:
    `routing soloist's PulseAudio stream ...` line; its absence, well after
    you've hit play in the Spotify app, points at a deeper problem worth
    filing an issue for.
-4. Also check for `Failed to create secure directory (.../.config/pulse)`
+4. If it's silence on the **ALSA/apulse backend**: confirm the mapped
+   capture device for that slot is actually receiving audio:
+   ```bash
+   ffmpeg -f alsa -i hw:Loopback,1,<slot> -t 5 -af volumedetect -f null - 2>&1 | grep -i "mean_volume\|max_volume"
+   ```
+   Substitute your configured device prefix if you changed it from
+   `hw:Loopback`.
+5. Also check for `Failed to create secure directory (.../.config/pulse)`
    / `Failed to load cookie file` in that same log — this means the
    service account's `$HOME` isn't writable, preventing Soloist from
    completing PulseAudio's cookie-based authentication. The bridge script

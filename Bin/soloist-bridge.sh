@@ -4,31 +4,37 @@
 # supervised) by Plugin.pm via Proc::Background, configured entirely
 # through environment variables it sets.
 #
-# Audio path: PipeWire/PulseAudio null-sink -> ffmpeg (continuous capture +
-# encode) -> named pipe -> audio-relay.py (persistent multi-client HTTP
-# broadcaster, plays the same role Icecast played before, embedded instead
-# of a separate service -- see Bin/audio-relay.py for why a FIFO).
+# Audio path:
+#   - Pulse backend: PipeWire/PulseAudio null-sink -> ffmpeg capture of that
+#     sink's monitor -> named pipe -> audio-relay.py
+#   - ALSA backend: apulse/ALSA playback device -> ffmpeg capture from the
+#     matching ALSA loopback device -> named pipe -> audio-relay.py
+# The relay role is identical either way and replaces Icecast; see
+# Bin/audio-relay.py for why the relay reads from a FIFO.
 #
 # Metadata is NOT handled here -- Plugin.pm consumes Soloist's pushed
 # `ctl trace` event stream (with an occasional snapshot resync fallback)
 # and writes into Lyrion's native metadata mechanism.
 #
-# Required env vars: SOLOIST_BIN FFMPEG_BIN PIPEWIRE_SINK DEVICE_NAME
-#                     SOLOIST_API_KEY
+# Required env vars: SOLOIST_BIN FFMPEG_BIN DEVICE_NAME SOLOIST_API_KEY
 # Optional (defaulted below): FORMAT BITRATE WS_PORT SOLOIST_DATA_DIR
 #                     SOLOIST_CACHE_DIR RELAY_PORT RELAY_BIND FIFO_PATH
-#                     PYTHON_BIN
+#                     PYTHON_BIN SOLOIST_AUDIO_BACKEND PIPEWIRE_SINK
+#                     ALSA_PLAYBACK_DEVICE ALSA_CAPTURE_DEVICE
 
 set -u
 
 : "${SOLOIST_BIN:?SOLOIST_BIN is required}"
 : "${FFMPEG_BIN:?FFMPEG_BIN is required}"
-: "${PIPEWIRE_SINK:?PIPEWIRE_SINK is required}"
 : "${DEVICE_NAME:?DEVICE_NAME is required}"
 : "${SOLOIST_API_KEY:?SOLOIST_API_KEY is required (plugin settings -> Soloist API key)}"
 
 FORMAT="${FORMAT:-mp3}"
 BITRATE="${BITRATE:-320k}"
+SOLOIST_AUDIO_BACKEND="${SOLOIST_AUDIO_BACKEND:-pulse}"
+PIPEWIRE_SINK="${PIPEWIRE_SINK:-}"
+ALSA_PLAYBACK_DEVICE="${ALSA_PLAYBACK_DEVICE:-}"
+ALSA_CAPTURE_DEVICE="${ALSA_CAPTURE_DEVICE:-}"
 SOLOIST_INITIAL_VOLUME="${SOLOIST_INITIAL_VOLUME:-100}"
 WS_PORT="${WS_PORT:-9091}"
 SOLOIST_DATA_DIR="${SOLOIST_DATA_DIR:-$HOME/.local/share/soloist-lyrion}"
@@ -96,57 +102,93 @@ if ! command -v "$PYTHON_BIN" >/dev/null 2>&1; then
 	exit 1
 fi
 
+case "$SOLOIST_AUDIO_BACKEND" in
+	pulse)
+		: "${PIPEWIRE_SINK:?PIPEWIRE_SINK is required when SOLOIST_AUDIO_BACKEND=pulse}"
+		;;
+	alsa)
+		: "${ALSA_PLAYBACK_DEVICE:?ALSA_PLAYBACK_DEVICE is required when SOLOIST_AUDIO_BACKEND=alsa}"
+		: "${ALSA_CAPTURE_DEVICE:?ALSA_CAPTURE_DEVICE is required when SOLOIST_AUDIO_BACKEND=alsa}"
+		;;
+	*)
+		log "ERROR: unsupported SOLOIST_AUDIO_BACKEND '$SOLOIST_AUDIO_BACKEND' (expected pulse or alsa)"
+		exit 1
+		;;
+esac
+
 # ---------------------------------------------------------------------------
-# 1. PipeWire/PulseAudio null-sink (idempotent)
+# 1. Backend-specific audio setup
 # ---------------------------------------------------------------------------
-if ! command -v pactl >/dev/null 2>&1; then
-	log "ERROR: pactl not found -- no PulseAudio/PipeWire-pulse server available."
-	log "Install one, e.g.: sudo apt install -y pulseaudio pulseaudio-utils"
-	exit 1
-fi
+CAPTURE_INPUT_ARGS=()
+SOLOIST_AUDIO_TARGET_DESC=""
 
-if ! pactl info >/dev/null 2>&1; then
-	log "ERROR: pactl found but can't reach a running server."
-	exit 1
-fi
+if [ "$SOLOIST_AUDIO_BACKEND" = "pulse" ]; then
+	if ! command -v pactl >/dev/null 2>&1; then
+		log "ERROR: pactl not found -- no PulseAudio/PipeWire-pulse server available."
+		log "Install one, e.g.: sudo apt install -y pulseaudio pulseaudio-utils"
+		exit 1
+	fi
 
-if ! pactl list short sinks 2>/dev/null | grep -q "\b${PIPEWIRE_SINK}\b"; then
-	log "creating null-sink '${PIPEWIRE_SINK}'"
-	pactl load-module module-null-sink \
-		sink_name="${PIPEWIRE_SINK}" \
-		sink_properties=device.description="${PIPEWIRE_SINK}" \
-		>/dev/null 2>&1
-fi
+	if ! pactl info >/dev/null 2>&1; then
+		log "ERROR: pactl found but can't reach a running server."
+		exit 1
+	fi
 
-# On a plain-PulseAudio host (no real PipeWire daemon), Soloist's own docs
-# say --pipewire-device is silently ignored and it falls back to whatever
-# PulseAudio's default sink is. We can't just set our sink as PulseAudio's
-# default here: with multiple per-player instances possibly starting
-# concurrently, "default sink" is one global value they'd all race over,
-# and whichever instance's bridge script runs last would win for everyone
-# else too. Instead, wait for Soloist's own PulseAudio stream to appear
-# and move it to our sink explicitly, by matching its process ID.
+	if ! pactl list short sinks 2>/dev/null | grep -q "\b${PIPEWIRE_SINK}\b"; then
+		log "creating null-sink '${PIPEWIRE_SINK}'"
+		pactl load-module module-null-sink \
+			sink_name="${PIPEWIRE_SINK}" \
+			sink_properties=device.description="${PIPEWIRE_SINK}" \
+			>/dev/null 2>&1
+	fi
 
-# Keep the sink continuously "warm" so it never suspends mid-capture.
-if command -v pacat >/dev/null 2>&1; then
-	pacat --playback -d "${PIPEWIRE_SINK}" --rate=44100 --channels=2 --format=s16le < /dev/zero &
-	SILENCE_PID=$!
-	log "keeping '${PIPEWIRE_SINK}' warm with silence (pid $SILENCE_PID)"
+	# On a plain-PulseAudio host (no real PipeWire daemon), Soloist's own docs
+	# say --pipewire-device is silently ignored and it falls back to whatever
+	# PulseAudio's default sink is. We can't just set our sink as PulseAudio's
+	# default here: with multiple per-player instances possibly starting
+	# concurrently, "default sink" is one global value they'd all race over,
+	# and whichever instance's bridge script runs last would win for everyone
+	# else too. Instead, wait for Soloist's own PulseAudio stream to appear
+	# and move it to our sink explicitly, by matching its process ID.
+
+	# Keep the sink continuously "warm" so it never suspends mid-capture.
+	if command -v pacat >/dev/null 2>&1; then
+		pacat --playback -d "${PIPEWIRE_SINK}" --rate=44100 --channels=2 --format=s16le < /dev/zero &
+		SILENCE_PID=$!
+		log "keeping '${PIPEWIRE_SINK}' warm with silence (pid $SILENCE_PID)"
+	else
+		log "WARNING: pacat not found -- sink may suspend when idle"
+	fi
+
+	CAPTURE_INPUT_ARGS=(-f pulse -i "${PIPEWIRE_SINK}.monitor")
+	SOLOIST_AUDIO_TARGET_DESC="Pulse/PipeWire sink ${PIPEWIRE_SINK}"
 else
-	log "WARNING: pacat not found -- sink may suspend when idle"
+	# The ALSA path is intentionally opt-in: Soloist still has no native ALSA
+	# flag, so this mode expects the configured soloist binary path to be an
+	# apulse-style wrapper (or equivalent) that honors APULSE_PLAYBACK_DEVICE.
+	export APULSE_PLAYBACK_DEVICE="${APULSE_PLAYBACK_DEVICE:-$ALSA_PLAYBACK_DEVICE}"
+	CAPTURE_INPUT_ARGS=(-f alsa -ac 2 -ar 44100 -i "${ALSA_CAPTURE_DEVICE}")
+	SOLOIST_AUDIO_TARGET_DESC="ALSA playback ${APULSE_PLAYBACK_DEVICE} / capture ${ALSA_CAPTURE_DEVICE}"
+	log "using ALSA/apulse backend with APULSE_PLAYBACK_DEVICE='${APULSE_PLAYBACK_DEVICE}' and capture='${ALSA_CAPTURE_DEVICE}'"
 fi
 
 # ---------------------------------------------------------------------------
 # 2. Launch Soloist
 # ---------------------------------------------------------------------------
-log "starting soloist: device='${DEVICE_NAME}' sink=${PIPEWIRE_SINK} ws=${WS_ENDPOINT} data-dir=${SOLOIST_DATA_DIR}"
-"$SOLOIST_BIN" \
-	--device-name "$DEVICE_NAME" \
-	--api-key "$SOLOIST_API_KEY" \
-	--data-dir "$SOLOIST_DATA_DIR" \
-	--cache-dir "$SOLOIST_CACHE_DIR" \
-	--pipewire-device "$PIPEWIRE_SINK" \
-	--ws "$WS_ENDPOINT" &
+SOLOIST_ARGS=(
+	--device-name "$DEVICE_NAME"
+	--api-key "$SOLOIST_API_KEY"
+	--data-dir "$SOLOIST_DATA_DIR"
+	--cache-dir "$SOLOIST_CACHE_DIR"
+	--ws "$WS_ENDPOINT"
+)
+
+if [ "$SOLOIST_AUDIO_BACKEND" = "pulse" ]; then
+	SOLOIST_ARGS+=(--pipewire-device "$PIPEWIRE_SINK")
+fi
+
+log "starting soloist: device='${DEVICE_NAME}' backend=${SOLOIST_AUDIO_BACKEND} target='${SOLOIST_AUDIO_TARGET_DESC}' ws=${WS_ENDPOINT} data-dir=${SOLOIST_DATA_DIR}"
+"$SOLOIST_BIN" "${SOLOIST_ARGS[@]}" &
 SOLOIST_PID=$!
 
 # Poll for actual readiness instead of blindly sleeping a fixed amount.
@@ -196,58 +238,60 @@ fi
 # Poll at 0.3s so real playback gets moved onto the correct sink quickly
 # even on plain PulseAudio hosts where Soloist briefly lands on the
 # server's current default sink first.
-sink_router() {
-	local target_index=""
-	while kill -0 "$SOLOIST_PID" 2>/dev/null; do
-		local listing
-		listing="$(pactl list sink-inputs 2>/dev/null)"
+if [ "$SOLOIST_AUDIO_BACKEND" = "pulse" ]; then
+	sink_router() {
+		local target_index=""
+		while kill -0 "$SOLOIST_PID" 2>/dev/null; do
+			local listing
+			listing="$(pactl list sink-inputs 2>/dev/null)"
 
-		local sink_input_id
-		sink_input_id="$(echo "$listing" | awk -v pid="$SOLOIST_PID" '
-			BEGIN { RS="" }
-			$0 ~ "application.process.id = \"" pid "\"" {
-				if (match($0, /Sink Input #[0-9]+/)) {
-					s = substr($0, RSTART, RLENGTH)
-					sub(/Sink Input #/, "", s)
-					print s
-					exit
-				}
-			}
-		')"
-
-		if [ -n "$sink_input_id" ]; then
-			target_index="$(pactl list short sinks 2>/dev/null | awk -v name="$PIPEWIRE_SINK" '$2==name{print $1}')"
-
-			local current_sink
-			current_sink="$(echo "$listing" | awk -v want="$sink_input_id" '
+			local sink_input_id
+			sink_input_id="$(echo "$listing" | awk -v pid="$SOLOIST_PID" '
 				BEGIN { RS="" }
-				{
+				$0 ~ "application.process.id = \"" pid "\"" {
 					if (match($0, /Sink Input #[0-9]+/)) {
-						idstr = substr($0, RSTART, RLENGTH)
-						sub(/Sink Input #/, "", idstr)
-						if (idstr+0 == want+0) {
-							if (match($0, /\n[ \t]*Sink: [0-9]+/)) {
-								s = substr($0, RSTART, RLENGTH)
-								sub(/.*Sink: /, "", s)
-								print s
-							}
-						}
+						s = substr($0, RSTART, RLENGTH)
+						sub(/Sink Input #/, "", s)
+						print s
+						exit
 					}
 				}
 			')"
 
-			if [ -n "$target_index" ] && [ "$current_sink" != "$target_index" ]; then
-				log "routing soloist's PulseAudio stream (sink-input #${sink_input_id}) to '${PIPEWIRE_SINK}' (was sink #${current_sink:-?})"
-				pactl move-sink-input "$sink_input_id" "$PIPEWIRE_SINK" 2>/dev/null
+			if [ -n "$sink_input_id" ]; then
+				target_index="$(pactl list short sinks 2>/dev/null | awk -v name="$PIPEWIRE_SINK" '$2==name{print $1}')"
+
+				local current_sink
+				current_sink="$(echo "$listing" | awk -v want="$sink_input_id" '
+					BEGIN { RS="" }
+					{
+						if (match($0, /Sink Input #[0-9]+/)) {
+							idstr = substr($0, RSTART, RLENGTH)
+							sub(/Sink Input #/, "", idstr)
+							if (idstr+0 == want+0) {
+								if (match($0, /\n[ \t]*Sink: [0-9]+/)) {
+									s = substr($0, RSTART, RLENGTH)
+									sub(/.*Sink: /, "", s)
+									print s
+								}
+							}
+						}
+					}
+				')"
+
+				if [ -n "$target_index" ] && [ "$current_sink" != "$target_index" ]; then
+					log "routing soloist's PulseAudio stream (sink-input #${sink_input_id}) to '${PIPEWIRE_SINK}' (was sink #${current_sink:-?})"
+					pactl move-sink-input "$sink_input_id" "$PIPEWIRE_SINK" 2>/dev/null
+				fi
 			fi
-		fi
 
-		sleep 0.3
-	done
-}
+			sleep 0.3
+		done
+	}
 
-sink_router &
-SINK_ROUTER_PID=$!
+	sink_router &
+	SINK_ROUTER_PID=$!
+fi
 
 # ---------------------------------------------------------------------------
 # 3. Set up the FIFO and start the relay (persistent, independent of ffmpeg
@@ -313,16 +357,16 @@ if [ "$RELAY_READY" != "1" ]; then
 fi
 
 # ---------------------------------------------------------------------------
-# 4. Capture the sink's monitor ONCE and write continuously into the FIFO.
+# 4. Capture the backend output ONCE and write continuously into the FIFO.
 #    (One persistent capture connection regardless of how many HTTP
-#    listeners come and go -- restarting the PulseAudio capture on every
+#    listeners come and go -- restarting the capture on every
 #    listener connect/disconnect is what caused corrupted timestamps in an
 #    earlier version of this bridge.) ffmpeg itself still gets its own
 #    restart loop for resilience against transient Pulse/relay hiccups --
 #    the FIFO means that doesn't disturb already-connected HTTP clients.
-#    For long-running playback, prefer PulseAudio's own capture clock over
-#    forced wallclock retimestamping: when ffmpeg re-times a live Pulse
-#    source against system wallclock and then continuously async-resamples
+#    For long-running playback, prefer the audio backend's own capture clock
+#    over forced wallclock retimestamping: when ffmpeg re-times a live source
+#    against system wallclock and then continuously async-resamples
 #    to match it, tiny clock mismatches can accumulate into a growing
 #    offset versus Spotify's own app timeline even though the bridge keeps
 #    sounding smooth. Generating fresh PTS is still useful, but keep them
@@ -335,7 +379,7 @@ ffmpeg_supervisor() {
 	while kill -0 "$SOLOIST_PID" 2>/dev/null; do
 		"$FFMPEG_BIN" -nostdin -hide_banner -loglevel warning -y \
 			-fflags +genpts \
-			-f pulse -i "${PIPEWIRE_SINK}.monitor" \
+			"${CAPTURE_INPUT_ARGS[@]}" \
 			"${ENCODE_ARGS[@]}" \
 			"${MUX_ARGS[@]}" \
 			-f "$MUX_FORMAT" \

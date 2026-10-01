@@ -21,6 +21,13 @@
 	<input name="startAll" type="submit" value="[% 'PLUGIN_SPOTIFYSOLOIST_STARTALL' | string %]">
 	<input name="stopAll" type="submit" value="[% 'PLUGIN_SPOTIFYSOLOIST_STOPALL' | string %]">
 	<table>
+	<tr>
+		<th></th>
+		<th align="left">Player</th>
+		<th align="left">Status</th>
+		<th align="left">Format</th>
+		<th align="left">Stream</th>
+	</tr>
 	[% FOREACH player IN players %]
 		<tr>
 			<td>
@@ -34,6 +41,14 @@
 				[% ELSIF player.enabled %]
 					<span style="color:#999">[% 'PLUGIN_SPOTIFYSOLOIST_STOPPED' | string %]</span>
 				[% END %]
+			</td>
+			<td>
+				<select class="stdedit" name="formatOverride.[% player.id %]" id="formatOverride.[% player.id %]">
+					<option value="" [% IF player.formatOverride == '' %]selected[% END %]>[% 'PLUGIN_SPOTIFYSOLOIST_PLAYERFORMAT_DEFAULT' | string %] ([% player.formatEffectiveLabel %])</option>
+					<option value="mp3"  [% IF player.formatOverride == 'mp3'  %]selected[% END %]>mp3</option>
+					<option value="flac" [% IF player.formatOverride == 'flac' %]selected[% END %]>flac</option>
+					<option value="pcm"  [% IF player.formatOverride == 'pcm'  %]selected[% END %]>PCM/WAV (low latency)</option>
+				</select>
 			</td>
 			<td><small>[% player.streamUrl %]</small></td>
 		</tr>
@@ -56,8 +71,19 @@
 	<input name="pref_pythonBin" id="pref_pythonBin" type="text" size="20" value="[% prefs.pref_pythonBin %]">
 [% END %]
 
+[% WRAPPER setting title="PLUGIN_SPOTIFYSOLOIST_AUDIOBACKEND" desc="PLUGIN_SPOTIFYSOLOIST_AUDIOBACKEND_DESC" %]
+	<select class="stdedit" name="pref_audioBackend" id="pref_audioBackend">
+		<option value="pulse" [% IF prefs.pref_audioBackend != 'alsa' %]selected[% END %]>PipeWire/PulseAudio null-sinks</option>
+		<option value="alsa"  [% IF prefs.pref_audioBackend == 'alsa' %]selected[% END %]>ALSA/apulse loopback</option>
+	</select>
+[% END %]
+
 [% WRAPPER setting title="PLUGIN_SPOTIFYSOLOIST_SINK" desc="PLUGIN_SPOTIFYSOLOIST_SINK_DESC" %]
 	<input name="pref_pipewireSink" id="pref_pipewireSink" type="text" size="30" value="[% prefs.pref_pipewireSink %]">
+[% END %]
+
+[% WRAPPER setting title="PLUGIN_SPOTIFYSOLOIST_ALSADEVICEPREFIX" desc="PLUGIN_SPOTIFYSOLOIST_ALSADEVICEPREFIX_DESC" %]
+	<input name="pref_alsaDevicePrefix" id="pref_alsaDevicePrefix" type="text" size="30" value="[% prefs.pref_alsaDevicePrefix %]">
 [% END %]
 
 [% WRAPPER setting title="PLUGIN_SPOTIFYSOLOIST_WSPORTBASE" desc="PLUGIN_SPOTIFYSOLOIST_WSPORTBASE_DESC" %]

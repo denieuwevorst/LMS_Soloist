@@ -34,7 +34,7 @@ sub isAudioURL { 1 }
 
 sub bufferThreshold {
 	my ( $class, $client, $url ) = @_;
-	my $format = Plugins::SpotifySoloist::Plugin::currentFormatSpec();
+	my $format = Plugins::SpotifySoloist::Plugin::currentFormatSpecForUrl($url);
 
 	# LMS applies this only when the continuous remote stream itself
 	# starts buffering, not at per-track boundaries inside the stream

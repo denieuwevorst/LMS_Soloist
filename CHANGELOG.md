@@ -1,5 +1,17 @@
 # Changelog
 
+## Unreleased
+
+- Add an opt-in **ALSA/apulse** backend so the plugin no longer requires a
+  host PulseAudio/PipeWire stack just to be usable in LMS. The default
+  backend remains the existing per-player Pulse/PipeWire null-sink bridge;
+  the new backend is explicitly for wrapper/loopback setups where Soloist
+  is launched under an apulse-style shim and ffmpeg captures from
+  per-player ALSA loopback devices.
+- Add an optional **per-player stream format override** on top of the
+  existing global default, so rooms with weaker Wi-Fi or stricter player
+  compatibility can stay on MP3 while others use FLAC or WAV.
+
 ## 0.3.47
 
 - If LMS autostart runs before all previously selected players have fully
