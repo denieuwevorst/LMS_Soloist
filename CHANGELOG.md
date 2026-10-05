@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.3.48
+
 - Add an opt-in **ALSA/apulse** backend so the plugin no longer requires a
   host PulseAudio/PipeWire stack just to be usable in LMS. The default
   backend remains the existing per-player Pulse/PipeWire null-sink bridge;
