@@ -72,6 +72,8 @@ use constant TRACE_RESTART_DELAY       => 5;    # seconds
 use constant BRIDGE_START_RETRY_DELAY  => 5;    # seconds
 use constant PLAYER_OFFLINE_STOP_DELAY => 10;   # seconds
 use constant PLAYBACK_TRANSITION_GRACE => 1.5; # seconds
+use constant RELAY_AUTOPLAY_READY_TIMEOUT => 1.0; # seconds
+use constant RELAY_AUTOPLAY_READY_MAX_AGE => 1.0; # seconds
 use constant SOLOIST_BINARY_WARN_AFTER_DAYS => 80;
 use constant SOLOIST_DOWNLOADS_URL          => 'https://developer.spotify.com/documentation/soloist/reference/downloads-and-updates';
 
@@ -352,6 +354,7 @@ sub _configFor {
 		dataDir    => catdir( $baseDataDir, "player_$slot" ),
 		cacheDir   => catdir( $baseCacheDir, "player_$slot" ),
 		fifoPath   => catfile( $baseCacheDir, "player_$slot", 'audio.fifo' ),
+		relayReadyFile => catfile( $baseCacheDir, "player_$slot", 'relay.ready' ),
 		deviceName => $playerName . $prefs->get('deviceNameSuffix'),
 	};
 }
@@ -498,6 +501,7 @@ sub _startBridge {
 	local $ENV{RELAY_PORT}        = $cfg->{relayPort};
 	local $ENV{RELAY_BIND}        = $prefs->get('relayBind');
 	local $ENV{FIFO_PATH}         = $cfg->{fifoPath};
+	local $ENV{RELAY_READY_FILE}  = $cfg->{relayReadyFile};
 
 	$log->info( "starting soloist bridge for player '" . $client->name . "' (device='$cfg->{deviceName}', slot=$cfg->{slot})" );
 
@@ -983,6 +987,17 @@ sub _playbackStateForBridge {
 	};
 }
 
+sub _relayAutoplayGateReady {
+	my ($b) = @_;
+	my $path = $b->{relayReadyFile} || '';
+	return 0 unless length $path && -f $path;
+
+	my @stat = stat($path);
+	return 0 unless @stat && $stat[9];
+
+	return ( Time::HiRes::time() - $stat[9] ) <= RELAY_AUTOPLAY_READY_MAX_AGE ? 1 : 0;
+}
+
 sub _maybeApplyConfiguredVolumeOnConnect {
 	my ( $b, $playback ) = @_;
 
@@ -997,16 +1012,26 @@ sub _applyPlaybackTransition {
 	my ( $playerId, $b, $client, $url, $playback ) = @_;
 
 	if ( $playback->{reallyPlayingHere} && !$playback->{wasPlayingHere} ) {
-		$log->info( 'auto-tuning ' . $client->name . ' to its Spotify Soloist instance' );
+		$b->{pendingAutoplaySince} ||= Time::HiRes::time();
+		my $relayReady = _relayAutoplayGateReady($b);
+		my $timedOut = ( Time::HiRes::time() - $b->{pendingAutoplaySince} ) >= RELAY_AUTOPLAY_READY_TIMEOUT ? 1 : 0;
+		return unless $relayReady || $timedOut;
+
+		$log->info(
+			'auto-tuning ' . $client->name . ' to its Spotify Soloist instance'
+			. ( $relayReady ? ' after relay readiness' : ' after relay readiness timeout' )
+		);
 		$b->{suppressLyrionTransportUntil} = time() + 1;
 		$client->execute( [ 'playlist', 'play', $url ] );
 		$b->{notPlayingSince} = undef;
 		$b->{pausedSince} = undef;
 		$b->{idleDisconnectArmed} = 1;
+		$b->{pendingAutoplaySince} = undef;
 		$b->{wasPlayingHere} = 1;
 		return;
 	}
 
+	$b->{pendingAutoplaySince} = undef;
 	return unless !$playback->{reallyPlayingHere} && $playback->{wasPlayingHere};
 
 	if ( $playback->{isActiveDevice} ) {
@@ -1090,7 +1115,7 @@ sub _coverUrlFromDecorations {
 }
 
 sub _publishMetadataForPlayer {
-	my ( $client, $url, $state ) = @_;
+	my ( $b, $client, $url, $state ) = @_;
 	return unless _clientIsActivelyPlayingOwnSoloistStream( $client, $url );
 
 	my $item = $state->{item} || {};
@@ -1179,7 +1204,7 @@ sub pollMetadata {
 		_applyPlaybackTransition( $playerId, $b, $client, $url, $playback );
 		_updateIdleDisconnectState( $b, $playback );
 		next if _maybeRestartIdleBridge( $playerId, $b, $client, $playback );
-		_publishMetadataForPlayer( $client, $url, $state );
+		_publishMetadataForPlayer( $b, $client, $url, $state );
 	}
 }
 

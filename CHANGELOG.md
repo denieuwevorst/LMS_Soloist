@@ -11,6 +11,9 @@
 - Add an optional **per-player stream format override** on top of the
   existing global default, so rooms with weaker Wi-Fi or stricter player
   compatibility can stay on MP3 while others use FLAC or WAV.
+- Gate Soloist autoplay on actual relay byte flow, with a short fallback
+  timeout, so the first song is less likely to start before ffmpeg and the
+  embedded relay are really producing stream data.
 
 ## 0.3.47
 

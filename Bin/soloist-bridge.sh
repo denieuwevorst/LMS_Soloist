@@ -21,6 +21,7 @@
 #                     SOLOIST_CACHE_DIR RELAY_PORT RELAY_BIND FIFO_PATH
 #                     PYTHON_BIN SOLOIST_AUDIO_BACKEND PIPEWIRE_SINK
 #                     ALSA_PLAYBACK_DEVICE ALSA_CAPTURE_DEVICE
+#                     RELAY_READY_FILE
 
 set -u
 
@@ -42,6 +43,7 @@ SOLOIST_CACHE_DIR="${SOLOIST_CACHE_DIR:-$HOME/.cache/soloist-lyrion}"
 RELAY_PORT="${RELAY_PORT:-9077}"
 RELAY_BIND="${RELAY_BIND:-0.0.0.0}"
 FIFO_PATH="${FIFO_PATH:-/tmp/soloist-audio.fifo}"
+RELAY_READY_FILE="${RELAY_READY_FILE:-${SOLOIST_CACHE_DIR}/relay.ready}"
 PYTHON_BIN="${PYTHON_BIN:-python3}"
 WS_ENDPOINT="127.0.0.1:${WS_PORT}"
 
@@ -298,6 +300,7 @@ fi
 #    restarts and of how many/which HTTP clients connect).
 # ---------------------------------------------------------------------------
 [ -p "$FIFO_PATH" ] || { rm -f "$FIFO_PATH"; mkfifo "$FIFO_PATH"; }
+rm -f "$RELAY_READY_FILE"
 
 case "$FORMAT" in
 	flac)
@@ -333,7 +336,8 @@ log "starting relay on ${RELAY_BIND}:${RELAY_PORT} (content-type ${CONTENT_TYPE}
 	--fifo "$FIFO_PATH" \
 	--port "$RELAY_PORT" \
 	--bind "$RELAY_BIND" \
-	--content-type "$CONTENT_TYPE" &
+	--content-type "$CONTENT_TYPE" \
+	--ready-file "$RELAY_READY_FILE" &
 RELAY_PID=$!
 
 # Confirm that the relay is actually listening instead of sleeping a

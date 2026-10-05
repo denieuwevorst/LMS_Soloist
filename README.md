@@ -112,6 +112,9 @@ For EACH selected player (its own stable "slot", persisted across restarts):
   **200 ms for PCM/WAV** (`35 KB` at 44.1 kHz stereo 16-bit PCM), and
   roughly **200 ms for FLAC** (`24 KB`) depending on the encoded
   bitrate.
+- Autoplay now also waits briefly for the relay to see real audio bytes
+  before issuing `playlist play`, with a short timeout fallback so the
+  first track does not have to depend on a blind fixed delay.
 - No Icecast, no extra system service — a small embedded Python relay
   handles multiple simultaneous listeners per player.
 - Default backend preserves the current Pulse/PipeWire null-sink bridge.
