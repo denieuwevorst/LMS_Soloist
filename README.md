@@ -98,9 +98,7 @@ For EACH selected player (its own stable "slot", persisted across restarts):
 - Stream details: Lyrion metadata includes the configured format and, for
   MP3, bitrate. The source type is displayed as, for example, `Spotify
   Soloist (MP3 320k)`, `Spotify Soloist (FLAC)`, or `Spotify Soloist
-  (WAV)` when the low-latency PCM/WAV relay mode is selected. Format can
-  now be left on a global default or overridden per player, which is
-  useful when some rooms need a lower-bitrate format for weaker Wi-Fi.
+  (WAV)` when the low-latency PCM/WAV relay mode is selected.
 - Soloist streams now ask Lyrion for a slightly larger **startup**
   prebuffer than a generic remote stream, scaled by format/bitrate. This
   helps absorb brief starvation around track changes without changing the
@@ -377,13 +375,9 @@ bandwidth matters.
 | `flac` | Players with FLAC support | Lossless bridge encoding |
 | `pcm` | Players with WAV/PCM support | Lowest encoder latency; highest bandwidth |
 
-The **Default stream format** setting is used by any player left on
-**Default** in the Players table. You can override the format per player
-there, which is useful if one device needs MP3 for compatibility or a
-weaker wireless link while another can use FLAC or WAV.
-
-Saving a format change for a currently selected player restarts only that
-player's Soloist bridge so the new relay format takes effect immediately.
+The **Stream format** setting applies to all selected players. Saving a
+format change restarts all selected player bridges so the new relay format
+takes effect immediately.
 
 ## Known limitations
 

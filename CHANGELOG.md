@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+- Stop using the Soloist executable file timestamp to estimate expiry age.
+  The plugin now parses the build timestamp reported by `soloist --version`,
+  which matches Spotify's documented 90-day expiry rule even when the file
+  mtime is pinned to an old fixed date.
+- Remove the per-player stream-format override again for now and go back to
+  one global stream-format choice for all selected players.
+- Prune dead bridge processes from the in-memory bridge table so the
+  settings page no longer keeps showing `running` after a bridge has
+  already stopped.
+
 ## 0.3.48
 
 - Add an opt-in **ALSA/apulse** backend so the plugin no longer requires a
@@ -10,9 +20,6 @@
   the new backend is explicitly for wrapper/loopback setups where Soloist
   is launched under an apulse-style shim and ffmpeg captures from
   per-player ALSA loopback devices.
-- Add an optional **per-player stream format override** on top of the
-  existing global default, so rooms with weaker Wi-Fi or stricter player
-  compatibility can stay on MP3 while others use FLAC or WAV.
 - Gate Soloist autoplay on actual relay byte flow, with a short fallback
   timeout, so the first song is less likely to start before ffmpeg and the
   embedded relay are really producing stream data.

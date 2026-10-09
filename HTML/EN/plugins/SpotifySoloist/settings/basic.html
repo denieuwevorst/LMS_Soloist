@@ -9,7 +9,8 @@
 	<strong>[% "PLUGIN_SPOTIFYSOLOIST_BINARY_STALE" | string %]</strong>
 	[% "PLUGIN_SPOTIFYSOLOIST_BINARY_STALE_DESC" | string %]
 	<br>
-	The configured executable file <code>[% soloistBinaryStatus.path %]</code> is
+	The configured executable <code>[% soloistBinaryStatus.path %]</code> reports
+	build timestamp <code>[% soloistBinaryStatus.buildTimestamp %]</code> and is
 	about <strong>[% soloistBinaryStatus.ageDays %] days</strong> old. Replace it
 	before Spotify Soloist playback stops working. If this path is only a wrapper
 	script, check the real Soloist binary behind it.
@@ -25,7 +26,6 @@
 		<th></th>
 		<th align="left">Player</th>
 		<th align="left">Status</th>
-		<th align="left">Format</th>
 		<th align="left">Stream</th>
 	</tr>
 	[% FOREACH player IN players %]
@@ -41,14 +41,6 @@
 				[% ELSIF player.enabled %]
 					<span style="color:#999">[% 'PLUGIN_SPOTIFYSOLOIST_STOPPED' | string %]</span>
 				[% END %]
-			</td>
-			<td>
-				<select class="stdedit" name="formatOverride.[% player.id %]" id="formatOverride.[% player.id %]">
-					<option value="" [% IF player.formatOverride == '' %]selected[% END %]>[% 'PLUGIN_SPOTIFYSOLOIST_PLAYERFORMAT_DEFAULT' | string %] ([% player.formatEffectiveLabel %])</option>
-					<option value="mp3"  [% IF player.formatOverride == 'mp3'  %]selected[% END %]>mp3</option>
-					<option value="flac" [% IF player.formatOverride == 'flac' %]selected[% END %]>flac</option>
-					<option value="pcm"  [% IF player.formatOverride == 'pcm'  %]selected[% END %]>PCM/WAV (low latency)</option>
-				</select>
 			</td>
 			<td><small>[% player.streamUrl %]</small></td>
 		</tr>

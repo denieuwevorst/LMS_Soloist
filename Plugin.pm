@@ -44,6 +44,7 @@ use Fcntl qw(F_GETFL F_SETFL O_NONBLOCK);
 use JSON::XS qw(decode_json);
 use Proc::Background;
 use Time::HiRes ();
+use Time::Local qw(timegm);
 use POSIX qw(dup2 WNOHANG);
 
 use Slim::Utils::Log;
@@ -95,7 +96,6 @@ $prefs->init({
 	autostart       => 1,
 	idleDisconnectSeconds => 30,
 	selectedPlayers => {},                # { playerID => 1, ... }
-	playerFormats   => {},                # { playerID => 'mp3' | 'flac' | 'pcm' }, omitted = use global default
 	playerSlots     => {},                # { playerID => slot int }, stable across restarts
 });
 
@@ -156,19 +156,52 @@ sub currentFormatSpec {
 	};
 }
 
-sub configuredFormatKeyForPlayer {
-	my ($playerId) = @_;
-	my $playerFormats = $prefs->get('playerFormats') || {};
-	my $format = _normalizedFormatKey( $playerFormats->{$playerId} );
-	return defined $format ? $format : currentFormatSpec()->{key};
-}
-
 sub currentFormatSpecForUrl {
 	my ($url) = @_;
 	my ($ext) = ( $url || '' ) =~ /\.([A-Za-z0-9]+)(?:\?.*)?\z/;
 	return currentFormatSpec('flac') if defined $ext && lc($ext) eq 'flac';
 	return currentFormatSpec('pcm')  if defined $ext && lc($ext) eq 'wav';
 	return currentFormatSpec('mp3');
+}
+
+sub _captureSoloistVersionOutput {
+	my $path = $prefs->get('soloistBin') || '';
+	return unless length $path && -f $path;
+
+	my @cmd = ( $path, '--version' );
+	my $pid = open( my $fh, '-|' );
+	if ( !defined $pid ) {
+		$log->warn("can't run soloist --version: $!");
+		return;
+	}
+
+	if ( $pid == 0 ) {
+		if ( open( my $devnull, '>', '/dev/null' ) ) {
+			POSIX::dup2( fileno($devnull), fileno(STDERR) );
+		}
+		exec(@cmd) or exit(1);
+	}
+
+	local $/;
+	my $output = <$fh>;
+	close $fh;
+
+	return unless defined $output && $? == 0;
+	return $output;
+}
+
+sub _epochFromIso8601Utc {
+	my ($iso8601) = @_;
+	return unless defined $iso8601;
+
+	my ( $year, $month, $day, $hour, $minute, $second ) =
+		$iso8601 =~ /\A(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})Z\z/;
+	return unless defined $second;
+
+	my $epoch = eval {
+		timegm( $second, $minute, $hour, $day, $month - 1, $year )
+	};
+	return $@ ? undef : $epoch;
 }
 
 sub soloistBinaryStatus {
@@ -181,16 +214,18 @@ sub soloistBinaryStatus {
 		stale            => 0,
 	} unless length $path && -f $path;
 
-	my @stat = stat($path);
+	my $versionOutput = _captureSoloistVersionOutput();
+	my ($buildTimestamp) = ( $versionOutput || '' ) =~ /(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z)/;
+	my $buildEpoch = _epochFromIso8601Utc($buildTimestamp);
 	return {
 		path             => $path,
 		warnAfterDays    => SOLOIST_BINARY_WARN_AFTER_DAYS,
 		downloadsUrl     => SOLOIST_DOWNLOADS_URL,
 		ageCheckPossible => 0,
 		stale            => 0,
-	} unless @stat && $stat[9];
+	} unless defined $buildEpoch;
 
-	my $ageSeconds = time() - $stat[9];
+	my $ageSeconds = time() - $buildEpoch;
 	$ageSeconds = 0 if $ageSeconds < 0;
 	my $ageDays = int( $ageSeconds / 86400 );
 	my $stale = $ageSeconds >= SOLOIST_BINARY_WARN_AFTER_DAYS * 86400 ? 1 : 0;
@@ -199,6 +234,7 @@ sub soloistBinaryStatus {
 		path             => $path,
 		ageSeconds       => $ageSeconds,
 		ageDays          => $ageDays,
+		buildTimestamp   => $buildTimestamp,
 		warnAfterDays    => SOLOIST_BINARY_WARN_AFTER_DAYS,
 		downloadsUrl     => SOLOIST_DOWNLOADS_URL,
 		ageCheckPossible => 1,
@@ -347,7 +383,7 @@ sub _configFor {
 		wsPort     => $prefs->get('wsPortBase') + $slot,
 		relayPort  => $prefs->get('relayPortBase') + $slot,
 		backend    => $prefs->get('audioBackend') || 'pulse',
-		format     => configuredFormatKeyForPlayer($playerId),
+		format     => currentFormatSpec()->{key},
 		sink       => $prefs->get('pipewireSink') . '_' . $slot,
 		alsaPlaybackDevice => $prefs->get('alsaDevicePrefix') . ',0,' . $slot,
 		alsaCaptureDevice  => $prefs->get('alsaDevicePrefix') . ',1,' . $slot,
@@ -408,7 +444,12 @@ sub _initialVolume {
 
 sub _bridgeRunning {
 	my ($playerId) = @_;
-	return $bridges{$playerId} && $bridges{$playerId}{proc} && $bridges{$playerId}{proc}->alive ? 1 : 0;
+	my $b = $bridges{$playerId} or return 0;
+	return 1 if $b->{proc} && $b->{proc}->alive;
+
+	_closeTraceObserver( $b, "bridge process exited for player $playerId" );
+	delete $bridges{$playerId};
+	return 0;
 }
 
 sub _bridgeExists {
@@ -716,6 +757,7 @@ sub bridgeRunning {
 
 sub bridgeStreamUrlFor {
 	my ($playerId) = @_;
+	return '' unless _bridgeRunning($playerId);
 	my $b = $bridges{$playerId} or return '';
 	return streamUrlFor($b);
 }
@@ -728,7 +770,7 @@ sub cliBridge {
 	elsif ( $action eq 'stop' )  { stopBridgeForPlayer($_) for keys %bridges; }
 	elsif ( $action ne 'status' ) { $request->setStatusBadParams(); return; }
 
-	$request->addResult( 'running', scalar keys %bridges );
+	$request->addResult( 'running', scalar grep { _bridgeRunning($_) } keys %bridges );
 	$request->setStatusDone();
 }
 
@@ -1177,8 +1219,8 @@ sub pollMetadata {
 	Slim::Utils::Timers::setTimer( undef, time() + STATE_LOOP_INTERVAL, \&pollMetadata );
 
 	for my $playerId ( keys %bridges ) {
-		my $b = $bridges{$playerId};
-		next unless $b->{proc} && $b->{proc}->alive;
+		next unless _bridgeRunning($playerId);
+		my $b = $bridges{$playerId} or next;
 
 		my $client = Slim::Player::Client::getClient($playerId);
 		unless ($client) {

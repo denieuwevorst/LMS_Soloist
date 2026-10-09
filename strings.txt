@@ -53,10 +53,10 @@ PLUGIN_SPOTIFYSOLOIST_RELAYPORTBASE_DESC
 	EN	Each player's audio relay listens on this base plus its slot number. No separate Icecast install needed.
 
 PLUGIN_SPOTIFYSOLOIST_FORMAT
-	EN	Default stream format
+	EN	Stream format
 
 PLUGIN_SPOTIFYSOLOIST_FORMAT_DESC
-	EN	Default format for players that do not have their own override in the Players table. mp3 works on every Squeezebox generation, including classic fixed-firmware hardware (Boom, Classic, Receiver). flac sends a native FLAC stream and requires a player with FLAC decoding support. pcm sends uncompressed 44.1 kHz stereo 16-bit PCM in a WAV stream to minimize encoder latency; it requires WAV/PCM support and uses about 1.4 Mbit/s.
+	EN	Global format used for all players. mp3 works on every Squeezebox generation, including classic fixed-firmware hardware (Boom, Classic, Receiver). flac sends a native FLAC stream and requires a player with FLAC decoding support. pcm sends uncompressed 44.1 kHz stereo 16-bit PCM in a WAV stream to minimize encoder latency; it requires WAV/PCM support and uses about 1.4 Mbit/s.
 
 PLUGIN_SPOTIFYSOLOIST_BITRATE
 	EN	MP3 bitrate
@@ -110,7 +110,7 @@ PLUGIN_SPOTIFYSOLOIST_PLAYERS
 	EN	Players
 
 PLUGIN_SPOTIFYSOLOIST_PLAYERS_DESC
-	EN	Each checked player gets its own Spotify Connect device (shown separately in the Spotify app's device picker as "&lt;player name&gt;&lt;suffix&gt;") and automatically starts playing the moment Spotify actually starts sending it audio. Unchecking a player stops and removes its instance immediately. You can also override the stream format per player here; leaving it on Default uses the global default stream format below.
+	EN	Each checked player gets its own Spotify Connect device (shown separately in the Spotify app's device picker as "&lt;player name&gt;&lt;suffix&gt;") and automatically starts playing the moment Spotify actually starts sending it audio. Unchecking a player stops and removes its instance immediately.
 
 PLUGIN_SPOTIFYSOLOIST_RUNNING
 	EN	running
@@ -118,17 +118,14 @@ PLUGIN_SPOTIFYSOLOIST_RUNNING
 PLUGIN_SPOTIFYSOLOIST_STOPPED
 	EN	stopped
 
-PLUGIN_SPOTIFYSOLOIST_PLAYERFORMAT_DEFAULT
-	EN	Default
-
 PLUGIN_SPOTIFYSOLOIST_RESTART_NOTE
-	EN	Toggling a player's checkbox takes effect immediately (starts/stops just that instance). Saving a per-player stream-format change restarts that player's instance immediately. Changes to binary paths, backend settings, port bases, the sink/device prefix, or initial Soloist volume only apply the next time an instance is (re)started.
+	EN	Toggling a player's checkbox takes effect immediately (starts/stops just that instance). Saving a global stream-format or MP3 bitrate change restarts all selected player instances immediately. Changes to binary paths, backend settings, port bases, the sink/device prefix, or initial Soloist volume only apply the next time an instance is (re)started.
 
 PLUGIN_SPOTIFYSOLOIST_BINARY_STALE
 	EN	Soloist binary nearing expiry.
 
 PLUGIN_SPOTIFYSOLOIST_BINARY_STALE_DESC
-	EN	Spotify Soloist builds expire after about 90 days; this plugin warns at 80 days but does not auto-update the executable for you.
+	EN	Spotify Soloist builds expire after about 90 days; this plugin checks the build timestamp reported by `soloist --version`, warns at 80 days, and does not auto-update the executable for you.
 
 PLUGIN_SPOTIFYSOLOIST_BINARY_STALE_LINK
 	EN	Open Spotify's official Downloads and updates page.

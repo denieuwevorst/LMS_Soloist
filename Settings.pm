@@ -12,18 +12,6 @@ use Slim::Player::Client;
 my $prefs = preferences('plugin.spotifysoloist');
 my $log   = logger('plugin.spotifysoloist');
 
-sub _normalizedFormatKey {
-	my ($format) = @_;
-	return unless defined $format && length $format;
-	return $format if $format eq 'mp3' || $format eq 'flac' || $format eq 'pcm';
-	return;
-}
-
-sub _effectiveFormatKey {
-	my ( $override, $globalDefault ) = @_;
-	return _normalizedFormatKey($override) || _normalizedFormatKey($globalDefault) || 'mp3';
-}
-
 sub name {
 	return 'PLUGIN_SPOTIFYSOLOIST';
 }
@@ -55,11 +43,11 @@ sub handler {
 		# addPlayer/removePlayer diff), rather than a blunt stop-everything
 		# -then-restart-everything on every save.
 		my $oldSelected = $prefs->get('selectedPlayers') || {};
-		my $oldFormats  = $prefs->get('playerFormats') || {};
 		my $newSelected = {};
-		my $newFormats  = {};
-		my $oldGlobalFormat = $prefs->get('format');
-		my $newGlobalFormat = $params->{pref_format} // $oldGlobalFormat;
+		my $oldGlobalFormat = $prefs->get('format')  || 'mp3';
+		my $newGlobalFormat = $params->{pref_format} || $oldGlobalFormat;
+		my $oldBitrate      = $prefs->get('bitrate') || '320k';
+		my $newBitrate      = $params->{pref_bitrate} || $oldBitrate;
 		my @toStart;
 		my @toStop;
 		my @toRestart;
@@ -68,12 +56,8 @@ sub handler {
 			my $id    = $player->{id};
 			my $isOn  = $params->{ 'enabled.' . $id } ? 1 : 0;
 			my $wasOn = $oldSelected->{$id} ? 1 : 0;
-			my $override = _normalizedFormatKey( $params->{ 'formatOverride.' . $id } );
-			my $oldEffectiveFormat = _effectiveFormatKey( $oldFormats->{$id}, $oldGlobalFormat );
-			my $newEffectiveFormat = _effectiveFormatKey( $override, $newGlobalFormat );
 
 			$newSelected->{$id} = 1 if $isOn;
-			$newFormats->{$id} = $override if defined $override;
 
 			if ( $isOn && !$wasOn ) {
 				push @toStart, $id;
@@ -81,13 +65,24 @@ sub handler {
 			elsif ( !$isOn && $wasOn ) {
 				push @toStop, $id;
 			}
-			elsif ( $isOn && $wasOn && $oldEffectiveFormat ne $newEffectiveFormat ) {
+			elsif (
+				$isOn && $wasOn &&
+				(
+					$oldGlobalFormat ne $newGlobalFormat ||
+					(
+						$newGlobalFormat eq 'mp3' &&
+						$oldBitrate ne $newBitrate
+					)
+				)
+			) {
 				push @toRestart, $id;
 			}
 		}
 
 		$prefs->set( 'selectedPlayers', $newSelected );
-		$prefs->set( 'playerFormats',   $newFormats );
+		$prefs->remove('playerFormats');
+		$prefs->set( 'format',  $newGlobalFormat );
+		$prefs->set( 'bitrate', $newBitrate );
 
 		Plugins::SpotifySoloist::Plugin::stopBridgeForPlayer($_)    for @toStop;
 		Plugins::SpotifySoloist::Plugin::startBridgeForPlayer($_)   for @toStart;
@@ -105,18 +100,9 @@ sub handler {
 	my $selected = $prefs->get('selectedPlayers') || {};
 	for my $player (@players) {
 		my $id = $player->{id};
-		my $override = _normalizedFormatKey( ($prefs->get('playerFormats') || {})->{$id} );
-		my $effective = Plugins::SpotifySoloist::Plugin::configuredFormatKeyForPlayer($id);
-		my $effectiveSpec = Plugins::SpotifySoloist::Plugin::currentFormatSpec($effective);
-		my $effectiveLabel = $effectiveSpec->{displayFormat}
-			. ( defined $effectiveSpec->{bitrate} ? ' ' . $effectiveSpec->{bitrate} : '' );
-
-		$player->{enabled}        = $selected->{$id} ? 1 : 0;
-		$player->{running}        = Plugins::SpotifySoloist::Plugin::bridgeRunning($id);
-		$player->{streamUrl}      = Plugins::SpotifySoloist::Plugin::bridgeStreamUrlFor($id);
-		$player->{formatOverride} = defined $override ? $override : '';
-		$player->{formatEffective}= $effective;
-		$player->{formatEffectiveLabel} = $effectiveLabel;
+		$player->{enabled}   = $selected->{$id} ? 1 : 0;
+		$player->{running}   = Plugins::SpotifySoloist::Plugin::bridgeRunning($id);
+		$player->{streamUrl} = Plugins::SpotifySoloist::Plugin::bridgeStreamUrlFor($id);
 	}
 	$params->{players} = \@players;
 	$params->{soloistBinaryStatus} = Plugins::SpotifySoloist::Plugin::soloistBinaryStatus();
