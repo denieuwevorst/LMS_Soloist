@@ -20,6 +20,7 @@ Usage:
 """
 
 import argparse
+import os
 import queue
 import socket
 import socketserver
@@ -32,10 +33,13 @@ from http.server import BaseHTTPRequestHandler
 class Broadcaster:
     """Fans out chunks read from the FIFO to every registered client queue."""
 
-    def __init__(self, fifo_path, chunk_size=4096, queue_maxsize=256):
+    def __init__(self, fifo_path, chunk_size=4096, queue_maxsize=256, ready_path=None, ready_touch_interval=0.25):
         self.fifo_path = fifo_path
         self.chunk_size = chunk_size
         self.queue_maxsize = queue_maxsize
+        self.ready_path = ready_path
+        self.ready_touch_interval = ready_touch_interval
+        self._last_ready_touch = 0.0
         self._clients = set()
         self._lock = threading.Lock()
 
@@ -64,6 +68,22 @@ class Broadcaster:
                 except queue.Empty:
                     pass
 
+    def _mark_ready(self):
+        if not self.ready_path:
+            return
+
+        now = time.time()
+        if self._last_ready_touch and now - self._last_ready_touch < self.ready_touch_interval:
+            return
+
+        try:
+            with open(self.ready_path, "ab"):
+                pass
+            os.utime(self.ready_path, None)
+            self._last_ready_touch = now
+        except OSError:
+            pass
+
     def run_forever(self):
         while True:
             try:
@@ -75,6 +95,7 @@ class Broadcaster:
                             # Writer (ffmpeg) closed its end -- reopen and
                             # wait for the next one.
                             break
+                        self._mark_ready()
                         self._broadcast(chunk)
             except FileNotFoundError:
                 time.sleep(1)
@@ -121,9 +142,10 @@ def main():
     parser.add_argument("--port", type=int, required=True)
     parser.add_argument("--bind", default="0.0.0.0")
     parser.add_argument("--content-type", default="audio/mpeg")
+    parser.add_argument("--ready-file", default="")
     args = parser.parse_args()
 
-    broadcaster = Broadcaster(args.fifo)
+    broadcaster = Broadcaster(args.fifo, ready_path=(args.ready_file or None))
     reader_thread = threading.Thread(target=broadcaster.run_forever, daemon=True)
     reader_thread.start()
 

@@ -1,8 +1,9 @@
 package Plugins::SpotifySoloist::Plugin;
 
 # Runs ONE independent Spotify Soloist instance PER selected Squeezebox
-# player -- each with its own device name, own PipeWire sink, own control
-# port, own audio relay -- so each shows up as a SEPARATE, individually
+# player -- each with its own device name, own backend-specific audio
+# target, own control port, own audio relay -- so each shows up as a
+# SEPARATE, individually
 # selectable device in the Spotify app's picker (e.g. "Kitchen (Soloist)",
 # "Living Room (Soloist)"), and picking one plays specifically on that one
 # Lyrion player. This is the closest available analog to how ShairTunes2
@@ -19,11 +20,11 @@ package Plugins::SpotifySoloist::Plugin;
 # FIFO (so ffmpeg restarts don't disturb the relay or connected clients).
 #
 # Division of labour:
-#   - Bin/soloist-bridge.sh: PipeWire/PulseAudio sink setup, launches one
+#   - Bin/soloist-bridge.sh: backend-specific audio setup, launches one
 #     Soloist instance, captures + feeds its own audio-relay.py via a
 #     dedicated FIFO. Fully parameterized by env vars -- one script,
 #     launched once per selected player with different env each time.
-#   - This module: allocates a stable port/sink/data-dir "slot" per
+#   - This module: allocates a stable port/backend-target/data-dir "slot" per
 #     player, starts/stops one bridge per selected player, consumes each
 #     instance's pushed `soloist ctl ... trace` event stream (with an
 #     occasional snapshot resync fallback), writes metadata straight into
@@ -43,6 +44,7 @@ use Fcntl qw(F_GETFL F_SETFL O_NONBLOCK);
 use JSON::XS qw(decode_json);
 use Proc::Background;
 use Time::HiRes ();
+use Time::Local qw(timegm);
 use POSIX qw(dup2 WNOHANG);
 
 use Slim::Utils::Log;
@@ -71,6 +73,8 @@ use constant TRACE_RESTART_DELAY       => 5;    # seconds
 use constant BRIDGE_START_RETRY_DELAY  => 5;    # seconds
 use constant PLAYER_OFFLINE_STOP_DELAY => 10;   # seconds
 use constant PLAYBACK_TRANSITION_GRACE => 1.5; # seconds
+use constant RELAY_AUTOPLAY_READY_TIMEOUT => 1.0; # seconds
+use constant RELAY_AUTOPLAY_READY_MAX_AGE => 1.0; # seconds
 use constant SOLOIST_BINARY_WARN_AFTER_DAYS => 80;
 use constant SOLOIST_DOWNLOADS_URL          => 'https://developer.spotify.com/documentation/soloist/reference/downloads-and-updates';
 
@@ -78,7 +82,9 @@ $prefs->init({
 	soloistBin      => '/usr/local/bin/soloist',
 	ffmpegBin       => '/usr/bin/ffmpeg',
 	pythonBin       => 'python3',
+	audioBackend    => 'pulse',           # pulse | alsa
 	pipewireSink    => 'soloist_sink',    # base name; each player gets _<slot> appended
+	alsaDevicePrefix => 'hw:Loopback',    # ALSA/apulse backend: playback = <prefix>,0,<slot>; capture = <prefix>,1,<slot>
 	wsPortBase      => 9091,              # each player gets +<slot>
 	relayPortBase   => 9077,              # each player gets +<slot>
 	format          => 'mp3',             # mp3 | flac | pcm
@@ -96,10 +102,7 @@ $prefs->init({
 my %bridges;      # playerID => { proc, wsPort, relayPort, sink, dataDir, cacheDir, fifoPath, deviceName, lastStatus, wasPlayingHere }
 my $baseDataDir;
 my $baseCacheDir;
-my $originalButtonCommand;
-my $originalPauseCommand;
-my $originalPlayCommand;
-my $originalStopCommand;
+my %originalTransportCommand;    # command name -> original dispatch coderef
 my $soloistBinaryAgeWarningLogged = 0;
 my %pendingBridgeStartRetries;
 my %FORMAT_SPECS = (
@@ -129,8 +132,17 @@ my %FORMAT_SPECS = (
 
 sub getDisplayName { 'PLUGIN_SPOTIFYSOLOIST' }
 
+sub _normalizedFormatKey {
+	my ($format) = @_;
+	return unless defined $format;
+	return $format if exists $FORMAT_SPECS{$format};
+	return;
+}
+
 sub currentFormatSpec {
-	my $format = $prefs->get('format') || 'mp3';
+	my ($format) = @_;
+	$format = _normalizedFormatKey($format);
+	$format = _normalizedFormatKey( $prefs->get('format') ) || 'mp3' unless defined $format;
 	my $spec = $FORMAT_SPECS{$format} || $FORMAT_SPECS{mp3};
 	my $bitrate = $format eq 'mp3' ? ( $prefs->get('bitrate') || '320k' ) : undef;
 	my $bufferKb = ref $spec->{bufferKb} eq 'CODE' ? $spec->{bufferKb}->($bitrate) : $spec->{bufferKb};
@@ -144,6 +156,54 @@ sub currentFormatSpec {
 	};
 }
 
+sub currentFormatSpecForUrl {
+	my ($url) = @_;
+	my ($ext) = ( $url || '' ) =~ /\.([A-Za-z0-9]+)(?:\?.*)?\z/;
+	return currentFormatSpec('flac') if defined $ext && lc($ext) eq 'flac';
+	return currentFormatSpec('pcm')  if defined $ext && lc($ext) eq 'wav';
+	return currentFormatSpec('mp3');
+}
+
+sub _captureSoloistVersionOutput {
+	my $path = $prefs->get('soloistBin') || '';
+	return unless length $path && -f $path;
+
+	my @cmd = ( $path, '--version' );
+	my $pid = open( my $fh, '-|' );
+	if ( !defined $pid ) {
+		$log->warn("can't run soloist --version: $!");
+		return;
+	}
+
+	if ( $pid == 0 ) {
+		if ( open( my $devnull, '>', '/dev/null' ) ) {
+			POSIX::dup2( fileno($devnull), fileno(STDERR) );
+		}
+		exec(@cmd) or exit(1);
+	}
+
+	local $/;
+	my $output = <$fh>;
+	close $fh;
+
+	return unless defined $output && $? == 0;
+	return $output;
+}
+
+sub _epochFromIso8601Utc {
+	my ($iso8601) = @_;
+	return unless defined $iso8601;
+
+	my ( $year, $month, $day, $hour, $minute, $second ) =
+		$iso8601 =~ /\A(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})Z\z/;
+	return unless defined $second;
+
+	my $epoch = eval {
+		timegm( $second, $minute, $hour, $day, $month - 1, $year )
+	};
+	return $@ ? undef : $epoch;
+}
+
 sub soloistBinaryStatus {
 	my $path = $prefs->get('soloistBin') || '';
 	return {
@@ -154,16 +214,18 @@ sub soloistBinaryStatus {
 		stale            => 0,
 	} unless length $path && -f $path;
 
-	my @stat = stat($path);
+	my $versionOutput = _captureSoloistVersionOutput();
+	my ($buildTimestamp) = ( $versionOutput || '' ) =~ /(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z)/;
+	my $buildEpoch = _epochFromIso8601Utc($buildTimestamp);
 	return {
 		path             => $path,
 		warnAfterDays    => SOLOIST_BINARY_WARN_AFTER_DAYS,
 		downloadsUrl     => SOLOIST_DOWNLOADS_URL,
 		ageCheckPossible => 0,
 		stale            => 0,
-	} unless @stat && $stat[9];
+	} unless defined $buildEpoch;
 
-	my $ageSeconds = time() - $stat[9];
+	my $ageSeconds = time() - $buildEpoch;
 	$ageSeconds = 0 if $ageSeconds < 0;
 	my $ageDays = int( $ageSeconds / 86400 );
 	my $stale = $ageSeconds >= SOLOIST_BINARY_WARN_AFTER_DAYS * 86400 ? 1 : 0;
@@ -172,6 +234,7 @@ sub soloistBinaryStatus {
 		path             => $path,
 		ageSeconds       => $ageSeconds,
 		ageDays          => $ageDays,
+		buildTimestamp   => $buildTimestamp,
 		warnAfterDays    => SOLOIST_BINARY_WARN_AFTER_DAYS,
 		downloadsUrl     => SOLOIST_DOWNLOADS_URL,
 		ageCheckPossible => 1,
@@ -240,22 +303,22 @@ sub initPlugin {
 	# command slot, so falling back to $original...Command is an intended
 	# LMS-supported pattern, not a guess. The remaining real risk is load
 	# order if another plugin also globally overrides the same commands.
-	$originalButtonCommand = Slim::Control::Request::addDispatch(
-		[ 'button', '_buttoncode', '_time', '_orFunction' ],
-		[ 1, 0, 0, \&soloistButtonCommand ],
-	);
-	$originalPauseCommand = Slim::Control::Request::addDispatch(
-		[ 'pause', '_newvalue', '_fadein', '_suppressShowBriefly' ],
-		[ 1, 0, 0, \&soloistPlayControlCommand ],
-	);
-	$originalPlayCommand = Slim::Control::Request::addDispatch(
-		[ 'play', '_fadein' ],
-		[ 1, 0, 0, \&soloistPlayControlCommand ],
-	);
-	$originalStopCommand = Slim::Control::Request::addDispatch(
-		[ 'stop' ],
-		[ 1, 0, 0, \&soloistPlayControlCommand ],
-	);
+	# One dispatch spec per command name, all routed through the same
+	# wrapper (_soloistTransportCommand) -- it looks up the right original
+	# via $request->getRequestString, so there's no need for a separate
+	# wrapper sub or a separate stored coderef per command.
+	for my $spec (
+		[ 'button', [ 'button', '_buttoncode', '_time', '_orFunction' ] ],
+		[ 'pause',  [ 'pause', '_newvalue', '_fadein', '_suppressShowBriefly' ] ],
+		[ 'play',   [ 'play', '_fadein' ] ],
+		[ 'stop',   [ 'stop' ] ],
+	) {
+		my ( $name, $dispatchSpec ) = @$spec;
+		$originalTransportCommand{$name} = Slim::Control::Request::addDispatch(
+			$dispatchSpec,
+			[ 1, 0, 0, \&_soloistTransportCommand ],
+		);
+	}
 
 	$class->SUPER::initPlugin(
 		feed   => \&handleFeed,
@@ -319,10 +382,15 @@ sub _configFor {
 		slot       => $slot,
 		wsPort     => $prefs->get('wsPortBase') + $slot,
 		relayPort  => $prefs->get('relayPortBase') + $slot,
+		backend    => $prefs->get('audioBackend') || 'pulse',
+		format     => currentFormatSpec()->{key},
 		sink       => $prefs->get('pipewireSink') . '_' . $slot,
+		alsaPlaybackDevice => $prefs->get('alsaDevicePrefix') . ',0,' . $slot,
+		alsaCaptureDevice  => $prefs->get('alsaDevicePrefix') . ',1,' . $slot,
 		dataDir    => catdir( $baseDataDir, "player_$slot" ),
 		cacheDir   => catdir( $baseCacheDir, "player_$slot" ),
 		fifoPath   => catfile( $baseCacheDir, "player_$slot", 'audio.fifo' ),
+		relayReadyFile => catfile( $baseCacheDir, "player_$slot", 'relay.ready' ),
 		deviceName => $playerName . $prefs->get('deviceNameSuffix'),
 	};
 }
@@ -331,7 +399,7 @@ sub streamUrlFor {
 	my ($cfg) = @_;
 	my $bind = $prefs->get('relayBind');
 	my $host = ( !$bind || $bind eq '0.0.0.0' ) ? Slim::Utils::Network::serverAddr() : $bind;
-	my $format = currentFormatSpec();
+	my $format = currentFormatSpec( $cfg->{format} );
 
 	return 'soloist://' . $host . ':' . $cfg->{relayPort} . '/soloist.' . $format->{wireExt};
 }
@@ -376,7 +444,12 @@ sub _initialVolume {
 
 sub _bridgeRunning {
 	my ($playerId) = @_;
-	return $bridges{$playerId} && $bridges{$playerId}{proc} && $bridges{$playerId}{proc}->alive ? 1 : 0;
+	my $b = $bridges{$playerId} or return 0;
+	return 1 if $b->{proc} && $b->{proc}->alive;
+
+	_closeTraceObserver( $b, "bridge process exited for player $playerId" );
+	delete $bridges{$playerId};
+	return 0;
 }
 
 sub _bridgeExists {
@@ -454,8 +527,11 @@ sub _startBridge {
 	local $ENV{SOLOIST_BIN}       = $prefs->get('soloistBin');
 	local $ENV{FFMPEG_BIN}        = $prefs->get('ffmpegBin');
 	local $ENV{PYTHON_BIN}        = $prefs->get('pythonBin');
+	local $ENV{SOLOIST_AUDIO_BACKEND} = $cfg->{backend};
 	local $ENV{PIPEWIRE_SINK}     = $cfg->{sink};
-	local $ENV{FORMAT}            = $prefs->get('format');
+	local $ENV{ALSA_PLAYBACK_DEVICE} = $cfg->{alsaPlaybackDevice};
+	local $ENV{ALSA_CAPTURE_DEVICE}  = $cfg->{alsaCaptureDevice};
+	local $ENV{FORMAT}            = $cfg->{format};
 	local $ENV{BITRATE}           = $prefs->get('bitrate');
 	local $ENV{SOLOIST_INITIAL_VOLUME} = _initialVolume();
 	local $ENV{WS_PORT}           = $cfg->{wsPort};
@@ -466,6 +542,7 @@ sub _startBridge {
 	local $ENV{RELAY_PORT}        = $cfg->{relayPort};
 	local $ENV{RELAY_BIND}        = $prefs->get('relayBind');
 	local $ENV{FIFO_PATH}         = $cfg->{fifoPath};
+	local $ENV{RELAY_READY_FILE}  = $cfg->{relayReadyFile};
 
 	$log->info( "starting soloist bridge for player '" . $client->name . "' (device='$cfg->{deviceName}', slot=$cfg->{slot})" );
 
@@ -665,17 +742,9 @@ sub _forwardLyrionTransport {
 	return;
 }
 
-sub soloistButtonCommand {
+sub _soloistTransportCommand {
 	my ($request) = @_;
-	return $originalButtonCommand->($request) unless _forwardLyrionTransport($request);
-	$request->setStatusDone();
-}
-
-sub soloistPlayControlCommand {
-	my ($request) = @_;
-	my $original = $request->getRequestString eq 'play'  ? $originalPlayCommand
-	             : $request->getRequestString eq 'pause' ? $originalPauseCommand
-	             :                                       $originalStopCommand;
+	my $original = $originalTransportCommand{ $request->getRequestString };
 
 	return $original->($request) unless _forwardLyrionTransport($request);
 	$request->setStatusDone();
@@ -688,6 +757,7 @@ sub bridgeRunning {
 
 sub bridgeStreamUrlFor {
 	my ($playerId) = @_;
+	return '' unless _bridgeRunning($playerId);
 	my $b = $bridges{$playerId} or return '';
 	return streamUrlFor($b);
 }
@@ -700,7 +770,7 @@ sub cliBridge {
 	elsif ( $action eq 'stop' )  { stopBridgeForPlayer($_) for keys %bridges; }
 	elsif ( $action ne 'status' ) { $request->setStatusBadParams(); return; }
 
-	$request->addResult( 'running', scalar keys %bridges );
+	$request->addResult( 'running', scalar grep { _bridgeRunning($_) } keys %bridges );
 	$request->setStatusDone();
 }
 
@@ -959,6 +1029,17 @@ sub _playbackStateForBridge {
 	};
 }
 
+sub _relayAutoplayGateReady {
+	my ($b) = @_;
+	my $path = $b->{relayReadyFile} || '';
+	return 0 unless length $path && -f $path;
+
+	my @stat = stat($path);
+	return 0 unless @stat && $stat[9];
+
+	return ( Time::HiRes::time() - $stat[9] ) <= RELAY_AUTOPLAY_READY_MAX_AGE ? 1 : 0;
+}
+
 sub _maybeApplyConfiguredVolumeOnConnect {
 	my ( $b, $playback ) = @_;
 
@@ -973,16 +1054,26 @@ sub _applyPlaybackTransition {
 	my ( $playerId, $b, $client, $url, $playback ) = @_;
 
 	if ( $playback->{reallyPlayingHere} && !$playback->{wasPlayingHere} ) {
-		$log->info( 'auto-tuning ' . $client->name . ' to its Spotify Soloist instance' );
+		$b->{pendingAutoplaySince} ||= Time::HiRes::time();
+		my $relayReady = _relayAutoplayGateReady($b);
+		my $timedOut = ( Time::HiRes::time() - $b->{pendingAutoplaySince} ) >= RELAY_AUTOPLAY_READY_TIMEOUT ? 1 : 0;
+		return unless $relayReady || $timedOut;
+
+		$log->info(
+			'auto-tuning ' . $client->name . ' to its Spotify Soloist instance'
+			. ( $relayReady ? ' after relay readiness' : ' after relay readiness timeout' )
+		);
 		$b->{suppressLyrionTransportUntil} = time() + 1;
 		$client->execute( [ 'playlist', 'play', $url ] );
 		$b->{notPlayingSince} = undef;
 		$b->{pausedSince} = undef;
 		$b->{idleDisconnectArmed} = 1;
+		$b->{pendingAutoplaySince} = undef;
 		$b->{wasPlayingHere} = 1;
 		return;
 	}
 
+	$b->{pendingAutoplaySince} = undef;
 	return unless !$playback->{reallyPlayingHere} && $playback->{wasPlayingHere};
 
 	if ( $playback->{isActiveDevice} ) {
@@ -1066,7 +1157,7 @@ sub _coverUrlFromDecorations {
 }
 
 sub _publishMetadataForPlayer {
-	my ( $client, $url, $state ) = @_;
+	my ( $b, $client, $url, $state ) = @_;
 	return unless _clientIsActivelyPlayingOwnSoloistStream( $client, $url );
 
 	my $item = $state->{item} || {};
@@ -1077,7 +1168,7 @@ sub _publishMetadataForPlayer {
 	my $artist = $deco->{creators}->[0]->{entity}->{decorations}->{identity}->{name} // '';
 	my $album  = $deco->{parent}->{entity}->{decorations}->{identity}->{name} // '';
 	my $cover  = _coverUrlFromDecorations($deco);
-	my $format = currentFormatSpec();
+	my $format = currentFormatSpec( $b->{format} );
 	my $master = $client->master;
 	my $meta   = $master->pluginData('metadata') || {};
 	my $streamType = 'Spotify Soloist (' . $format->{displayFormat}
@@ -1128,8 +1219,8 @@ sub pollMetadata {
 	Slim::Utils::Timers::setTimer( undef, time() + STATE_LOOP_INTERVAL, \&pollMetadata );
 
 	for my $playerId ( keys %bridges ) {
-		my $b = $bridges{$playerId};
-		next unless $b->{proc} && $b->{proc}->alive;
+		next unless _bridgeRunning($playerId);
+		my $b = $bridges{$playerId} or next;
 
 		my $client = Slim::Player::Client::getClient($playerId);
 		unless ($client) {
@@ -1155,7 +1246,7 @@ sub pollMetadata {
 		_applyPlaybackTransition( $playerId, $b, $client, $url, $playback );
 		_updateIdleDisconnectState( $b, $playback );
 		next if _maybeRestartIdleBridge( $playerId, $b, $client, $playback );
-		_publishMetadataForPlayer( $client, $url, $state );
+		_publishMetadataForPlayer( $b, $client, $url, $state );
 	}
 }
 

@@ -8,13 +8,13 @@ PLUGIN_SPOTIFYSOLOIST_SOLOISTBIN
 	EN	Path to soloist binary
 
 PLUGIN_SPOTIFYSOLOIST_SOLOISTBIN_DESC
-	EN	Full path to the soloist executable (or a wrapper script, e.g. for a glibc-compatibility container) on this machine.
+	EN	Full path to the soloist executable (or a wrapper script, e.g. for a glibc-compatibility container or an apulse launcher) on this machine.
 
 PLUGIN_SPOTIFYSOLOIST_FFMPEGBIN
 	EN	Path to ffmpeg binary
 
 PLUGIN_SPOTIFYSOLOIST_FFMPEGBIN_DESC
-	EN	Used to capture each player's PipeWire/PulseAudio sink and feed its relay.
+	EN	Used to capture each player's backend-specific audio source and feed its relay.
 
 PLUGIN_SPOTIFYSOLOIST_PYTHONBIN
 	EN	Path to python3
@@ -22,11 +22,23 @@ PLUGIN_SPOTIFYSOLOIST_PYTHONBIN
 PLUGIN_SPOTIFYSOLOIST_PYTHONBIN_DESC
 	EN	Runs the built-in HTTP relay that replaces Icecast (Bin/audio-relay.py), one instance per player. Plain "python3" works if it's on PATH.
 
+PLUGIN_SPOTIFYSOLOIST_AUDIOBACKEND
+	EN	Audio backend
+
+PLUGIN_SPOTIFYSOLOIST_AUDIOBACKEND_DESC
+	EN	PipeWire/PulseAudio keeps the current null-sink bridge. ALSA/apulse is opt-in for hosts without a running Pulse/PipeWire stack; point the Soloist binary path at an apulse-style wrapper if needed, and the plugin will map each player slot to ALSA loopback devices instead of Pulse sinks.
+
 PLUGIN_SPOTIFYSOLOIST_SINK
 	EN	PipeWire/PulseAudio sink name prefix
 
 PLUGIN_SPOTIFYSOLOIST_SINK_DESC
-	EN	Each selected player gets its own null-sink named "&lt;prefix&gt;_&lt;slot&gt;", created automatically. Each is also set as PulseAudio's default sink while its instance starts, so Soloist's PulseAudio-fallback output lands there even when --pipewire-device is a no-op (plain PulseAudio hosts) -- see README for why this matters if you select more than one player.
+	EN	Only used by the PipeWire/PulseAudio backend. Each selected player gets its own null-sink named "&lt;prefix&gt;_&lt;slot&gt;", created automatically. Soloist is launched against that sink and the bridge keeps routing/capture isolated per player.
+
+PLUGIN_SPOTIFYSOLOIST_ALSADEVICEPREFIX
+	EN	ALSA loopback device prefix
+
+PLUGIN_SPOTIFYSOLOIST_ALSADEVICEPREFIX_DESC
+	EN	Only used by the ALSA/apulse backend. For slot N, Soloist playback is routed to "&lt;prefix&gt;,0,N" and ffmpeg captures from "&lt;prefix&gt;,1,N". The default "hw:Loopback" matches the standard snd-aloop card naming.
 
 PLUGIN_SPOTIFYSOLOIST_WSPORTBASE
 	EN	Control port base
@@ -44,7 +56,7 @@ PLUGIN_SPOTIFYSOLOIST_FORMAT
 	EN	Stream format
 
 PLUGIN_SPOTIFYSOLOIST_FORMAT_DESC
-	EN	mp3 works on every Squeezebox generation, including classic fixed-firmware hardware (Boom, Classic, Receiver). flac sends a native FLAC stream and requires a player with FLAC decoding support. pcm sends uncompressed 44.1 kHz stereo 16-bit PCM in a WAV stream to minimize encoder latency; it requires WAV/PCM support and uses about 1.4 Mbit/s.
+	EN	Global format used for all players. mp3 works on every Squeezebox generation, including classic fixed-firmware hardware (Boom, Classic, Receiver). flac sends a native FLAC stream and requires a player with FLAC decoding support. pcm sends uncompressed 44.1 kHz stereo 16-bit PCM in a WAV stream to minimize encoder latency; it requires WAV/PCM support and uses about 1.4 Mbit/s.
 
 PLUGIN_SPOTIFYSOLOIST_BITRATE
 	EN	MP3 bitrate
@@ -107,13 +119,13 @@ PLUGIN_SPOTIFYSOLOIST_STOPPED
 	EN	stopped
 
 PLUGIN_SPOTIFYSOLOIST_RESTART_NOTE
-	EN	Toggling a player's checkbox takes effect immediately (starts/stops just that instance). Changes to binary paths, port bases, the sink prefix, or initial Soloist volume only apply the next time an instance is (re)started.
+	EN	Toggling a player's checkbox takes effect immediately (starts/stops just that instance). Saving a global stream-format or MP3 bitrate change restarts all selected player instances immediately. Changes to binary paths, backend settings, port bases, the sink/device prefix, or initial Soloist volume only apply the next time an instance is (re)started.
 
 PLUGIN_SPOTIFYSOLOIST_BINARY_STALE
 	EN	Soloist binary nearing expiry.
 
 PLUGIN_SPOTIFYSOLOIST_BINARY_STALE_DESC
-	EN	Spotify Soloist builds expire after about 90 days; this plugin warns at 80 days but does not auto-update the executable for you.
+	EN	Spotify Soloist builds expire after about 90 days; this plugin checks the build timestamp reported by `soloist --version`, warns at 80 days, and does not auto-update the executable for you.
 
 PLUGIN_SPOTIFYSOLOIST_BINARY_STALE_LINK
 	EN	Open Spotify's official Downloads and updates page.

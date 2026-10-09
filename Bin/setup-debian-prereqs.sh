@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
 #
-# Installs the Debian-side prerequisites for LMS_Soloist's current
-# Pulse/PipeWire-compatible bridge design and grants the Lyrion service
-# account access to that audio server.
+# Installs the Debian-side prerequisites for LMS_Soloist's default
+# Pulse/PipeWire backend and grants the Lyrion service account access to
+# that audio server.
 #
 # What it does:
-#   - installs required Debian packages
+#   - installs required Debian packages for the Pulse/PipeWire backend
 #   - detects the Lyrion service + runtime user (or accepts --lyrion-user)
 #   - if no Pulse-compatible server is reachable yet, creates/starts a
 #     simple system-mode PulseAudio service
@@ -15,8 +15,7 @@
 # What it does NOT do:
 #   - download/install the Spotify Soloist binary
 #   - set your Soloist API key in the plugin
-#   - switch the plugin to an ALSA/apulse backend (it still uses the
-#     per-player Pulse/PipeWire null-sink design)
+#   - configure the optional ALSA/apulse backend
 
 set -euo pipefail
 
@@ -128,7 +127,7 @@ write_pulseaudio_service() {
 	log "writing ${PULSEAUDIO_SERVICE_PATH}"
 	cat > "${PULSEAUDIO_SERVICE_PATH}" <<'EOF'
 [Unit]
-Description=System-wide PulseAudio for LMS_Soloist
+Description=System-wide PulseAudio for LMS_Soloist default backend
 After=sound.target network.target
 
 [Service]
@@ -214,4 +213,5 @@ log "done"
 log "next steps:"
 log "  1. Put the Soloist binary somewhere stable (for example /usr/local/bin/soloist)"
 log "  2. Paste your Soloist API key into the plugin settings in Lyrion"
-log "  3. Toggle the desired players on in the plugin settings page"
+log "  3. Keep the plugin on its default Pulse/PipeWire backend, or switch to the optional ALSA/apulse backend only if you have your own wrapper/loopback setup"
+log "  4. Toggle the desired players on in the plugin settings page"
