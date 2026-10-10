@@ -16,17 +16,16 @@
 # `ctl trace` event stream (with an occasional snapshot resync fallback)
 # and writes into Lyrion's native metadata mechanism.
 #
-# Required env vars: SOLOIST_BIN FFMPEG_BIN DEVICE_NAME SOLOIST_API_KEY
+# Required env vars: SOLOIST_BIN DEVICE_NAME SOLOIST_API_KEY
 # Optional (defaulted below): FORMAT BITRATE WS_PORT SOLOIST_DATA_DIR
 #                     SOLOIST_CACHE_DIR RELAY_PORT RELAY_BIND FIFO_PATH
 #                     PYTHON_BIN SOLOIST_AUDIO_BACKEND PIPEWIRE_SINK
 #                     ALSA_PLAYBACK_DEVICE ALSA_CAPTURE_DEVICE
-#                     RELAY_READY_FILE
+#                     RELAY_READY_FILE FFMPEG_BIN
 
 set -u
 
 : "${SOLOIST_BIN:?SOLOIST_BIN is required}"
-: "${FFMPEG_BIN:?FFMPEG_BIN is required}"
 : "${DEVICE_NAME:?DEVICE_NAME is required}"
 : "${SOLOIST_API_KEY:?SOLOIST_API_KEY is required (plugin settings -> Soloist API key)}"
 
@@ -123,6 +122,9 @@ esac
 # ---------------------------------------------------------------------------
 CAPTURE_INPUT_ARGS=()
 SOLOIST_AUDIO_TARGET_DESC=""
+PCM_CAPTURE_ARGS=()
+CAPTURE_MODE="ffmpeg"
+RELAY_EXTRA_ARGS=()
 
 if [ "$SOLOIST_AUDIO_BACKEND" = "pulse" ]; then
 	if ! command -v pactl >/dev/null 2>&1; then
@@ -304,6 +306,7 @@ rm -f "$RELAY_READY_FILE"
 
 case "$FORMAT" in
 	flac)
+		: "${FFMPEG_BIN:?FFMPEG_BIN is required when FORMAT=flac}"
 		# Live FLAC should emit frames promptly rather than favoring archive
 		# compression, otherwise Lyrion can wait several seconds for audio.
 		ENCODE_ARGS=(-c:a flac -compression_level 0)
@@ -313,15 +316,26 @@ case "$FORMAT" in
 		STREAM_EXTENSION="flac"
 		;;
 	pcm)
-		# WAV supplies the PCM stream's format to Lyrion while avoiding an
-		# encoder, making this the low-latency format for capable players.
-		ENCODE_ARGS=(-c:a pcm_s16le -ar 44100 -ac 2)
-		MUX_ARGS=()
-		MUX_FORMAT="wav"
+		CAPTURE_MODE="pcm-direct"
 		CONTENT_TYPE="audio/wav"
 		STREAM_EXTENSION="wav"
+		RELAY_EXTRA_ARGS+=(--wav-stream --wav-sample-rate 44100 --wav-channels 2 --wav-bits-per-sample 16)
+		if [ "$SOLOIST_AUDIO_BACKEND" = "pulse" ]; then
+			if ! command -v parec >/dev/null 2>&1; then
+				log "ERROR: parec not found -- PCM direct mode on the Pulse backend needs PulseAudio utilities"
+				exit 1
+			fi
+			PCM_CAPTURE_ARGS=(parec --raw --rate=44100 --channels=2 --format=s16le -d "${PIPEWIRE_SINK}.monitor")
+		else
+			if ! command -v arecord >/dev/null 2>&1; then
+				log "ERROR: arecord not found -- PCM direct mode on the ALSA backend needs alsa-utils"
+				exit 1
+			fi
+			PCM_CAPTURE_ARGS=(arecord -d0 -c2 -f S16_LE -r 44100 -t raw -D "${ALSA_CAPTURE_DEVICE}")
+		fi
 		;;
 	*)
+		: "${FFMPEG_BIN:?FFMPEG_BIN is required when FORMAT=mp3}"
 		ENCODE_ARGS=(-c:a libmp3lame -b:a "$BITRATE")
 		MUX_ARGS=()
 		FORMAT="mp3"
@@ -337,6 +351,7 @@ log "starting relay on ${RELAY_BIND}:${RELAY_PORT} (content-type ${CONTENT_TYPE}
 	--port "$RELAY_PORT" \
 	--bind "$RELAY_BIND" \
 	--content-type "$CONTENT_TYPE" \
+	"${RELAY_EXTRA_ARGS[@]}" \
 	--ready-file "$RELAY_READY_FILE" &
 RELAY_PID=$!
 
@@ -365,41 +380,40 @@ fi
 #    (One persistent capture connection regardless of how many HTTP
 #    listeners come and go -- restarting the capture on every
 #    listener connect/disconnect is what caused corrupted timestamps in an
-#    earlier version of this bridge.) ffmpeg itself still gets its own
-#    restart loop for resilience against transient Pulse/relay hiccups --
-#    the FIFO means that doesn't disturb already-connected HTTP clients.
-#    For long-running playback, prefer the audio backend's own capture clock
-#    over forced wallclock retimestamping: when ffmpeg re-times a live source
-#    against system wallclock and then continuously async-resamples
-#    to match it, tiny clock mismatches can accumulate into a growing
-#    offset versus Spotify's own app timeline even though the bridge keeps
-#    sounding smooth. Generating fresh PTS is still useful, but keep them
-#    anchored to the source stream rather than re-basing them to wallclock.
+#    earlier version of this bridge.) For mp3/flac, ffmpeg still gets its
+#    own restart loop for resilience against transient capture/relay hiccups.
+#    For PCM/WAV, keep the path simpler and skip ffmpeg entirely: capture
+#    raw 44.1 kHz stereo 16-bit PCM directly and let the relay prepend the
+#    streaming WAV header for each client.
 # ---------------------------------------------------------------------------
-ffmpeg_supervisor() {
-	CUR_FFMPEG_PID=""
-	trap '[ -n "$CUR_FFMPEG_PID" ] && kill "$CUR_FFMPEG_PID" 2>/dev/null; exit 0' TERM INT
+capture_supervisor() {
+	CUR_CAPTURE_PID=""
+	trap '[ -n "$CUR_CAPTURE_PID" ] && kill "$CUR_CAPTURE_PID" 2>/dev/null; exit 0' TERM INT
 
 	while kill -0 "$SOLOIST_PID" 2>/dev/null; do
-		"$FFMPEG_BIN" -nostdin -hide_banner -loglevel warning -y \
-			-fflags +genpts \
-			"${CAPTURE_INPUT_ARGS[@]}" \
-			"${ENCODE_ARGS[@]}" \
-			"${MUX_ARGS[@]}" \
-			-f "$MUX_FORMAT" \
-			"$FIFO_PATH" &
-		CUR_FFMPEG_PID=$!
-		wait "$CUR_FFMPEG_PID"
-		CUR_FFMPEG_PID=""
+		if [ "$CAPTURE_MODE" = "pcm-direct" ]; then
+			"${PCM_CAPTURE_ARGS[@]}" > "$FIFO_PATH" &
+		else
+			"$FFMPEG_BIN" -nostdin -hide_banner -loglevel warning -y \
+				-fflags +genpts \
+				"${CAPTURE_INPUT_ARGS[@]}" \
+				"${ENCODE_ARGS[@]}" \
+				"${MUX_ARGS[@]}" \
+				-f "$MUX_FORMAT" \
+				"$FIFO_PATH" &
+		fi
+		CUR_CAPTURE_PID=$!
+		wait "$CUR_CAPTURE_PID"
+		CUR_CAPTURE_PID=""
 
 		if kill -0 "$SOLOIST_PID" 2>/dev/null; then
-			log "ffmpeg exited -- restarting capture in 2s (relay/clients unaffected)"
+			log "${CAPTURE_MODE} capture exited -- restarting in 2s (relay/clients unaffected)"
 			sleep 2
 		fi
 	done
 }
 
-ffmpeg_supervisor &
+capture_supervisor &
 FFMPEG_SUP_PID=$!
 
 log "stream ready: http://$(hostname -I 2>/dev/null | awk '{print $1}'):${RELAY_PORT}/soloist.${STREAM_EXTENSION}"

@@ -24,6 +24,7 @@ import os
 import queue
 import socket
 import socketserver
+import struct
 import sys
 import threading
 import time
@@ -117,6 +118,13 @@ def make_handler(broadcaster, content_type):
                 self.send_header("Connection", "close")
                 self.end_headers()
 
+                if broadcaster.wav_stream:
+                    self.wfile.write(make_wav_header(
+                        broadcaster.wav_sample_rate,
+                        broadcaster.wav_channels,
+                        broadcaster.wav_bits_per_sample,
+                    ))
+
                 while True:
                     chunk = q.get()
                     self.wfile.write(chunk)
@@ -136,6 +144,24 @@ class ThreadingHTTPServer(socketserver.ThreadingMixIn, socketserver.TCPServer):
     daemon_threads = True
 
 
+def make_wav_header(sample_rate, channels, bits_per_sample):
+    byte_rate = sample_rate * channels * bits_per_sample // 8
+    block_align = channels * bits_per_sample // 8
+    # Streaming WAV: use an "unknown/very large" data size so clients can
+    # start decoding immediately while the stream keeps growing.
+    data_size = 0xFFFFFFFF
+    riff_size = 36 + data_size
+    return (
+        b"RIFF"
+        + struct.pack("<I", riff_size & 0xFFFFFFFF)
+        + b"WAVE"
+        + b"fmt "
+        + struct.pack("<IHHIIHH", 16, 1, channels, sample_rate, byte_rate, block_align, bits_per_sample)
+        + b"data"
+        + struct.pack("<I", data_size)
+    )
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--fifo", required=True, help="Path to the FIFO ffmpeg writes into")
@@ -143,9 +169,17 @@ def main():
     parser.add_argument("--bind", default="0.0.0.0")
     parser.add_argument("--content-type", default="audio/mpeg")
     parser.add_argument("--ready-file", default="")
+    parser.add_argument("--wav-stream", action="store_true")
+    parser.add_argument("--wav-sample-rate", type=int, default=44100)
+    parser.add_argument("--wav-channels", type=int, default=2)
+    parser.add_argument("--wav-bits-per-sample", type=int, default=16)
     args = parser.parse_args()
 
     broadcaster = Broadcaster(args.fifo, ready_path=(args.ready_file or None))
+    broadcaster.wav_stream = args.wav_stream
+    broadcaster.wav_sample_rate = args.wav_sample_rate
+    broadcaster.wav_channels = args.wav_channels
+    broadcaster.wav_bits_per_sample = args.wav_bits_per_sample
     reader_thread = threading.Thread(target=broadcaster.run_forever, daemon=True)
     reader_thread.start()
 

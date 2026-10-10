@@ -367,7 +367,10 @@ The `pcm` option sends uncompressed 44.1 kHz, stereo, signed 16-bit PCM
 inside a continuous WAV stream (`audio/wav`). It avoids encoder latency and
 is intended for diagnosing or minimizing startup delay on players with
 WAV/PCM support. It uses approximately 1.4 Mbit/s, so use MP3 or FLAC when
-bandwidth matters.
+bandwidth matters. On this branch, PCM/WAV now also skips ffmpeg entirely:
+the bridge captures raw PCM directly (`parec` on the Pulse backend or
+`arecord` on the ALSA backend) and the built-in relay serves it as a
+streaming WAV response.
 
 | Format | Compatible players | Tradeoff |
 |---|---|---|

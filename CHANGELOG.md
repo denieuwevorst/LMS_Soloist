@@ -11,6 +11,9 @@
 - Prune dead bridge processes from the in-memory bridge table so the
   settings page no longer keeps showing `running` after a bridge has
   already stopped.
+- Special-case PCM/WAV transport so it no longer goes through ffmpeg:
+  the bridge now captures raw PCM directly (`parec` on Pulse/PipeWire,
+  `arecord` on ALSA) and the embedded relay adds the streaming WAV header.
 
 ## 0.3.48
 
