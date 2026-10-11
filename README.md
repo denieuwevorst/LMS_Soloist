@@ -373,7 +373,9 @@ the bridge captures raw PCM directly (`parec` on the Pulse backend or
 streaming WAV response. To add headroom without starving LMS when the relay
 queue runs dry, the PCM path now uses a real **300 ms capture buffer** on
 the input side instead (`parec --latency-msec=300` on Pulse/PipeWire or an
-equivalent `arecord` buffer on ALSA).
+equivalent `arecord` buffer on ALSA). If capture still hiccups briefly, the
+relay now fills those short PCM/WAV gaps with silence instead of letting the
+HTTP stream run dry and risking an LMS/client stream abort.
 
 | Format | Compatible players | Tradeoff |
 |---|---|---|
