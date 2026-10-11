@@ -126,13 +126,7 @@ def make_handler(broadcaster, content_type):
                     ))
 
                 while True:
-                    if broadcaster.wav_stream:
-                        try:
-                            chunk = q.get(timeout=broadcaster.wav_chunk_timeout)
-                        except queue.Empty:
-                            chunk = broadcaster.wav_silence_chunk
-                    else:
-                        chunk = q.get()
+                    chunk = q.get()
                     self.wfile.write(chunk)
             except (BrokenPipeError, ConnectionResetError, OSError):
                 pass
@@ -186,9 +180,6 @@ def main():
     broadcaster.wav_sample_rate = args.wav_sample_rate
     broadcaster.wav_channels = args.wav_channels
     broadcaster.wav_bits_per_sample = args.wav_bits_per_sample
-    byte_rate = args.wav_sample_rate * args.wav_channels * args.wav_bits_per_sample // 8
-    broadcaster.wav_chunk_timeout = broadcaster.chunk_size / byte_rate if byte_rate else 0.02
-    broadcaster.wav_silence_chunk = b"\x00" * broadcaster.chunk_size
     reader_thread = threading.Thread(target=broadcaster.run_forever, daemon=True)
     reader_thread.start()
 

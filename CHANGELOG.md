@@ -17,8 +17,6 @@
 - Move the PCM/WAV headroom to the capture side as a real **300 ms input
   buffer** instead of delaying relay output, so short capture stalls are
   absorbed without making LMS see a dry HTTP stream.
-- If the PCM/WAV capture still stalls briefly, emit silence for those short
-  gaps instead of letting the relay stream go dry and get treated as ended.
 
 ## 0.3.48
 
