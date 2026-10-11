@@ -17,6 +17,9 @@
 - Move the PCM/WAV headroom to the capture side as a real **300 ms input
   buffer** instead of delaying relay output, so short capture stalls are
   absorbed without making LMS see a dry HTTP stream.
+- On the PCM/WAV path, flush queued relay audio at track changes so it is
+  easier to see whether delay growth is coming from relay backlog versus
+  upstream capture stalling.
 
 ## 0.3.48
 

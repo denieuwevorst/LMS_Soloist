@@ -21,7 +21,7 @@
 #                     SOLOIST_CACHE_DIR RELAY_PORT RELAY_BIND FIFO_PATH
 #                     PYTHON_BIN SOLOIST_AUDIO_BACKEND PIPEWIRE_SINK
 #                     ALSA_PLAYBACK_DEVICE ALSA_CAPTURE_DEVICE
-#                     RELAY_READY_FILE FFMPEG_BIN
+#                     RELAY_READY_FILE RELAY_FLUSH_FILE FFMPEG_BIN
 
 set -u
 
@@ -43,6 +43,7 @@ RELAY_PORT="${RELAY_PORT:-9077}"
 RELAY_BIND="${RELAY_BIND:-0.0.0.0}"
 FIFO_PATH="${FIFO_PATH:-/tmp/soloist-audio.fifo}"
 RELAY_READY_FILE="${RELAY_READY_FILE:-${SOLOIST_CACHE_DIR}/relay.ready}"
+RELAY_FLUSH_FILE="${RELAY_FLUSH_FILE:-${SOLOIST_CACHE_DIR}/relay.flush}"
 PYTHON_BIN="${PYTHON_BIN:-python3}"
 WS_ENDPOINT="127.0.0.1:${WS_PORT}"
 
@@ -303,6 +304,7 @@ fi
 # ---------------------------------------------------------------------------
 [ -p "$FIFO_PATH" ] || { rm -f "$FIFO_PATH"; mkfifo "$FIFO_PATH"; }
 rm -f "$RELAY_READY_FILE"
+rm -f "$RELAY_FLUSH_FILE"
 
 case "$FORMAT" in
 	flac)
@@ -352,6 +354,7 @@ log "starting relay on ${RELAY_BIND}:${RELAY_PORT} (content-type ${CONTENT_TYPE}
 	--bind "$RELAY_BIND" \
 	--content-type "$CONTENT_TYPE" \
 	"${RELAY_EXTRA_ARGS[@]}" \
+	--flush-file "$RELAY_FLUSH_FILE" \
 	--ready-file "$RELAY_READY_FILE" &
 RELAY_PID=$!
 

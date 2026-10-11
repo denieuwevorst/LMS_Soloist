@@ -391,6 +391,7 @@ sub _configFor {
 		cacheDir   => catdir( $baseCacheDir, "player_$slot" ),
 		fifoPath   => catfile( $baseCacheDir, "player_$slot", 'audio.fifo' ),
 		relayReadyFile => catfile( $baseCacheDir, "player_$slot", 'relay.ready' ),
+		relayFlushFile => catfile( $baseCacheDir, "player_$slot", 'relay.flush' ),
 		deviceName => $playerName . $prefs->get('deviceNameSuffix'),
 	};
 }
@@ -543,6 +544,7 @@ sub _startBridge {
 	local $ENV{RELAY_BIND}        = $prefs->get('relayBind');
 	local $ENV{FIFO_PATH}         = $cfg->{fifoPath};
 	local $ENV{RELAY_READY_FILE}  = $cfg->{relayReadyFile};
+	local $ENV{RELAY_FLUSH_FILE}  = $cfg->{relayFlushFile};
 
 	$log->info( "starting soloist bridge for player '" . $client->name . "' (device='$cfg->{deviceName}', slot=$cfg->{slot})" );
 
@@ -1156,6 +1158,23 @@ sub _coverUrlFromDecorations {
 	return ( $large || $xlarge || $covers->[0] || {} )->{url} // '';
 }
 
+sub _requestRelayFlush {
+	my ( $b, $reason ) = @_;
+	return unless $b->{format} && $b->{format} eq 'pcm';
+
+	my $path = $b->{relayFlushFile} || '';
+	return unless length $path;
+
+	if ( open my $fh, '>>', $path ) {
+		close $fh;
+		utime undef, undef, $path;
+		$log->info("requested relay flush for track change" . ( $reason ? " ($reason)" : '' ));
+	}
+	else {
+		$log->warn("couldn't request relay flush for '$path': $!");
+	}
+}
+
 sub _publishMetadataForPlayer {
 	my ( $b, $client, $url, $state ) = @_;
 	return unless _clientIsActivelyPlayingOwnSoloistStream( $client, $url );
@@ -1194,6 +1213,10 @@ sub _publishMetadataForPlayer {
 	Slim::Music::Info::setCurrentTitle( $url, $title, $client );
 	$master->currentPlaylistUpdateTime( Time::HiRes::time() );
 	Slim::Control::Request::notifyFromArray( $master, ['newmetadata'] );
+
+	if ( ( $meta->{title} // '' ) ne '' && ( $meta->{title} // '' ) ne $title ) {
+		_requestRelayFlush( $b, $title );
+	}
 
 	$log->debug( 'metadata updated for ' . $client->name . ": $artist - $title" );
 }

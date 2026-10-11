@@ -34,13 +34,15 @@ from http.server import BaseHTTPRequestHandler
 class Broadcaster:
     """Fans out chunks read from the FIFO to every registered client queue."""
 
-    def __init__(self, fifo_path, chunk_size=4096, queue_maxsize=256, ready_path=None, ready_touch_interval=0.25):
+    def __init__(self, fifo_path, chunk_size=4096, queue_maxsize=256, ready_path=None, ready_touch_interval=0.25, flush_path=None):
         self.fifo_path = fifo_path
         self.chunk_size = chunk_size
         self.queue_maxsize = queue_maxsize
         self.ready_path = ready_path
         self.ready_touch_interval = ready_touch_interval
+        self.flush_path = flush_path
         self._last_ready_touch = 0.0
+        self._last_flush_touch = 0.0
         self._clients = set()
         self._lock = threading.Lock()
 
@@ -84,6 +86,40 @@ class Broadcaster:
             self._last_ready_touch = now
         except OSError:
             pass
+
+    def _flush_clients(self):
+        flushed = 0
+        with self._lock:
+            clients = list(self._clients)
+        for q in clients:
+            while True:
+                try:
+                    q.get_nowait()
+                    flushed += 1
+                except queue.Empty:
+                    break
+        if flushed:
+            print(f"[relay] flushed {flushed} queued chunk(s)", file=sys.stderr, flush=True)
+
+    def _check_flush_request(self):
+        if not self.flush_path:
+            return
+
+        try:
+            stat = os.stat(self.flush_path)
+        except OSError:
+            return
+
+        if stat.st_mtime <= self._last_flush_touch:
+            return
+
+        self._last_flush_touch = stat.st_mtime
+        self._flush_clients()
+
+    def watch_flush_requests(self):
+        while True:
+            self._check_flush_request()
+            time.sleep(0.1)
 
     def run_forever(self):
         while True:
@@ -169,19 +205,23 @@ def main():
     parser.add_argument("--bind", default="0.0.0.0")
     parser.add_argument("--content-type", default="audio/mpeg")
     parser.add_argument("--ready-file", default="")
+    parser.add_argument("--flush-file", default="")
     parser.add_argument("--wav-stream", action="store_true")
     parser.add_argument("--wav-sample-rate", type=int, default=44100)
     parser.add_argument("--wav-channels", type=int, default=2)
     parser.add_argument("--wav-bits-per-sample", type=int, default=16)
     args = parser.parse_args()
 
-    broadcaster = Broadcaster(args.fifo, ready_path=(args.ready_file or None))
+    broadcaster = Broadcaster(args.fifo, ready_path=(args.ready_file or None), flush_path=(args.flush_file or None))
     broadcaster.wav_stream = args.wav_stream
     broadcaster.wav_sample_rate = args.wav_sample_rate
     broadcaster.wav_channels = args.wav_channels
     broadcaster.wav_bits_per_sample = args.wav_bits_per_sample
     reader_thread = threading.Thread(target=broadcaster.run_forever, daemon=True)
     reader_thread.start()
+    if broadcaster.flush_path:
+        flush_thread = threading.Thread(target=broadcaster.watch_flush_requests, daemon=True)
+        flush_thread.start()
 
     handler_cls = make_handler(broadcaster, args.content_type)
     server = ThreadingHTTPServer((args.bind, args.port), handler_cls)
