@@ -20,7 +20,6 @@ Usage:
 """
 
 import argparse
-import collections
 import os
 import queue
 import socket
@@ -35,18 +34,15 @@ from http.server import BaseHTTPRequestHandler
 class Broadcaster:
     """Fans out chunks read from the FIFO to every registered client queue."""
 
-    def __init__(self, fifo_path, chunk_size=4096, queue_maxsize=256, ready_path=None, ready_touch_interval=0.25, buffer_ms=0):
+    def __init__(self, fifo_path, chunk_size=4096, queue_maxsize=256, ready_path=None, ready_touch_interval=0.25):
         self.fifo_path = fifo_path
         self.chunk_size = chunk_size
         self.queue_maxsize = queue_maxsize
         self.ready_path = ready_path
         self.ready_touch_interval = ready_touch_interval
-        self.buffer_delay = max(buffer_ms, 0) / 1000.0
         self._last_ready_touch = 0.0
         self._clients = set()
         self._lock = threading.Lock()
-        self._pending = collections.deque()
-        self._pending_cv = threading.Condition()
 
     def register(self):
         q = queue.Queue(maxsize=self.queue_maxsize)
@@ -89,31 +85,6 @@ class Broadcaster:
         except OSError:
             pass
 
-    def _queue_for_broadcast(self, chunk):
-        if self.buffer_delay <= 0:
-            self._broadcast(chunk)
-            return
-
-        with self._pending_cv:
-            self._pending.append((time.monotonic() + self.buffer_delay, chunk))
-            self._pending_cv.notify()
-
-    def dispatch_forever(self):
-        while True:
-            with self._pending_cv:
-                while not self._pending:
-                    self._pending_cv.wait()
-
-                while self._pending:
-                    release_at, chunk = self._pending[0]
-                    delay = release_at - time.monotonic()
-                    if delay > 0:
-                        self._pending_cv.wait(timeout=delay)
-                        break
-
-                    self._pending.popleft()
-                    self._broadcast(chunk)
-
     def run_forever(self):
         while True:
             try:
@@ -126,7 +97,7 @@ class Broadcaster:
                             # wait for the next one.
                             break
                         self._mark_ready()
-                        self._queue_for_broadcast(chunk)
+                        self._broadcast(chunk)
             except FileNotFoundError:
                 time.sleep(1)
                 continue
@@ -202,23 +173,19 @@ def main():
     parser.add_argument("--wav-sample-rate", type=int, default=44100)
     parser.add_argument("--wav-channels", type=int, default=2)
     parser.add_argument("--wav-bits-per-sample", type=int, default=16)
-    parser.add_argument("--buffer-ms", type=int, default=0)
     args = parser.parse_args()
 
-    broadcaster = Broadcaster(args.fifo, ready_path=(args.ready_file or None), buffer_ms=args.buffer_ms)
+    broadcaster = Broadcaster(args.fifo, ready_path=(args.ready_file or None))
     broadcaster.wav_stream = args.wav_stream
     broadcaster.wav_sample_rate = args.wav_sample_rate
     broadcaster.wav_channels = args.wav_channels
     broadcaster.wav_bits_per_sample = args.wav_bits_per_sample
     reader_thread = threading.Thread(target=broadcaster.run_forever, daemon=True)
     reader_thread.start()
-    if broadcaster.buffer_delay > 0:
-        dispatch_thread = threading.Thread(target=broadcaster.dispatch_forever, daemon=True)
-        dispatch_thread.start()
 
     handler_cls = make_handler(broadcaster, args.content_type)
     server = ThreadingHTTPServer((args.bind, args.port), handler_cls)
-    print(f"[relay] listening on {args.bind}:{args.port}, content-type={args.content_type}, buffer_ms={args.buffer_ms}", file=sys.stderr, flush=True)
+    print(f"[relay] listening on {args.bind}:{args.port}, content-type={args.content_type}", file=sys.stderr, flush=True)
     server.serve_forever()
 
 

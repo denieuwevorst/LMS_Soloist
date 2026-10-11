@@ -319,19 +319,19 @@ case "$FORMAT" in
 		CAPTURE_MODE="pcm-direct"
 		CONTENT_TYPE="audio/wav"
 		STREAM_EXTENSION="wav"
-		RELAY_EXTRA_ARGS+=(--wav-stream --wav-sample-rate 44100 --wav-channels 2 --wav-bits-per-sample 16 --buffer-ms 300)
+		RELAY_EXTRA_ARGS+=(--wav-stream --wav-sample-rate 44100 --wav-channels 2 --wav-bits-per-sample 16)
 		if [ "$SOLOIST_AUDIO_BACKEND" = "pulse" ]; then
 			if ! command -v parec >/dev/null 2>&1; then
 				log "ERROR: parec not found -- PCM direct mode on the Pulse backend needs PulseAudio utilities"
 				exit 1
 			fi
-			PCM_CAPTURE_ARGS=(parec --raw --rate=44100 --channels=2 --format=s16le -d "${PIPEWIRE_SINK}.monitor")
+			PCM_CAPTURE_ARGS=(parec --raw --rate=44100 --channels=2 --format=s16le --latency-msec=300 --process-time-msec=50 -d "${PIPEWIRE_SINK}.monitor")
 		else
 			if ! command -v arecord >/dev/null 2>&1; then
 				log "ERROR: arecord not found -- PCM direct mode on the ALSA backend needs alsa-utils"
 				exit 1
 			fi
-			PCM_CAPTURE_ARGS=(arecord -d0 -c2 -f S16_LE -r 44100 -t raw -D "${ALSA_CAPTURE_DEVICE}")
+			PCM_CAPTURE_ARGS=(arecord -d0 -c2 -f S16_LE -r 44100 -t raw --buffer-time=300000 --period-time=50000 -D "${ALSA_CAPTURE_DEVICE}")
 		fi
 		;;
 	*)
