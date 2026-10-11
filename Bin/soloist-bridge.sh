@@ -319,7 +319,7 @@ case "$FORMAT" in
 		CAPTURE_MODE="pcm-direct"
 		CONTENT_TYPE="audio/wav"
 		STREAM_EXTENSION="wav"
-		RELAY_EXTRA_ARGS+=(--wav-stream --wav-sample-rate 44100 --wav-channels 2 --wav-bits-per-sample 16)
+		RELAY_EXTRA_ARGS+=(--wav-stream --wav-sample-rate 44100 --wav-channels 2 --wav-bits-per-sample 16 --buffer-ms 300)
 		if [ "$SOLOIST_AUDIO_BACKEND" = "pulse" ]; then
 			if ! command -v parec >/dev/null 2>&1; then
 				log "ERROR: parec not found -- PCM direct mode on the Pulse backend needs PulseAudio utilities"

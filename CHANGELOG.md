@@ -14,6 +14,8 @@
 - Special-case PCM/WAV transport so it no longer goes through ffmpeg:
   the bridge now captures raw PCM directly (`parec` on Pulse/PipeWire,
   `arecord` on ALSA) and the embedded relay adds the streaming WAV header.
+- Add a fixed **300 ms relay buffer** on the PCM/WAV path so short capture
+  stalls are less likely to turn into audible dropouts.
 
 ## 0.3.48
 

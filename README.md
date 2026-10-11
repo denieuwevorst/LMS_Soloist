@@ -370,7 +370,8 @@ WAV/PCM support. It uses approximately 1.4 Mbit/s, so use MP3 or FLAC when
 bandwidth matters. On this branch, PCM/WAV now also skips ffmpeg entirely:
 the bridge captures raw PCM directly (`parec` on the Pulse backend or
 `arecord` on the ALSA backend) and the built-in relay serves it as a
-streaming WAV response.
+streaming WAV response, with a small built-in **300 ms relay buffer** to
+absorb short Pulse/ALSA capture hiccups.
 
 | Format | Compatible players | Tradeoff |
 |---|---|---|
