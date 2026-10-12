@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+- ALSA/apulse backend: confirmed working end-to-end on real hardware
+  (DietPi + `snd-aloop` + bundled x86_64 shim) across multiple
+  consecutive tracks and automatic track transitions, with continuous
+  audible playback, no capture restarts, and no shim/ALSA errors. This
+  closes out the "stops after one track" symptom reported against an
+  earlier commit in this series -- it was caused by the shim's
+  `APULSE_DIAG` debug logging (see below) being left enabled
+  unconditionally, and was resolved simply by gating that logging back
+  behind the `SOLOIST_SHIM_DIAG=1` opt-in (default off).
 - ALSA/apulse backend: fix the real silent-playback bug with the bundled
   x86_64 shim. The shim's own `APULSE_DIAG` debug log (temporarily
   enabled while investigating, see below) pinpointed the exact failure:
