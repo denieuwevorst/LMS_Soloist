@@ -12,6 +12,20 @@
   stdin instead of relying on ffmpeg to open the ALSA device directly.
   This avoids host-specific ffmpeg/ALSA device parsing failures while
   keeping the existing encoding/relay path intact.
+- ALSA/apulse backend: resolve the configured loopback card *name* (e.g.
+  `Loopback`) to its numeric ALSA card index before launching Soloist or
+  `arecord`. When two or more cards share the same name -- which happens
+  if `snd-aloop` was loaded more than once without unique `id=` values --
+  ALSA's name-based lookup is ambiguous and can fail to open the device
+  with no audible error (`Cannot get card index for Loopback`), which
+  looked like "Soloist plays but there's no sound". The bridge now logs a
+  `WARNING` naming every matching card index in that case and picks the
+  first one so playback still works instead of failing open.
+- Run the ALSA/apulse capture supervisor loop in the foreground (it already
+  polls Soloist's own liveness internally) instead of backgrounding it
+  behind a duplicate supervisory loop, and log the exact capture command
+  plus its exit status on every restart, to make capture-pipeline failures
+  visible in `bridge.log` instead of silent.
 
 ## 0.3.49
 

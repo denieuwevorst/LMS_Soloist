@@ -459,6 +459,17 @@ backend**. Either switch to the ALSA/apulse backend or see
 - Check that player's `bridge.log` for the exact playback/capture devices
   it tried to use. The ALSA backend logs both `APULSE_PLAYBACK_DEVICE` and
   the ffmpeg capture device at startup.
+- If `arecord`/apulse fail with `ALSA lib confmisc.c:... Cannot get card
+  index for Loopback` (or audio opens but is silent with no error at all),
+  you likely have **more than one ALSA card named `Loopback`** (e.g.
+  `snd-aloop` loaded more than once without unique `id=` values). ALSA's
+  name-based lookup can't tell those cards apart and may silently fail to
+  open either side of the pipe. The bridge now resolves the configured
+  `Loopback` card name to its numeric index automatically and logs a
+  `WARNING` listing every matching index when there's more than one; to
+  remove the ambiguity for good, either unload the extra loopback
+  instances (`cat /proc/asound/cards` to see what's loaded) or give each
+  one a unique `id=` when loading `snd-aloop`.
 
 **Bridge starts, but the device never shows up in the Spotify app**
 - Check that player's status in the plugin's settings page — "running" or

@@ -103,6 +103,64 @@ trap cleanup EXIT TERM INT
 
 log() { echo "[soloist-bridge] $*" >&2; }
 
+# Resolve a bare ALSA card *name* (e.g. "Loopback" in "hw:Loopback,0,0") to
+# its numeric card index from /proc/asound/cards. ALSA's own name-based
+# lookup (snd_config_get_card) fails -- silently, from apulse's point of
+# view -- when two or more cards share the same name ("Cannot get card
+# index for Loopback"), which can happen if snd-aloop was loaded more than
+# once without unique id= values. Resolving to the numeric index here makes
+# the device string unambiguous and avoids that silent playback/capture
+# failure. Already-numeric prefixes (e.g. "hw:1,0,0") pass through unchanged.
+_alsa_resolve_card_name() {
+	local dev="$1"
+	local prefix="${dev%%:*}"
+	local rest="${dev#*:}"
+	local card="${rest%%,*}"
+	local remainder=""
+	if [ "$rest" != "$card" ]; then
+		remainder="${rest#*,}"
+	fi
+
+	case "$card" in
+		''|*[!0-9]*) ;;
+		*) printf '%s\n' "$dev"; return 0 ;;
+	esac
+
+	if [ ! -r /proc/asound/cards ]; then
+		printf '%s\n' "$dev"
+		return 0
+	fi
+
+	local matches=() line idx id
+	while IFS= read -r line; do
+		if [[ "$line" =~ ^[[:space:]]*([0-9]+)[[:space:]]\[([^]]*)\]: ]]; then
+			idx="${BASH_REMATCH[1]}"
+			id="${BASH_REMATCH[2]}"
+			id="${id%"${id##*[![:space:]]}"}"
+			id="${id#"${id%%[![:space:]]*}"}"
+			if [ "$id" = "$card" ]; then
+				matches+=("$idx")
+			fi
+		fi
+	done < /proc/asound/cards
+
+	if [ "${#matches[@]}" -eq 0 ]; then
+		log "WARNING: no ALSA card named '${card}' found in /proc/asound/cards -- leaving '${dev}' as-is; arecord/apulse may fail to open it"
+		printf '%s\n' "$dev"
+		return 0
+	fi
+
+	if [ "${#matches[@]}" -gt 1 ]; then
+		log "WARNING: ${#matches[@]} ALSA cards are named '${card}' (indices: ${matches[*]}) -- ALSA's name lookup is ambiguous for duplicate card names and can silently fail to open devices (e.g. 'Cannot get card index for ${card}'). Using the first match (index ${matches[0]}); rename the extra loopback instances (e.g. modprobe snd-aloop id=...) or configure a numeric device prefix to remove this ambiguity."
+	fi
+
+	if [ -n "$remainder" ]; then
+		printf '%s:%s,%s\n' "$prefix" "${matches[0]}" "$remainder"
+	else
+		printf '%s:%s\n' "$prefix" "${matches[0]}"
+	fi
+}
+
 if ! command -v "$PYTHON_BIN" >/dev/null 2>&1; then
 	log "ERROR: $PYTHON_BIN not found -- the relay needs Python 3"
 	exit 1
@@ -183,7 +241,9 @@ else
 	else
 		log "no bundled Soloist pulse shim active; ALSA backend expects the configured soloist path to handle Pulse->ALSA itself"
 	fi
-	export APULSE_PLAYBACK_DEVICE="${APULSE_PLAYBACK_DEVICE:-$ALSA_PLAYBACK_DEVICE}"
+	ALSA_PLAYBACK_DEVICE="$(_alsa_resolve_card_name "$ALSA_PLAYBACK_DEVICE")"
+	ALSA_CAPTURE_DEVICE="$(_alsa_resolve_card_name "$ALSA_CAPTURE_DEVICE")"
+	export APULSE_PLAYBACK_DEVICE="$(_alsa_resolve_card_name "${APULSE_PLAYBACK_DEVICE:-$ALSA_PLAYBACK_DEVICE}")"
 	if ! command -v arecord >/dev/null 2>&1; then
 		log "ERROR: arecord not found -- ALSA backend capture needs alsa-utils"
 		exit 1
