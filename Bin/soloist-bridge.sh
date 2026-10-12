@@ -72,14 +72,22 @@ export XDG_CONFIG_HOME="${SOLOIST_DATA_DIR}/.config"
 mkdir -p "${XDG_CONFIG_HOME}/pulse"
 
 # Everything this script and its children (soloist, ffmpeg, the relay)
-# print goes to a dedicated per-player log file from here on, in addition
-# to wherever this process's stdout/stderr was already headed (which, when
-# launched via Proc::Background from inside Lyrion, may not go anywhere
-# you can easily see). This is the file to check when a specific player's
-# device doesn't show up in Spotify: Soloist's own "ready" / "waiting for
-# login" / error lines land here directly.
+# print goes to a dedicated per-player log file from here on. This is the
+# file to check when a specific player's device doesn't show up in
+# Spotify: Soloist's own "ready" / "waiting for login" / error lines land
+# here directly.
+#
+# Deliberately NOT `exec > >(tee -a "$LOG_FILE") 2>&1`: GNU tee fully
+# buffers its output (typically ~4KB) whenever its stdout isn't a TTY,
+# which is always true here since nothing reads this script's own
+# stdout/stderr. That silently delays recent log lines -- including ones
+# that always print on a working code path -- from ever reaching the file
+# while the process is still alive and otherwise working fine, which made
+# earlier debugging sessions look like code wasn't running when it was.
+# A plain append redirection writes directly, with no buffering process
+# in between, so every log line lands immediately.
 LOG_FILE="${LOG_FILE:-${SOLOIST_CACHE_DIR}/bridge.log}"
-exec > >(tee -a "$LOG_FILE") 2>&1
+exec >> "$LOG_FILE" 2>&1
 echo "=== bridge starting $(date -Iseconds) (log: $LOG_FILE) ==="
 echo "HOME=${HOME} XDG_CONFIG_HOME=${XDG_CONFIG_HOME}"
 

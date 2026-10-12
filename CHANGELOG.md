@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- Stop piping the bridge's own log output through `tee`. GNU `tee` fully
+  buffers its writes whenever its stdout isn't a TTY (always true here),
+  which can delay recently-logged lines -- including ones on a working,
+  always-executed code path -- from ever reaching `bridge.log` while the
+  process is still running normally. Write directly to the log file
+  instead (`exec >> "$LOG_FILE" 2>&1`), with no buffering process in the
+  middle, so every log line lands immediately.
 - ALSA/apulse backend: stop sharing one device string between playback and
   capture. The bridge now keeps Soloist playback on the raw loopback
   playback side while preferring the plug-converted loopback capture side,
