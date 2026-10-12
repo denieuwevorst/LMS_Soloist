@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.3.49
+
 - Stop using the Soloist executable file timestamp to estimate expiry age.
   The plugin now parses the build timestamp reported by `soloist --version`,
   which matches Spotify's documented 90-day expiry rule even when the file
