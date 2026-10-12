@@ -409,16 +409,18 @@ sub _slotFor {
 	return $slot;
 }
 
-sub _alsaCapturePrefixFor {
-	my ($prefix) = @_;
+sub _alsaDeviceFor {
+	my ( $prefix, $dev, $slot, $forCapture ) = @_;
 
-	return $prefix unless defined $prefix && length $prefix;
+	return unless defined $prefix && length $prefix;
 
-	if ( $prefix =~ /^hw:(.+)$/ ) {
-		return 'plughw:' . $1;
+	if ( $prefix =~ /^(plug)?hw:([^,]+)$/ ) {
+		my $card = $2;
+		my $type = $forCapture ? 'plughw' : ( $1 ? 'plughw' : 'hw' );
+		return sprintf( '%s:CARD=%s,DEV=%d,SUBDEV=%d', $type, $card, $dev, $slot );
 	}
 
-	return $prefix;
+	return $prefix . ',' . $dev . ',' . $slot;
 }
 
 sub _configFor {
@@ -433,8 +435,8 @@ sub _configFor {
 		backend    => $prefs->get('audioBackend') || 'pulse',
 		format     => currentFormatSpec()->{key},
 		sink       => $prefs->get('pipewireSink') . '_' . $slot,
-		alsaPlaybackDevice => $alsaPrefix . ',0,' . $slot,
-		alsaCaptureDevice  => _alsaCapturePrefixFor($alsaPrefix) . ',1,' . $slot,
+		alsaPlaybackDevice => _alsaDeviceFor( $alsaPrefix, 0, $slot, 0 ),
+		alsaCaptureDevice  => _alsaDeviceFor( $alsaPrefix, 1, $slot, 1 ),
 		dataDir    => catdir( $baseDataDir, "player_$slot" ),
 		cacheDir   => catdir( $baseCacheDir, "player_$slot" ),
 		fifoPath   => catfile( $baseCacheDir, "player_$slot", 'audio.fifo' ),

@@ -210,8 +210,8 @@ Typical setup:
 
 With the default prefix, player slot `N` maps to:
 
-- Soloist playback: `hw:Loopback,0,N`
-- ffmpeg/arecord capture: `plughw:Loopback,1,N`
+- Soloist playback: `hw:CARD=Loopback,DEV=0,SUBDEV=N`
+- ffmpeg/arecord capture: `plughw:CARD=Loopback,DEV=1,SUBDEV=N`
 
 That means your ALSA loopback setup must provide enough substreams for the
 number of selected players you plan to run in parallel.
