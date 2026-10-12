@@ -318,21 +318,25 @@ else
 				;;
 		esac
 
-		# TEMPORARY diagnostics while chasing a silent-playback report: the
-		# bundled shim supports APULSE_DIAG (verbose pcm-open/connect
-		# logging to its own stderr, which lands in this player's
-		# bridge.log since Soloist is a child of this script) and
-		# APULSE_YIELD_PATH (dumps the raw audio frames it receives from
-		# Soloist to a file, independent of whether the ALSA write side
-		# succeeds). This narrows down whether a silence problem is
-		# upstream (Soloist/shim never produce real audio) or downstream
-		# (real audio produced but the ALSA write/loopback path drops it).
-		# TODO: gate this behind an explicit opt-in (env var or pref) once
-		# the current silent-playback investigation concludes, since the
-		# yield dump is raw/unbounded and not meant to run by default.
-		SOLOIST_SHIM_DIAG=1
-		SOLOIST_SHIM_YIELD_PATH="${SOLOIST_CACHE_DIR}/shim-alsa-yield.raw"
-		log "shim diagnostics enabled (temporary): APULSE_DIAG=1, raw yield dump -> ${SOLOIST_SHIM_YIELD_PATH}"
+		# Diagnostic-only: the bundled shim supports APULSE_DIAG (verbose
+		# pcm-open/connect logging to its own stderr, logged on EVERY
+		# single Pulse API call, which lands in this player's bridge.log
+		# since Soloist is a child of this script) and APULSE_YIELD_PATH
+		# (dumps the raw audio frames it receives from Soloist to a file).
+		# This was enabled unconditionally while chasing the original
+		# silent-playback bug (now fixed above, confirmed by real audio
+		# finally reaching the relay) and is now opt-in only
+		# (SOLOIST_SHIM_DIAG=1 in the bridge's environment), off by
+		# default: logging on every single API call is real per-callback
+		# overhead on a real-time audio thread, which is exactly the kind
+		# of thing that can cause audible glitches/dropouts on constrained
+		# hardware (e.g. a Pi or low-power x86 box) -- leaving it on
+		# unconditionally risked *causing* playback problems rather than
+		# just diagnosing them.
+		if [ "${SOLOIST_SHIM_DIAG:-0}" = "1" ]; then
+			SOLOIST_SHIM_YIELD_PATH="${SOLOIST_CACHE_DIR}/shim-alsa-yield.raw"
+			log "SOLOIST_SHIM_DIAG=1: enabling shim diagnostics; raw yield dump -> ${SOLOIST_SHIM_YIELD_PATH} (delete manually when done; adds per-call logging overhead -- leave off for normal use)"
+		fi
 	fi
 	ARECORD_INPUT_ARGS=(arecord -c2 -f S16_LE -r 44100 -t raw --buffer-time=300000 --period-time=50000 -D "${ALSA_CAPTURE_DEVICE}")
 	CAPTURE_INPUT_ARGS=(-f s16le -ar 44100 -ac 2 -i pipe:0)
