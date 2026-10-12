@@ -22,7 +22,7 @@ sub page {
 
 sub prefs {
 	return ( $prefs, qw(
-		soloistBin ffmpegBin pythonBin pipewireSink wsPortBase relayPortBase
+		soloistBin ffmpegBin pythonBin audioBackend pipewireSink alsaDevicePrefix wsPortBase relayPortBase
 		format bitrate initialVolume deviceNameSuffix apiKey relayBind autostart
 		idleDisconnectSeconds
 	) );
@@ -44,6 +44,13 @@ sub handler {
 		# -then-restart-everything on every save.
 		my $oldSelected = $prefs->get('selectedPlayers') || {};
 		my $newSelected = {};
+		my $oldGlobalFormat = $prefs->get('format')  || 'mp3';
+		my $newGlobalFormat = $params->{pref_format} || $oldGlobalFormat;
+		my $oldBitrate      = $prefs->get('bitrate') || '320k';
+		my $newBitrate      = $params->{pref_bitrate} || $oldBitrate;
+		my @toStart;
+		my @toStop;
+		my @toRestart;
 
 		for my $player (@players) {
 			my $id    = $player->{id};
@@ -53,14 +60,33 @@ sub handler {
 			$newSelected->{$id} = 1 if $isOn;
 
 			if ( $isOn && !$wasOn ) {
-				Plugins::SpotifySoloist::Plugin::startBridgeForPlayer($id);
+				push @toStart, $id;
 			}
 			elsif ( !$isOn && $wasOn ) {
-				Plugins::SpotifySoloist::Plugin::stopBridgeForPlayer($id);
+				push @toStop, $id;
+			}
+			elsif (
+				$isOn && $wasOn &&
+				(
+					$oldGlobalFormat ne $newGlobalFormat ||
+					(
+						$newGlobalFormat eq 'mp3' &&
+						$oldBitrate ne $newBitrate
+					)
+				)
+			) {
+				push @toRestart, $id;
 			}
 		}
 
 		$prefs->set( 'selectedPlayers', $newSelected );
+		$prefs->remove('playerFormats');
+		$prefs->set( 'format',  $newGlobalFormat );
+		$prefs->set( 'bitrate', $newBitrate );
+
+		Plugins::SpotifySoloist::Plugin::stopBridgeForPlayer($_)    for @toStop;
+		Plugins::SpotifySoloist::Plugin::startBridgeForPlayer($_)   for @toStart;
+		Plugins::SpotifySoloist::Plugin::restartBridgeForPlayer($_) for @toRestart;
 	}
 
 	if ( $params->{startAll} ) {

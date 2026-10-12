@@ -1,5 +1,43 @@
 # Changelog
 
+## Unreleased
+
+## 0.3.49
+
+- Stop using the Soloist executable file timestamp to estimate expiry age.
+  The plugin now parses the build timestamp reported by `soloist --version`,
+  which matches Spotify's documented 90-day expiry rule even when the file
+  mtime is pinned to an old fixed date.
+- Remove the per-player stream-format override again for now and go back to
+  one global stream-format choice for all selected players.
+- Prune dead bridge processes from the in-memory bridge table so the
+  settings page no longer keeps showing `running` after a bridge has
+  already stopped.
+- Special-case PCM/WAV transport so it no longer goes through ffmpeg:
+  the bridge now captures raw PCM directly (`parec` on Pulse/PipeWire,
+  `arecord` on ALSA) and the embedded relay adds the streaming WAV header.
+- Bundle the Soloist Pulse shim for **x86_64** and load it automatically on
+  the ALSA backend, so that architecture no longer needs a separate
+  apulse-style wrapper just to map Soloist into ALSA loopback.
+- Move the PCM/WAV headroom to the capture side as a real **300 ms input
+  buffer** instead of delaying relay output, so short capture stalls are
+  absorbed without making LMS see a dry HTTP stream.
+- On the PCM/WAV path, flush queued relay audio at track changes so it is
+  easier to see whether delay growth is coming from relay backlog versus
+  upstream capture stalling.
+
+## 0.3.48
+
+- Add an opt-in **ALSA/apulse** backend so the plugin no longer requires a
+  host PulseAudio/PipeWire stack just to be usable in LMS. The default
+  backend remains the existing per-player Pulse/PipeWire null-sink bridge;
+  the new backend is explicitly for wrapper/loopback setups where Soloist
+  is launched under an apulse-style shim and ffmpeg captures from
+  per-player ALSA loopback devices.
+- Gate Soloist autoplay on actual relay byte flow, with a short fallback
+  timeout, so the first song is less likely to start before ffmpeg and the
+  embedded relay are really producing stream data.
+
 ## 0.3.47
 
 - If LMS autostart runs before all previously selected players have fully

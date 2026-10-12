@@ -9,7 +9,8 @@
 	<strong>[% "PLUGIN_SPOTIFYSOLOIST_BINARY_STALE" | string %]</strong>
 	[% "PLUGIN_SPOTIFYSOLOIST_BINARY_STALE_DESC" | string %]
 	<br>
-	The configured executable file <code>[% soloistBinaryStatus.path %]</code> is
+	The configured executable <code>[% soloistBinaryStatus.path %]</code> reports
+	build timestamp <code>[% soloistBinaryStatus.buildTimestamp %]</code> and is
 	about <strong>[% soloistBinaryStatus.ageDays %] days</strong> old. Replace it
 	before Spotify Soloist playback stops working. If this path is only a wrapper
 	script, check the real Soloist binary behind it.
@@ -21,6 +22,12 @@
 	<input name="startAll" type="submit" value="[% 'PLUGIN_SPOTIFYSOLOIST_STARTALL' | string %]">
 	<input name="stopAll" type="submit" value="[% 'PLUGIN_SPOTIFYSOLOIST_STOPALL' | string %]">
 	<table>
+	<tr>
+		<th></th>
+		<th align="left">Player</th>
+		<th align="left">Status</th>
+		<th align="left">Stream</th>
+	</tr>
 	[% FOREACH player IN players %]
 		<tr>
 			<td>
@@ -56,8 +63,19 @@
 	<input name="pref_pythonBin" id="pref_pythonBin" type="text" size="20" value="[% prefs.pref_pythonBin %]">
 [% END %]
 
+[% WRAPPER setting title="PLUGIN_SPOTIFYSOLOIST_AUDIOBACKEND" desc="PLUGIN_SPOTIFYSOLOIST_AUDIOBACKEND_DESC" %]
+	<select class="stdedit" name="pref_audioBackend" id="pref_audioBackend">
+		<option value="pulse" [% IF prefs.pref_audioBackend != 'alsa' %]selected[% END %]>PipeWire/PulseAudio null-sinks</option>
+		<option value="alsa"  [% IF prefs.pref_audioBackend == 'alsa' %]selected[% END %]>ALSA/apulse loopback</option>
+	</select>
+[% END %]
+
 [% WRAPPER setting title="PLUGIN_SPOTIFYSOLOIST_SINK" desc="PLUGIN_SPOTIFYSOLOIST_SINK_DESC" %]
 	<input name="pref_pipewireSink" id="pref_pipewireSink" type="text" size="30" value="[% prefs.pref_pipewireSink %]">
+[% END %]
+
+[% WRAPPER setting title="PLUGIN_SPOTIFYSOLOIST_ALSADEVICEPREFIX" desc="PLUGIN_SPOTIFYSOLOIST_ALSADEVICEPREFIX_DESC" %]
+	<input name="pref_alsaDevicePrefix" id="pref_alsaDevicePrefix" type="text" size="30" value="[% prefs.pref_alsaDevicePrefix %]">
 [% END %]
 
 [% WRAPPER setting title="PLUGIN_SPOTIFYSOLOIST_WSPORTBASE" desc="PLUGIN_SPOTIFYSOLOIST_WSPORTBASE_DESC" %]
