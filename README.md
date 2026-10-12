@@ -193,10 +193,17 @@ sudo apt install -y alsa-utils ffmpeg python3
 
 Typical setup:
 
-1. Load or persist the ALSA loopback module:
+1. Load the ALSA loopback module **and make it persist across reboots** --
+   a plain `modprobe` only loads it for the current boot, and if it's
+   missing after a reboot the ALSA backend will silently have no device to
+   use (Soloist "plays" with no audible output, and `arecord`/apulse will
+   fail to find it):
    ```bash
    sudo modprobe snd-aloop
+   echo snd-aloop | sudo tee /etc/modules-load.d/snd-aloop.conf
    ```
+   Confirm it's actually present with `cat /proc/asound/cards` -- you
+   should see a card literally named `Loopback`.
 2. Point the plugin's **Audio backend** setting at **ALSA/apulse
    loopback**.
 3. On **x86_64**, point **Soloist binary path** at the raw `soloist`
@@ -461,15 +468,23 @@ backend**. Either switch to the ALSA/apulse backend or see
   the ffmpeg capture device at startup.
 - If `arecord`/apulse fail with `ALSA lib confmisc.c:... Cannot get card
   index for Loopback` (or audio opens but is silent with no error at all),
-  you likely have **more than one ALSA card named `Loopback`** (e.g.
-  `snd-aloop` loaded more than once without unique `id=` values). ALSA's
-  name-based lookup can't tell those cards apart and may silently fail to
-  open either side of the pipe. The bridge now resolves the configured
-  `Loopback` card name to its numeric index automatically and logs a
-  `WARNING` listing every matching index when there's more than one; to
-  remove the ambiguity for good, either unload the extra loopback
-  instances (`cat /proc/asound/cards` to see what's loaded) or give each
-  one a unique `id=` when loading `snd-aloop`.
+  check `bridge.log` for the resolver's own `WARNING` line, which tells
+  you exactly which case you're in:
+  - `no ALSA card named 'Loopback' found ... (known cards: 0='PCH')` (or
+    similar, with **no** `Loopback` in the list) means the loopback kernel
+    module **simply isn't loaded right now** -- most likely it was loaded
+    manually once (e.g. for testing) but never made to persist across a
+    reboot. Fix: `sudo modprobe snd-aloop` and persist it with
+    `echo snd-aloop | sudo tee /etc/modules-load.d/snd-aloop.conf`, then
+    restart that player.
+  - `N ALSA cards are named 'Loopback' (indices: ...)` means you have
+    **more than one** loopback card with the same name (e.g. `snd-aloop`
+    loaded more than once without unique `id=` values), which makes
+    ALSA's name-based lookup ambiguous and can silently fail to open
+    either side of the pipe. The bridge resolves this to the first
+    matching numeric index automatically, but to remove the ambiguity
+    for good, unload the extra instances or give each one a unique
+    `id=` when loading `snd-aloop`.
 
 **Bridge starts, but the device never shows up in the Spotify app**
 - Check that player's status in the plugin's settings page — "running" or
