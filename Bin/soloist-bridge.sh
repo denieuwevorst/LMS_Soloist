@@ -274,8 +274,17 @@ else
 	# flag, so this mode uses either the bundled x86_64 libpulse shim or a
 	# caller-provided wrapper/equivalent launcher that honors
 	# APULSE_PLAYBACK_DEVICE.
+	#
+	# SOLOIST_LD_LIBRARY_PATH is intentionally NOT `export`ed here: it must
+	# only affect Soloist's own process (below), not every later command in
+	# this script. An `export` would leak into arecord/ffmpeg too, and the
+	# shim's bundled libpulse.so.0 stub can shadow the *system* libpulse via
+	# the dynamic linker for any later command, breaking unrelated ALSA
+	# config hooks that dlopen the real libpulse (symptom: arecord failing
+	# with "undefined symbol: pa_mainloop_new" and "Unknown PCM ...").
+	SOLOIST_LD_LIBRARY_PATH=""
 	if [ -n "$SOLOIST_SHIM_DIR" ] && [ -f "${SOLOIST_SHIM_DIR}/libpulse.so.0" ]; then
-		export LD_LIBRARY_PATH="${SOLOIST_SHIM_DIR}${LD_LIBRARY_PATH:+:${LD_LIBRARY_PATH}}"
+		SOLOIST_LD_LIBRARY_PATH="${SOLOIST_SHIM_DIR}${LD_LIBRARY_PATH:+:${LD_LIBRARY_PATH}}"
 		log "using bundled Soloist pulse shim from '${SOLOIST_SHIM_DIR}'"
 	else
 		log "no bundled Soloist pulse shim active; ALSA backend expects the configured soloist path to handle Pulse->ALSA itself"
@@ -309,7 +318,11 @@ if [ "$SOLOIST_AUDIO_BACKEND" = "pulse" ]; then
 fi
 
 log "starting soloist: device='${DEVICE_NAME}' backend=${SOLOIST_AUDIO_BACKEND} target='${SOLOIST_AUDIO_TARGET_DESC}' ws=${WS_ENDPOINT} data-dir=${SOLOIST_DATA_DIR}"
-"$SOLOIST_BIN" "${SOLOIST_ARGS[@]}" &
+if [ -n "${SOLOIST_LD_LIBRARY_PATH:-}" ]; then
+	LD_LIBRARY_PATH="$SOLOIST_LD_LIBRARY_PATH" "$SOLOIST_BIN" "${SOLOIST_ARGS[@]}" &
+else
+	"$SOLOIST_BIN" "${SOLOIST_ARGS[@]}" &
+fi
 SOLOIST_PID=$!
 
 # Poll for actual readiness instead of blindly sleeping a fixed amount.

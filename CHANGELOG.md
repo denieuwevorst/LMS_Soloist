@@ -2,6 +2,19 @@
 
 ## Unreleased
 
+- ALSA/apulse backend: stop `export`ing the bundled Soloist pulse shim's
+  `LD_LIBRARY_PATH` globally. It was only meant to affect Soloist's own
+  playback process, but a global `export` leaked it into every later
+  command in the script too -- including the `arecord` capture process,
+  which has nothing to do with Pulse at all. With the shim directory
+  ahead of the system path, the dynamic linker resolved the shim's
+  bundled (stub) `libpulse.so.0` instead of the real system one whenever
+  ALSA's config layer tried to dlopen its own "pulse" conf-hook plugin,
+  which needs the *real* libpulse symbols (e.g. `pa_mainloop_new`) --
+  breaking with "undefined symbol" and cascading into "Unknown PCM
+  <device>" for `arecord`, which is what actually caused audio capture to
+  fail every single time on the ALSA backend. Scope the shim's
+  `LD_LIBRARY_PATH` to just the Soloist invocation instead.
 - Fix a bug where the bridge's own stderr got permanently redirected to
   `/dev/null` the first time the relay-readiness probe succeeded, because
   its fd-3 cleanup used a bare `exec ... 2>/dev/null` (which changes the
