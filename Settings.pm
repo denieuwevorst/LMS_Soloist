@@ -48,6 +48,10 @@ sub handler {
 		my $newGlobalFormat = $params->{pref_format} || $oldGlobalFormat;
 		my $oldBitrate      = $prefs->get('bitrate') || '320k';
 		my $newBitrate      = $params->{pref_bitrate} || $oldBitrate;
+		my $oldBackend      = $prefs->get('audioBackend') || 'pulse';
+		my $newBackend      = $params->{pref_audioBackend} || $oldBackend;
+		my $oldAlsaPrefix   = $prefs->get('alsaDevicePrefix') || 'hw:Loopback';
+		my $newAlsaPrefix   = $params->{pref_alsaDevicePrefix} || $oldAlsaPrefix;
 		my @toStart;
 		my @toStop;
 		my @toRestart;
@@ -69,6 +73,8 @@ sub handler {
 				$isOn && $wasOn &&
 				(
 					$oldGlobalFormat ne $newGlobalFormat ||
+					$oldBackend ne $newBackend ||
+					$oldAlsaPrefix ne $newAlsaPrefix ||
 					(
 						$newGlobalFormat eq 'mp3' &&
 						$oldBitrate ne $newBitrate

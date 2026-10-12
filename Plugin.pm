@@ -84,7 +84,7 @@ $prefs->init({
 	pythonBin       => 'python3',
 	audioBackend    => 'pulse',           # pulse | alsa
 	pipewireSink    => 'soloist_sink',    # base name; each player gets _<slot> appended
-	alsaDevicePrefix => 'hw:Loopback',    # ALSA/apulse backend: playback = <prefix>,0,<slot>; capture = <prefix>,1,<slot>
+	alsaDevicePrefix => 'hw:Loopback',    # ALSA/apulse backend: playback = <prefix>,0,<slot>; capture auto-prefers plughw:<card>,1,<slot> when prefix starts with hw:
 	wsPortBase      => 9091,              # each player gets +<slot>
 	relayPortBase   => 9077,              # each player gets +<slot>
 	format          => 'mp3',             # mp3 | flac | pcm
@@ -409,9 +409,22 @@ sub _slotFor {
 	return $slot;
 }
 
+sub _alsaCapturePrefixFor {
+	my ($prefix) = @_;
+
+	return $prefix unless defined $prefix && length $prefix;
+
+	if ( $prefix =~ /^hw:(.+)$/ ) {
+		return 'plughw:' . $1;
+	}
+
+	return $prefix;
+}
+
 sub _configFor {
 	my ( $playerId, $playerName ) = @_;
 	my $slot = _slotFor($playerId);
+	my $alsaPrefix = $prefs->get('alsaDevicePrefix');
 
 	return {
 		slot       => $slot,
@@ -420,8 +433,8 @@ sub _configFor {
 		backend    => $prefs->get('audioBackend') || 'pulse',
 		format     => currentFormatSpec()->{key},
 		sink       => $prefs->get('pipewireSink') . '_' . $slot,
-		alsaPlaybackDevice => $prefs->get('alsaDevicePrefix') . ',0,' . $slot,
-		alsaCaptureDevice  => $prefs->get('alsaDevicePrefix') . ',1,' . $slot,
+		alsaPlaybackDevice => $alsaPrefix . ',0,' . $slot,
+		alsaCaptureDevice  => _alsaCapturePrefixFor($alsaPrefix) . ',1,' . $slot,
 		dataDir    => catdir( $baseDataDir, "player_$slot" ),
 		cacheDir   => catdir( $baseCacheDir, "player_$slot" ),
 		fifoPath   => catfile( $baseCacheDir, "player_$slot", 'audio.fifo' ),
