@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+- ALSA/apulse backend: stop sharing one device string between playback and
+  capture. The bridge now keeps Soloist playback on the raw loopback
+  playback side while preferring the plug-converted loopback capture side,
+  which matches hosts where the loopback monitor only exposes FLOAT_LE on
+  the raw capture node.
+- ALSA/apulse backend: when the backend uses ffmpeg for FLAC/MP3 output,
+  capture from ALSA with `arecord` first and feed raw PCM into ffmpeg via
+  stdin instead of relying on ffmpeg to open the ALSA device directly.
+  This avoids host-specific ffmpeg/ALSA device parsing failures while
+  keeping the existing encoding/relay path intact.
+
 ## 0.3.49
 
 - Stop using the Soloist executable file timestamp to estimate expiry age.
