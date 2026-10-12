@@ -181,17 +181,19 @@ On **x86_64**, this branch now ships a bundled `libpulse.so.0` shim under
 configured **Soloist binary path** can be the raw `soloist` binary.
 
 Note: that bundled shim is **not** apulse. It's a purpose-built
-`libpulse.so.0` replacement that writes audio to an ALSA PCM device
-literally named `volumio` (`plug:volumio`) -- it does not read
-`APULSE_PLAYBACK_DEVICE` at all. The bridge works around this
-automatically by writing a per-player `~/.asoundrc` (scoped to that
-player's own data dir, so it can't affect anything else on the host) that
-points `pcm.volumio` at the configured ALSA playback device. You don't
-need to do anything for this; it's mentioned here only so the
-`APULSE_PLAYBACK_DEVICE` log line doesn't look misleading when the
-bundled shim is in use. If you instead supply your own wrapper/launcher
-(see below), that wrapper's own Pulse-to-ALSA shim is expected to honor
-`APULSE_PLAYBACK_DEVICE` in the normal apulse way.
+`libpulse.so.0` replacement that genuinely honors
+`APULSE_PLAYBACK_DEVICE` and opens it directly via ALSA's
+`snd_pcm_open()`. The bridge automatically upgrades a plain `hw:` device
+to `plughw:` for this shim specifically, because on at least some
+hosts the raw `hw:` PCM type fails to open for **playback** even though
+the paired `plughw:` capture device opens fine on the very same card
+(confirmed via the shim's own diagnostic logging). You don't need to do
+anything for this; it happens automatically whenever the bundled shim
+is active. If you instead supply your own wrapper/launcher (see below),
+that wrapper's own Pulse-to-ALSA shim is expected to honor
+`APULSE_PLAYBACK_DEVICE` in the normal apulse way, and you're free to
+configure whatever device string it needs directly via **ALSA loopback
+device prefix**.
 
 On other architectures, the plugin still expects your configured
 **Soloist binary path** to be an apulse-style wrapper (or equivalent
@@ -602,15 +604,21 @@ sound** — work through these in order:
    ffmpeg -y -i /tmp/looptest.wav -af volumedetect -f null - 2>&1 | grep -i "mean_volume\|max_volume"
    ```
    If that still shows real levels but regular playback doesn't, check
-   `bridge.log` for the `wrote ALSA 'volumio' PCM alias ...` line: the
-   bundled shim does **not** read `APULSE_PLAYBACK_DEVICE` — it
-   unconditionally writes to an ALSA PCM literally named `volumio`
-   (`plug:volumio`), because it was built for Volumio hardware where
-   `/etc/asound.conf` already defines that alias. The bridge now covers
-   this automatically by writing a per-player `~/.asoundrc` that maps
-   `pcm.volumio` to the configured playback device; if that log line is
-   missing, the bridge script on disk predates this fix and needs
-   updating.
+   `bridge.log` for a `pcm open ... failed` line from `soloist-shim:`
+   right after the `cork 0` that starts playback. The bundled shim opens
+   the exact device string in `APULSE_PLAYBACK_DEVICE` via
+   `snd_pcm_open()`; the bridge already upgrades a plain `hw:` device to
+   `plughw:` for this shim (raw `hw:` playback opens have been observed
+   to fail outright on some hosts even when the paired `plughw:` capture
+   device on the same card works fine), but if you still see a `pcm
+   open ... failed` line, temporarily set `SOLOIST_SHIM_DIAG=1` in the
+   bridge's environment for one run to get verbose per-call shim logging
+   (`APULSE_DIAG`) plus a raw audio dump at
+   `<cache-dir>/player_<N>/shim-alsa-yield.raw` (`APULSE_YIELD_PATH`) to
+   see exactly what's failing and whether real audio is reaching the
+   shim at all. Leave this off for normal use -- the per-call logging
+   runs on the shim's real-time audio thread and can itself cause
+   glitches/dropouts if left on.
 5. Also check for `Failed to create secure directory (.../.config/pulse)`
    / `Failed to load cookie file` in that same log — this means the
    service account's `$HOME` isn't writable, preventing Soloist from

@@ -2,21 +2,32 @@
 
 ## Unreleased
 
-- ALSA/apulse backend: fix real silent playback with the bundled x86_64
-  shim. That shim is not apulse -- it's a purpose-built `libpulse.so.0`
-  replacement that unconditionally writes audio to an ALSA PCM literally
-  named `volumio` (`plug:volumio`), built for Volumio hardware where
-  `/etc/asound.conf` already defines that alias. It never read
-  `APULSE_PLAYBACK_DEVICE` at all, so on any non-Volumio host the shim's
-  writes went nowhere: Soloist reported "playing" and the capture
-  pipeline ran cleanly end-to-end, but nothing was ever actually
-  captured (confirmed via `ffmpeg -af volumedetect` showing -91dB on the
-  relay's own output). Fix: when the bundled shim is active, the bridge
-  now writes a per-player `~/.asoundrc` (scoped to that player's own
-  redirected `HOME`, so it can't affect anything else) defining
-  `pcm.volumio` as a `plug` wrapper around the resolved ALSA playback
-  device, so the shim's hardcoded target actually resolves to real
-  hardware.
+- ALSA/apulse backend: fix the real silent-playback bug with the bundled
+  x86_64 shim. The shim's own `APULSE_DIAG` debug log (temporarily
+  enabled while investigating, see below) pinpointed the exact failure:
+  `pcm open hw:1,0,0 failed: No such file or directory` -- Soloist
+  genuinely produced real audio and the shim buffered it correctly
+  (confirmed via its own write-queue log growing across repeated
+  writes), but opening the raw `hw:` ALSA device for **playback** failed
+  outright on this host, even though the very same loopback card's
+  paired **capture** device opened fine via `plughw:`. Fix: when the
+  bundled shim is active, upgrade its playback device from `hw:...` to
+  `plughw:...` before launching Soloist, mirroring the upgrade already
+  applied on the capture side. Confirmed fixed: audio now reaches real
+  hardware and is audible.
+  (An earlier commit in this series incorrectly assumed the shim
+  hardcoded its output to a PCM literally named `volumio`
+  (`plug:volumio`) and ignored `APULSE_PLAYBACK_DEVICE` entirely, and
+  added a `~/.asoundrc` alias to work around that. Binary string
+  analysis of the shim showed it does read `APULSE_PLAYBACK_DEVICE`
+  directly; that workaround was dead code and has been removed.)
+- ALSA/apulse backend: the shim also exposes two built-in debug hooks
+  used to diagnose the above (`APULSE_DIAG` for verbose per-call
+  logging, `APULSE_YIELD_PATH` for a raw-PCM dump of what Soloist
+  actually sends it) -- gated behind `SOLOIST_SHIM_DIAG=1` (off by
+  default). Per-call logging runs on the shim's real-time audio thread,
+  so leaving it on by default risked introducing its own audible
+  glitches/dropouts on constrained hardware.
 - ALSA/apulse backend: stop `export`ing the bundled Soloist pulse shim's
   `LD_LIBRARY_PATH` globally. It was only meant to affect Soloist's own
   playback process, but a global `export` leaked it into every later
