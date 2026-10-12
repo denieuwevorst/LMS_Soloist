@@ -26,6 +26,7 @@
 #                     SOLOIST_SHIM_DIR
 
 set -u
+set -o pipefail
 
 : "${SOLOIST_BIN:?SOLOIST_BIN is required}"
 : "${DEVICE_NAME:?DEVICE_NAME is required}"
@@ -411,8 +412,10 @@ capture_supervisor() {
 
 	while kill -0 "$SOLOIST_PID" 2>/dev/null; do
 		if [ "$CAPTURE_MODE" = "pcm-direct" ]; then
+			log "starting PCM capture: ${PCM_CAPTURE_ARGS[*]} > ${FIFO_PATH}"
 			"${PCM_CAPTURE_ARGS[@]}" > "$FIFO_PATH" &
 		elif [ "$SOLOIST_AUDIO_BACKEND" = "alsa" ]; then
+			log "starting ALSA capture: ${ARECORD_INPUT_ARGS[*]} | ${FFMPEG_BIN} ... -f ${MUX_FORMAT} ${FIFO_PATH}"
 			"${ARECORD_INPUT_ARGS[@]}" | \
 				"$FFMPEG_BIN" -nostdin -hide_banner -loglevel warning -y \
 					-fflags +genpts \
@@ -422,6 +425,7 @@ capture_supervisor() {
 					-f "$MUX_FORMAT" \
 					"$FIFO_PATH" &
 		else
+			log "starting ${CAPTURE_MODE} capture: ${FFMPEG_BIN} ... -f ${MUX_FORMAT} ${FIFO_PATH}"
 			"$FFMPEG_BIN" -nostdin -hide_banner -loglevel warning -y \
 				-fflags +genpts \
 				"${CAPTURE_INPUT_ARGS[@]}" \
@@ -432,10 +436,11 @@ capture_supervisor() {
 		fi
 		CUR_CAPTURE_PID=$!
 		wait "$CUR_CAPTURE_PID"
+		CAPTURE_STATUS=$?
 		CUR_CAPTURE_PID=""
 
 		if kill -0 "$SOLOIST_PID" 2>/dev/null; then
-			log "${CAPTURE_MODE} capture exited -- restarting in 2s (relay/clients unaffected)"
+			log "${CAPTURE_MODE} capture exited with status ${CAPTURE_STATUS} -- restarting in 2s (relay/clients unaffected)"
 			sleep 2
 		fi
 	done
