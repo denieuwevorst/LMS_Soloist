@@ -482,7 +482,17 @@ for _try in $(seq 1 10); do
 		break
 	fi
 	if ( exec 3<>"/dev/tcp/127.0.0.1/${RELAY_PORT}" ) 2>/dev/null; then
-		exec 3>&- 3<&- 2>/dev/null
+		# IMPORTANT: this must stay a braced *group*, not a bare `exec`.
+		# A bare top-level `exec 3>&- 3<&- 2>/dev/null` here would permanently
+		# redirect this shell's own stderr to /dev/null for the rest of the
+		# script (exec without a command changes the current shell's fd
+		# table, it doesn't fork), silently swallowing every later log()
+		# call (including every "starting ... capture" / "stream ready"
+		# line) while already-forked children keep logging fine -- which is
+		# exactly the "lines that must print never show up" bug this once
+		# was. `{ ... } 2>/dev/null` scopes the stderr redirect to just the
+		# fd-3 close, restoring fd 2 immediately afterwards.
+		{ exec 3>&- 3<&-; } 2>/dev/null
 		RELAY_READY=1
 		break
 	fi

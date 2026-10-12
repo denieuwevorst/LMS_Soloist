@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+- Fix a bug where the bridge's own stderr got permanently redirected to
+  `/dev/null` the first time the relay-readiness probe succeeded, because
+  its fd-3 cleanup used a bare `exec ... 2>/dev/null` (which changes the
+  current shell's fds for good, not just for that statement) instead of a
+  scoped `{ ... } 2>/dev/null` group. This silently swallowed every
+  bridge log line from that point on -- including every capture-start and
+  capture-exit-status line -- and, worse, the real stderr output from
+  every `arecord`/`ffmpeg` capture child launched afterwards, very likely
+  hiding the actual no-sound root cause behind a misleadingly "quiet" log.
 - Stop piping the bridge's own log output through `tee`. GNU `tee` fully
   buffers its writes whenever its stdout isn't a TTY (always true here),
   which can delay recently-logged lines -- including ones on a working,
