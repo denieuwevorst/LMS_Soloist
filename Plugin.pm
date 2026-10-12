@@ -45,7 +45,7 @@ use JSON::XS qw(decode_json);
 use Proc::Background;
 use Time::HiRes ();
 use Time::Local qw(timegm);
-use POSIX qw(dup2 WNOHANG);
+use POSIX qw(dup2 WNOHANG uname);
 
 use Slim::Utils::Log;
 use Slim::Utils::Prefs;
@@ -164,6 +164,40 @@ sub currentFormatSpecForUrl {
 	return currentFormatSpec('mp3');
 }
 
+sub _soloistHostArch {
+	my @uname = eval { POSIX::uname() };
+	my $arch = $uname[4] || '';
+	$arch =~ s/^\s+|\s+$//g;
+	return $arch;
+}
+
+sub bundledSoloistShimDir {
+	my $arch = _soloistHostArch();
+	return unless $arch eq 'x86_64' || $arch eq 'amd64';
+
+	my $dir = catdir( dirname(__FILE__), 'alsa-lib', 'amd64' );
+	my $shim = catfile( $dir, 'libpulse.so.0' );
+	return -f $shim ? $dir : undef;
+}
+
+sub _applySoloistExecEnv {
+	my ($b) = @_;
+	my $backend = $prefs->get('audioBackend') || 'pulse';
+
+	delete $ENV{APULSE_PLAYBACK_DEVICE};
+	return unless $backend eq 'alsa';
+
+	if ( my $shimDir = bundledSoloistShimDir() ) {
+		$ENV{LD_LIBRARY_PATH} = length( $ENV{LD_LIBRARY_PATH} || '' )
+			? $shimDir . ':' . $ENV{LD_LIBRARY_PATH}
+			: $shimDir;
+	}
+
+	if ( $b && $b->{alsaPlaybackDevice} ) {
+		$ENV{APULSE_PLAYBACK_DEVICE} = $b->{alsaPlaybackDevice};
+	}
+}
+
 sub _captureSoloistVersionOutput {
 	my $path = $prefs->get('soloistBin') || '';
 	return unless length $path && -f $path;
@@ -179,6 +213,7 @@ sub _captureSoloistVersionOutput {
 		if ( open( my $devnull, '>', '/dev/null' ) ) {
 			POSIX::dup2( fileno($devnull), fileno(STDERR) );
 		}
+		_applySoloistExecEnv();
 		exec(@cmd) or exit(1);
 	}
 
@@ -392,6 +427,7 @@ sub _configFor {
 		fifoPath   => catfile( $baseCacheDir, "player_$slot", 'audio.fifo' ),
 		relayReadyFile => catfile( $baseCacheDir, "player_$slot", 'relay.ready' ),
 		relayFlushFile => catfile( $baseCacheDir, "player_$slot", 'relay.flush' ),
+		soloistShimDir => bundledSoloistShimDir(),
 		deviceName => $playerName . $prefs->get('deviceNameSuffix'),
 	};
 }
@@ -545,6 +581,7 @@ sub _startBridge {
 	local $ENV{FIFO_PATH}         = $cfg->{fifoPath};
 	local $ENV{RELAY_READY_FILE}  = $cfg->{relayReadyFile};
 	local $ENV{RELAY_FLUSH_FILE}  = $cfg->{relayFlushFile};
+	local $ENV{SOLOIST_SHIM_DIR}  = $cfg->{soloistShimDir};
 
 	$log->info( "starting soloist bridge for player '" . $client->name . "' (device='$cfg->{deviceName}', slot=$cfg->{slot})" );
 
@@ -674,6 +711,7 @@ sub _runSoloistCtl {
 		if ( open( my $devnull, '>', '/dev/null' ) ) {
 			POSIX::dup2( fileno($devnull), fileno(STDERR) );
 		}
+		_applySoloistExecEnv($b);
 		exec(@cmd) or exit(1);
 	}
 
@@ -819,6 +857,7 @@ sub _fetchNowPlaying {
 		if ( open( my $devnull, '>', '/dev/null' ) ) {
 			POSIX::dup2( fileno($devnull), fileno(STDERR) );
 		}
+		_applySoloistExecEnv();
 		exec(@cmd) or exit(1);
 	}
 
@@ -865,6 +904,7 @@ sub _startTraceObserver {
 		if ( open( my $devnull, '>', '/dev/null' ) ) {
 			POSIX::dup2( fileno($devnull), fileno(STDERR) );
 		}
+		_applySoloistExecEnv($b);
 		exec(@cmd) or exit(1);
 	}
 

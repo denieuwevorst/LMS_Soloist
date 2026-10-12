@@ -8,7 +8,7 @@ PLUGIN_SPOTIFYSOLOIST_SOLOISTBIN
 	EN	Path to soloist binary
 
 PLUGIN_SPOTIFYSOLOIST_SOLOISTBIN_DESC
-	EN	Full path to the soloist executable (or a wrapper script, e.g. for a glibc-compatibility container or an apulse launcher) on this machine.
+	EN	Full path to the soloist executable (or a wrapper script, e.g. for a glibc-compatibility container). On the ALSA backend, this plugin can use its bundled x86_64 pulse shim automatically; other architectures may still need a custom wrapper/launcher.
 
 PLUGIN_SPOTIFYSOLOIST_FFMPEGBIN
 	EN	Path to ffmpeg binary
@@ -26,7 +26,7 @@ PLUGIN_SPOTIFYSOLOIST_AUDIOBACKEND
 	EN	Audio backend
 
 PLUGIN_SPOTIFYSOLOIST_AUDIOBACKEND_DESC
-	EN	PipeWire/PulseAudio keeps the current null-sink bridge. ALSA/apulse is opt-in for hosts without a running Pulse/PipeWire stack; point the Soloist binary path at an apulse-style wrapper if needed, and the plugin will map each player slot to ALSA loopback devices instead of Pulse sinks.
+	EN	PipeWire/PulseAudio keeps the current null-sink bridge. ALSA/apulse is opt-in for hosts without a running Pulse/PipeWire stack; on x86_64 this plugin ships a bundled pulse shim for Soloist, and on other architectures you may still need your own wrapper/launcher. Each selected player slot is mapped to ALSA loopback devices instead of Pulse sinks.
 
 PLUGIN_SPOTIFYSOLOIST_SINK
 	EN	PipeWire/PulseAudio sink name prefix
@@ -38,7 +38,7 @@ PLUGIN_SPOTIFYSOLOIST_ALSADEVICEPREFIX
 	EN	ALSA loopback device prefix
 
 PLUGIN_SPOTIFYSOLOIST_ALSADEVICEPREFIX_DESC
-	EN	Only used by the ALSA/apulse backend. For slot N, Soloist playback is routed to "&lt;prefix&gt;,0,N" and ffmpeg captures from "&lt;prefix&gt;,1,N". The default "hw:Loopback" matches the standard snd-aloop card naming.
+	EN	Only used by the ALSA/apulse backend. For slot N, Soloist playback is routed to "&lt;prefix&gt;,0,N" and the bridge captures from "&lt;prefix&gt;,1,N". The default "hw:Loopback" matches the standard snd-aloop card naming.
 
 PLUGIN_SPOTIFYSOLOIST_WSPORTBASE
 	EN	Control port base

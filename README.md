@@ -136,8 +136,9 @@ For EACH selected player (its own stable "slot", persisted across restarts):
 - `ffmpeg` and `python3`, plus one of these audio backend setups:
   - **Default:** a reachable PulseAudio/PipeWire stack for the current
     null-sink backend.
-  - **Optional no-Pulse path:** an apulse-style wrapper around Soloist and
-    an ALSA loopback device layout the plugin can map per player.
+  - **Optional no-Pulse path:** on x86_64, the bundled Soloist pulse shim;
+    on other architectures, an apulse-style wrapper around Soloist; in both
+    cases, an ALSA loopback device layout the plugin can map per player.
 - Optional: if your host's glibc is too old for the prebuilt Soloist
   binary, see [glibc compatibility](#if-your-hosts-glibc-is-too-old) below.
 
@@ -173,9 +174,16 @@ sudo apt install -y pulseaudio pulseaudio-utils ffmpeg python3
 
 Use this only if you specifically want to run without a host PulseAudio or
 PipeWire daemon. Soloist still does **not** have native ALSA output, so
-the plugin expects your configured **Soloist binary path** to be an
-apulse-style wrapper (or equivalent launcher) that makes Soloist's Pulse
-client API calls land on ALSA instead.
+the plugin needs a Pulse-compatible shim path into ALSA instead.
+
+On **x86_64**, this branch now ships a bundled `libpulse.so.0` shim under
+`alsa-lib/amd64/` and loads it automatically on the ALSA backend, so your
+configured **Soloist binary path** can be the raw `soloist` binary.
+
+On other architectures, the plugin still expects your configured
+**Soloist binary path** to be an apulse-style wrapper (or equivalent
+launcher) that makes Soloist's Pulse client API calls land on ALSA
+instead.
 
 Required packages:
 
@@ -191,8 +199,9 @@ Typical setup:
    ```
 2. Point the plugin's **Audio backend** setting at **ALSA/apulse
    loopback**.
-3. Point **Soloist binary path** at a wrapper that launches Soloist under
-   `apulse` (or an equivalent shim).
+3. On **x86_64**, point **Soloist binary path** at the raw `soloist`
+   binary. On other architectures, point it at a wrapper that launches
+   Soloist under `apulse` (or an equivalent shim).
 4. Leave **ALSA loopback device prefix** at `hw:Loopback` unless your
    loopback card uses a different name.
 
@@ -343,10 +352,10 @@ you're staying on the default backend.
 
 ## ALSA/apulse wrapper example
 
-If you want the no-Pulse backend, the configured Soloist path should
-usually be a wrapper rather than the raw `soloist` binary itself. The
-plugin sets `APULSE_PLAYBACK_DEVICE` per player instance, so the wrapper
-can stay generic:
+If you want the no-Pulse backend on a non-x86_64 host, the configured
+Soloist path should usually be a wrapper rather than the raw `soloist`
+binary itself. The plugin sets `APULSE_PLAYBACK_DEVICE` per player
+instance, so the wrapper can stay generic:
 
 ```bash
 #!/usr/bin/env bash

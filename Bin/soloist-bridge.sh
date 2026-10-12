@@ -7,8 +7,9 @@
 # Audio path:
 #   - Pulse backend: PipeWire/PulseAudio null-sink -> ffmpeg capture of that
 #     sink's monitor -> named pipe -> audio-relay.py
-#   - ALSA backend: apulse/ALSA playback device -> ffmpeg capture from the
-#     matching ALSA loopback device -> named pipe -> audio-relay.py
+#   - ALSA backend: bundled shim or wrapper -> ALSA playback device ->
+#     bridge capture from the matching ALSA loopback device -> named pipe
+#     -> audio-relay.py
 # The relay role is identical either way and replaces Icecast; see
 # Bin/audio-relay.py for why the relay reads from a FIFO.
 #
@@ -22,6 +23,7 @@
 #                     PYTHON_BIN SOLOIST_AUDIO_BACKEND PIPEWIRE_SINK
 #                     ALSA_PLAYBACK_DEVICE ALSA_CAPTURE_DEVICE
 #                     RELAY_READY_FILE RELAY_FLUSH_FILE FFMPEG_BIN
+#                     SOLOIST_SHIM_DIR
 
 set -u
 
@@ -45,6 +47,7 @@ FIFO_PATH="${FIFO_PATH:-/tmp/soloist-audio.fifo}"
 RELAY_READY_FILE="${RELAY_READY_FILE:-${SOLOIST_CACHE_DIR}/relay.ready}"
 RELAY_FLUSH_FILE="${RELAY_FLUSH_FILE:-${SOLOIST_CACHE_DIR}/relay.flush}"
 PYTHON_BIN="${PYTHON_BIN:-python3}"
+SOLOIST_SHIM_DIR="${SOLOIST_SHIM_DIR:-}"
 WS_ENDPOINT="127.0.0.1:${WS_PORT}"
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -169,8 +172,15 @@ if [ "$SOLOIST_AUDIO_BACKEND" = "pulse" ]; then
 	SOLOIST_AUDIO_TARGET_DESC="Pulse/PipeWire sink ${PIPEWIRE_SINK}"
 else
 	# The ALSA path is intentionally opt-in: Soloist still has no native ALSA
-	# flag, so this mode expects the configured soloist binary path to be an
-	# apulse-style wrapper (or equivalent) that honors APULSE_PLAYBACK_DEVICE.
+	# flag, so this mode uses either the bundled x86_64 libpulse shim or a
+	# caller-provided wrapper/equivalent launcher that honors
+	# APULSE_PLAYBACK_DEVICE.
+	if [ -n "$SOLOIST_SHIM_DIR" ] && [ -f "${SOLOIST_SHIM_DIR}/libpulse.so.0" ]; then
+		export LD_LIBRARY_PATH="${SOLOIST_SHIM_DIR}${LD_LIBRARY_PATH:+:${LD_LIBRARY_PATH}}"
+		log "using bundled Soloist pulse shim from '${SOLOIST_SHIM_DIR}'"
+	else
+		log "no bundled Soloist pulse shim active; ALSA backend expects the configured soloist path to handle Pulse->ALSA itself"
+	fi
 	export APULSE_PLAYBACK_DEVICE="${APULSE_PLAYBACK_DEVICE:-$ALSA_PLAYBACK_DEVICE}"
 	CAPTURE_INPUT_ARGS=(-f alsa -ac 2 -ar 44100 -i "${ALSA_CAPTURE_DEVICE}")
 	SOLOIST_AUDIO_TARGET_DESC="ALSA playback ${APULSE_PLAYBACK_DEVICE} / capture ${ALSA_CAPTURE_DEVICE}"
