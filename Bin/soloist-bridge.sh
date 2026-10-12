@@ -187,7 +187,7 @@ else
 		log "ERROR: arecord not found -- ALSA backend capture needs alsa-utils"
 		exit 1
 	fi
-	ARECORD_INPUT_ARGS=(arecord -d0 -c2 -f S16_LE -r 44100 -t raw --buffer-time=300000 --period-time=50000 -D "${ALSA_CAPTURE_DEVICE}")
+	ARECORD_INPUT_ARGS=(arecord -c2 -f S16_LE -r 44100 -t raw --buffer-time=300000 --period-time=50000 -D "${ALSA_CAPTURE_DEVICE}")
 	CAPTURE_INPUT_ARGS=(-f s16le -ar 44100 -ac 2 -i pipe:0)
 	SOLOIST_AUDIO_TARGET_DESC="ALSA playback ${APULSE_PLAYBACK_DEVICE} / capture ${ALSA_CAPTURE_DEVICE}"
 	log "using ALSA/apulse backend with APULSE_PLAYBACK_DEVICE='${APULSE_PLAYBACK_DEVICE}' and capture='${ALSA_CAPTURE_DEVICE}'"
@@ -349,7 +349,7 @@ case "$FORMAT" in
 				log "ERROR: arecord not found -- PCM direct mode on the ALSA backend needs alsa-utils"
 				exit 1
 			fi
-			PCM_CAPTURE_ARGS=(arecord -d0 -c2 -f S16_LE -r 44100 -t raw --buffer-time=300000 --period-time=50000 -D "${ALSA_CAPTURE_DEVICE}")
+			PCM_CAPTURE_ARGS=(arecord -c2 -f S16_LE -r 44100 -t raw --buffer-time=300000 --period-time=50000 -D "${ALSA_CAPTURE_DEVICE}")
 		fi
 		;;
 	*)
