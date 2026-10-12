@@ -180,6 +180,19 @@ On **x86_64**, this branch now ships a bundled `libpulse.so.0` shim under
 `alsa-lib/amd64/` and loads it automatically on the ALSA backend, so your
 configured **Soloist binary path** can be the raw `soloist` binary.
 
+Note: that bundled shim is **not** apulse. It's a purpose-built
+`libpulse.so.0` replacement that writes audio to an ALSA PCM device
+literally named `volumio` (`plug:volumio`) -- it does not read
+`APULSE_PLAYBACK_DEVICE` at all. The bridge works around this
+automatically by writing a per-player `~/.asoundrc` (scoped to that
+player's own data dir, so it can't affect anything else on the host) that
+points `pcm.volumio` at the configured ALSA playback device. You don't
+need to do anything for this; it's mentioned here only so the
+`APULSE_PLAYBACK_DEVICE` log line doesn't look misleading when the
+bundled shim is in use. If you instead supply your own wrapper/launcher
+(see below), that wrapper's own Pulse-to-ALSA shim is expected to honor
+`APULSE_PLAYBACK_DEVICE` in the normal apulse way.
+
 On other architectures, the plugin still expects your configured
 **Soloist binary path** to be an apulse-style wrapper (or equivalent
 launcher) that makes Soloist's Pulse client API calls land on ALSA
@@ -578,7 +591,26 @@ sound** — work through these in order:
    ffmpeg -f alsa -i hw:Loopback,1,<slot> -t 5 -af volumedetect -f null - 2>&1 | grep -i "mean_volume\|max_volume"
    ```
    Substitute your configured device prefix if you changed it from
-   `hw:Loopback`.
+   `hw:Loopback`. If this is **also** silent (no audio reaching the
+   capture side at all) while using the **bundled x86_64 shim**, verify
+   the loopback hardware pairing itself works independent of Soloist:
+   ```bash
+   speaker-test -D hw:Loopback,0,<slot> -c2 -r44100 -twav &
+   SPID=$!; sleep 1
+   arecord -D plughw:Loopback,1,<slot> -c2 -f S16_LE -r44100 -d3 /tmp/looptest.wav
+   kill $SPID 2>/dev/null
+   ffmpeg -y -i /tmp/looptest.wav -af volumedetect -f null - 2>&1 | grep -i "mean_volume\|max_volume"
+   ```
+   If that still shows real levels but regular playback doesn't, check
+   `bridge.log` for the `wrote ALSA 'volumio' PCM alias ...` line: the
+   bundled shim does **not** read `APULSE_PLAYBACK_DEVICE` — it
+   unconditionally writes to an ALSA PCM literally named `volumio`
+   (`plug:volumio`), because it was built for Volumio hardware where
+   `/etc/asound.conf` already defines that alias. The bridge now covers
+   this automatically by writing a per-player `~/.asoundrc` that maps
+   `pcm.volumio` to the configured playback device; if that log line is
+   missing, the bridge script on disk predates this fix and needs
+   updating.
 5. Also check for `Failed to create secure directory (.../.config/pulse)`
    / `Failed to load cookie file` in that same log — this means the
    service account's `$HOME` isn't writable, preventing Soloist from

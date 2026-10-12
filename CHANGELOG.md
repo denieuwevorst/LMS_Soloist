@@ -2,6 +2,21 @@
 
 ## Unreleased
 
+- ALSA/apulse backend: fix real silent playback with the bundled x86_64
+  shim. That shim is not apulse -- it's a purpose-built `libpulse.so.0`
+  replacement that unconditionally writes audio to an ALSA PCM literally
+  named `volumio` (`plug:volumio`), built for Volumio hardware where
+  `/etc/asound.conf` already defines that alias. It never read
+  `APULSE_PLAYBACK_DEVICE` at all, so on any non-Volumio host the shim's
+  writes went nowhere: Soloist reported "playing" and the capture
+  pipeline ran cleanly end-to-end, but nothing was ever actually
+  captured (confirmed via `ffmpeg -af volumedetect` showing -91dB on the
+  relay's own output). Fix: when the bundled shim is active, the bridge
+  now writes a per-player `~/.asoundrc` (scoped to that player's own
+  redirected `HOME`, so it can't affect anything else) defining
+  `pcm.volumio` as a `plug` wrapper around the resolved ALSA playback
+  device, so the shim's hardcoded target actually resolves to real
+  hardware.
 - ALSA/apulse backend: stop `export`ing the bundled Soloist pulse shim's
   `LD_LIBRARY_PATH` globally. It was only meant to affect Soloist's own
   playback process, but a global `export` leaked it into every later
