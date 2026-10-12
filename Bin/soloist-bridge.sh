@@ -446,17 +446,8 @@ capture_supervisor() {
 	done
 }
 
-capture_supervisor &
-FFMPEG_SUP_PID=$!
-
 log "stream ready: http://$(hostname -I 2>/dev/null | awk '{print $1}'):${RELAY_PORT}/soloist.${STREAM_EXTENSION}"
-
-# ---------------------------------------------------------------------------
-# Supervise: only Soloist dying is fatal for the whole bridge.
-# ---------------------------------------------------------------------------
-while kill -0 "$SOLOIST_PID" 2>/dev/null; do
-	sleep 3
-done
+capture_supervisor
 
 wait "$SOLOIST_PID" 2>/dev/null
 code=$?
