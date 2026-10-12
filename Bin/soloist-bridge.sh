@@ -127,6 +127,7 @@ esac
 CAPTURE_INPUT_ARGS=()
 SOLOIST_AUDIO_TARGET_DESC=""
 PCM_CAPTURE_ARGS=()
+ARECORD_INPUT_ARGS=()
 CAPTURE_MODE="ffmpeg"
 RELAY_EXTRA_ARGS=()
 
@@ -182,7 +183,12 @@ else
 		log "no bundled Soloist pulse shim active; ALSA backend expects the configured soloist path to handle Pulse->ALSA itself"
 	fi
 	export APULSE_PLAYBACK_DEVICE="${APULSE_PLAYBACK_DEVICE:-$ALSA_PLAYBACK_DEVICE}"
-	CAPTURE_INPUT_ARGS=(-f alsa -ac 2 -ar 44100 -i "${ALSA_CAPTURE_DEVICE}")
+	if ! command -v arecord >/dev/null 2>&1; then
+		log "ERROR: arecord not found -- ALSA backend capture needs alsa-utils"
+		exit 1
+	fi
+	ARECORD_INPUT_ARGS=(arecord -d0 -c2 -f S16_LE -r 44100 -t raw --buffer-time=300000 --period-time=50000 -D "${ALSA_CAPTURE_DEVICE}")
+	CAPTURE_INPUT_ARGS=(-f s16le -ar 44100 -ac 2 -i pipe:0)
 	SOLOIST_AUDIO_TARGET_DESC="ALSA playback ${APULSE_PLAYBACK_DEVICE} / capture ${ALSA_CAPTURE_DEVICE}"
 	log "using ALSA/apulse backend with APULSE_PLAYBACK_DEVICE='${APULSE_PLAYBACK_DEVICE}' and capture='${ALSA_CAPTURE_DEVICE}'"
 fi
@@ -406,6 +412,15 @@ capture_supervisor() {
 	while kill -0 "$SOLOIST_PID" 2>/dev/null; do
 		if [ "$CAPTURE_MODE" = "pcm-direct" ]; then
 			"${PCM_CAPTURE_ARGS[@]}" > "$FIFO_PATH" &
+		elif [ "$SOLOIST_AUDIO_BACKEND" = "alsa" ]; then
+			"${ARECORD_INPUT_ARGS[@]}" | \
+				"$FFMPEG_BIN" -nostdin -hide_banner -loglevel warning -y \
+					-fflags +genpts \
+					"${CAPTURE_INPUT_ARGS[@]}" \
+					"${ENCODE_ARGS[@]}" \
+					"${MUX_ARGS[@]}" \
+					-f "$MUX_FORMAT" \
+					"$FIFO_PATH" &
 		else
 			"$FFMPEG_BIN" -nostdin -hide_banner -loglevel warning -y \
 				-fflags +genpts \

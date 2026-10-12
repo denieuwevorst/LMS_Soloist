@@ -419,8 +419,7 @@ sub _alsaDeviceFor {
 	}
 
 	if ( $prefix =~ /^(plug)?hw:([^,]+)$/ ) {
-		my $card = $2;
-		return sprintf( 'plughw:CARD=%s,DEV=%d,SUBDEV=%d', $card, $dev, $slot );
+		return 'plughw:' . $2 . ',' . $dev . ',' . $slot;
 	}
 
 	return $prefix . ',' . $dev . ',' . $slot;

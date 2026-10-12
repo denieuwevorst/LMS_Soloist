@@ -205,13 +205,14 @@ Typical setup:
 4. Leave **ALSA loopback device prefix** at `hw:Loopback` unless your
    loopback card uses a different name. The plugin will keep Soloist
    playback on `hw:` and automatically prefer `plughw:` on the capture
-   side when the prefix starts with `hw:`, so float-only loopback capture
-   devices can still be converted into the format ffmpeg/arecord needs.
+   side when the prefix starts with `hw:`. On the ALSA backend the bridge
+   captures with `arecord` first and only then feeds ffmpeg, so hosts where
+   ffmpeg's direct ALSA device parsing is picky can still work reliably.
 
 With the default prefix, player slot `N` maps to:
 
 - Soloist playback: `hw:Loopback,0,N`
-- ffmpeg/arecord capture: `plughw:CARD=Loopback,DEV=1,SUBDEV=N`
+- arecord capture: `plughw:Loopback,1,N`
 
 That means your ALSA loopback setup must provide enough substreams for the
 number of selected players you plan to run in parallel.
