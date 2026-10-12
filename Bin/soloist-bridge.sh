@@ -90,6 +90,11 @@ LOG_FILE="${LOG_FILE:-${SOLOIST_CACHE_DIR}/bridge.log}"
 exec >> "$LOG_FILE" 2>&1
 echo "=== bridge starting $(date -Iseconds) (log: $LOG_FILE) ==="
 echo "HOME=${HOME} XDG_CONFIG_HOME=${XDG_CONFIG_HOME}"
+# Self-identify the script actually being executed, so a pasted log can
+# always answer "is this really the file I think was deployed?" without a
+# separate SSH round-trip to grep/diff/sha1sum it by hand.
+_SELF_PATH="$(readlink -f "${BASH_SOURCE[0]}" 2>/dev/null || echo "${BASH_SOURCE[0]}")"
+echo "[soloist-bridge] running script: ${_SELF_PATH} (mtime=$(date -r "${_SELF_PATH}" -Iseconds 2>/dev/null || echo unknown), size=$(wc -c < "${_SELF_PATH}" 2>/dev/null || echo unknown) bytes, lines=$(wc -l < "${_SELF_PATH}" 2>/dev/null || echo unknown))"
 
 SOLOIST_PID=""
 SILENCE_PID=""
@@ -488,6 +493,8 @@ if [ "$RELAY_READY" != "1" ]; then
 	log "ERROR: relay failed to start -- check python3 is available and the port isn't in use"
 	exit 1
 fi
+
+log "relay confirmed ready, preparing capture pipeline (mode=${CAPTURE_MODE}, backend=${SOLOIST_AUDIO_BACKEND})"
 
 # ---------------------------------------------------------------------------
 # 4. Capture the backend output ONCE and write continuously into the FIFO.
