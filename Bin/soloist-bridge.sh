@@ -131,26 +131,52 @@ _alsa_resolve_card_name() {
 		return 0
 	fi
 
-	local matches=() line idx id
+	local all_ids=() all_idxs=() matches=() line idx id
 	while IFS= read -r line; do
 		if [[ "$line" =~ ^[[:space:]]*([0-9]+)[[:space:]]\[([^]]*)\]: ]]; then
 			idx="${BASH_REMATCH[1]}"
 			id="${BASH_REMATCH[2]}"
 			id="${id%"${id##*[![:space:]]}"}"
 			id="${id#"${id%%[![:space:]]*}"}"
+			all_idxs+=("$idx")
+			all_ids+=("$id")
 			if [ "$id" = "$card" ]; then
 				matches+=("$idx")
 			fi
 		fi
 	done < /proc/asound/cards
 
+	# No exact match -- fall back to a case-insensitive substring match
+	# (e.g. the card is really named "Loopback 1" or "snd_aloop") before
+	# giving up, since the exact driver-assigned id can vary by kernel/host.
+	local fuzzy=0
+	if [ "${#matches[@]}" -eq 0 ] && [ "${#all_ids[@]}" -gt 0 ]; then
+		local lower_card i
+		lower_card="${card,,}"
+		for i in "${!all_ids[@]}"; do
+			if [[ "${all_ids[$i],,}" == *"${lower_card}"* ]]; then
+				matches+=("${all_idxs[$i]}")
+				fuzzy=1
+			fi
+		done
+	fi
+
 	if [ "${#matches[@]}" -eq 0 ]; then
-		log "WARNING: no ALSA card named '${card}' found in /proc/asound/cards -- leaving '${dev}' as-is; arecord/apulse may fail to open it"
+		local known="(none)"
+		if [ "${#all_ids[@]}" -gt 0 ]; then
+			known=""
+			for i in "${!all_ids[@]}"; do
+				known="${known}${known:+, }${all_idxs[$i]}='${all_ids[$i]}'"
+			done
+		fi
+		log "WARNING: no ALSA card named '${card}' found in /proc/asound/cards (known cards: ${known}) -- leaving '${dev}' as-is; arecord/apulse may fail to open it"
 		printf '%s\n' "$dev"
 		return 0
 	fi
 
-	if [ "${#matches[@]}" -gt 1 ]; then
+	if [ "$fuzzy" -eq 1 ]; then
+		log "WARNING: no ALSA card exactly named '${card}'; using substring match (indices: ${matches[*]}) instead -- check 'cat /proc/asound/cards' if this picks the wrong device"
+	elif [ "${#matches[@]}" -gt 1 ]; then
 		log "WARNING: ${#matches[@]} ALSA cards are named '${card}' (indices: ${matches[*]}) -- ALSA's name lookup is ambiguous for duplicate card names and can silently fail to open devices (e.g. 'Cannot get card index for ${card}'). Using the first match (index ${matches[0]}); rename the extra loopback instances (e.g. modprobe snd-aloop id=...) or configure a numeric device prefix to remove this ambiguity."
 	fi
 

@@ -20,7 +20,11 @@
   with no audible error (`Cannot get card index for Loopback`), which
   looked like "Soloist plays but there's no sound". The bridge now logs a
   `WARNING` naming every matching card index in that case and picks the
-  first one so playback still works instead of failing open.
+  first one so playback still works instead of failing open. If no card
+  matches the configured name at all, it falls back to a case-insensitive
+  substring match and logs every ALSA card id it actually sees in
+  `/proc/asound/cards`, so the real card names are visible in `bridge.log`
+  without needing a separate shell session.
 - Run the ALSA/apulse capture supervisor loop in the foreground (it already
   polls Soloist's own liveness internally) instead of backgrounding it
   behind a duplicate supervisory loop, and log the exact capture command
