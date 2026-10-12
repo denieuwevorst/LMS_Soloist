@@ -30,6 +30,13 @@
   behind a duplicate supervisory loop, and log the exact capture command
   plus its exit status on every restart, to make capture-pipeline failures
   visible in `bridge.log` instead of silent.
+- Add `Bin/setup-alsa-prereqs.sh`, a companion to the existing
+  Pulse-backend helper script, that installs the ALSA/apulse backend's
+  Debian packages and -- the actual root cause found while debugging a
+  real "no sound" report -- loads `snd-aloop` and persists both the
+  module load and its substream count across reboots, since a plain
+  `modprobe snd-aloop` only lasts until the next reboot and its absence
+  is otherwise silent (Soloist "plays" normally with no audible output).
 
 ## 0.3.49
 

@@ -203,7 +203,10 @@ Typical setup:
    echo snd-aloop | sudo tee /etc/modules-load.d/snd-aloop.conf
    ```
    Confirm it's actually present with `cat /proc/asound/cards` -- you
-   should see a card literally named `Loopback`.
+   should see a card literally named `Loopback`. The
+   [ALSA helper script](#debian-helper-script-alsaapulse-backend-only)
+   below does all of this for you, including picking a substream count
+   for multiple players.
 2. Point the plugin's **Audio backend** setting at **ALSA/apulse
    loopback**.
 3. On **x86_64**, point **Soloist binary path** at the raw `soloist`
@@ -265,6 +268,39 @@ audio setup.
 The helper intentionally does **not** download the Soloist binary or set
 your API key; those stay manual because they're tied to your architecture
 and Spotify developer account.
+
+## Debian helper script (ALSA/apulse backend only)
+
+To install the Debian-side prerequisites for the **optional ALSA/apulse
+backend** and make the ALSA loopback module persist across reboots
+(skipping this step is the single most common cause of "Soloist plays but
+there's no sound" on this backend), run:
+
+```bash
+curl -fsSL -o setup-alsa-prereqs.sh \
+  https://raw.githubusercontent.com/denieuwevorst/LMS_Soloist/main/Bin/setup-alsa-prereqs.sh
+chmod +x setup-alsa-prereqs.sh
+sudo ./setup-alsa-prereqs.sh
+```
+
+What it does:
+- installs the required Debian packages for the ALSA/apulse backend
+- loads `snd-aloop` now with enough substreams for the players you plan to
+  run (`--substreams N`, default 8), and persists both the module load
+  (`/etc/modules-load.d/snd-aloop.conf`) and its substream count
+  (`/etc/modprobe.d/snd-aloop-soloist.conf`) so a reboot doesn't silently
+  remove your loopback device
+- verifies a `Loopback` card actually shows up in `/proc/asound/cards`
+  afterward
+- detects the Lyrion systemd service and its runtime user, adds that user
+  to the `audio` group if it exists, and restarts Lyrion
+
+Use `sudo ./setup-alsa-prereqs.sh --lyrion-user <user>` if your Lyrion
+service user can't be auto-detected, or `--skip-apt` if you already
+installed the packages yourself and only want the loopback/service setup.
+If you plan to use the default Pulse/PipeWire backend instead, use
+`setup-debian-prereqs.sh` above instead of this one.
+
 ## Install
 
 https://raw.githubusercontent.com/denieuwevorst/lms-spotify-soloist/main/repo.xml
