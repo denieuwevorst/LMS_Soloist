@@ -414,10 +414,13 @@ sub _alsaDeviceFor {
 
 	return unless defined $prefix && length $prefix;
 
+	if ( !$forCapture ) {
+		return $prefix . ',' . $dev . ',' . $slot;
+	}
+
 	if ( $prefix =~ /^(plug)?hw:([^,]+)$/ ) {
 		my $card = $2;
-		my $type = $forCapture ? 'plughw' : ( $1 ? 'plughw' : 'hw' );
-		return sprintf( '%s:CARD=%s,DEV=%d,SUBDEV=%d', $type, $card, $dev, $slot );
+		return sprintf( 'plughw:CARD=%s,DEV=%d,SUBDEV=%d', $card, $dev, $slot );
 	}
 
 	return $prefix . ',' . $dev . ',' . $slot;
