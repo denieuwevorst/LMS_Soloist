@@ -637,7 +637,17 @@ sound** — work through these in order:
    seconds. Override with `SOLOIST_SHIM_MAX_TLENGTH_MS=<ms>` in the
    bridge's environment if you need a different value (e.g. raise it if
    you hear underruns/glitches on very constrained hardware, at the
-   cost of reintroducing some of this end-of-track mismatch).
+   cost of reintroducing some of this end-of-track mismatch). **Note:**
+   on real hardware this buffer clamp alone was not always enough to
+   stop the freeze from recurring -- as a backstop, the plugin also
+   runs a watchdog (ALSA backend only) that force-skips a track if
+   Soloist still reports `"playing"` with an unchanged position for 8
+   seconds, so LMS doesn't hang indefinitely even if the freeze
+   happens. If you see frequent forced skips in the Lyrion log
+   (`Soloist playback position appears stuck ... forcing a track
+   skip`), the underlying freeze is still occurring and the last bit of
+   that track's audio is being lost; please report this with
+   `bridge.log` from around the skip.
 6. Also check for `Failed to create secure directory (.../.config/pulse)`
    / `Failed to load cookie file` in that same log — this means the
    service account's `$HOME` isn't writable, preventing Soloist from

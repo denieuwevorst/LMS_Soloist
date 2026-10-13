@@ -77,6 +77,14 @@ use constant RELAY_AUTOPLAY_READY_TIMEOUT => 1.0; # seconds
 use constant RELAY_AUTOPLAY_READY_MAX_AGE => 1.0; # seconds
 use constant SOLOIST_BINARY_WARN_AFTER_DAYS => 80;
 use constant SOLOIST_DOWNLOADS_URL          => 'https://developer.spotify.com/documentation/soloist/reference/downloads-and-updates';
+# Workaround for an ALSA/apulse-backend-only bug: Soloist's own reported
+# playback position can freeze (status stays "playing" but position
+# stops advancing, typically near a track's end) without ever
+# transitioning to the next track. This isn't seen on the Pulse/PipeWire
+# backend. If position hasn't moved for this long while Soloist still
+# claims "playing", force a skip via `ctl next` so LMS doesn't hang
+# indefinitely on a stuck track.
+use constant STUCK_ALSA_PLAYBACK_WATCHDOG_SECONDS => 8;
 
 $prefs->init({
 	soloistBin      => '/usr/local/bin/soloist',
@@ -632,6 +640,9 @@ sub _startBridge {
 		notPlayingSince       => undef,
 		pausedSince           => undef,
 		idleDisconnectArmed   => 0,
+		stuckWatchdogItem     => undef,
+		stuckWatchdogPosition => undef,
+		stuckWatchdogSince    => undef,
 	};
 }
 
@@ -1088,6 +1099,48 @@ sub _playbackStateForBridge {
 	};
 }
 
+sub _maybeRecoverStuckAlsaPlayback {
+	my ( $b, $state, $playback ) = @_;
+
+	# ALSA/apulse-backend-only workaround -- see
+	# STUCK_ALSA_PLAYBACK_WATCHDOG_SECONDS above for why this exists.
+	unless ( ( $b->{backend} || '' ) eq 'alsa' && $playback->{reallyPlayingHere} ) {
+		@{$b}{qw(stuckWatchdogItem stuckWatchdogPosition stuckWatchdogSince)} = ();
+		return;
+	}
+
+	my $item     = $state->{item};
+	my $position = $state->{position};
+	unless ( ref $item && defined $position ) {
+		@{$b}{qw(stuckWatchdogItem stuckWatchdogPosition stuckWatchdogSince)} = ();
+		return;
+	}
+
+	my $sameItem = $b->{stuckWatchdogItem} && $item == $b->{stuckWatchdogItem};
+	my $samePosition = $sameItem
+		&& defined $b->{stuckWatchdogPosition}
+		&& $position == $b->{stuckWatchdogPosition};
+
+	unless ( $sameItem && $samePosition ) {
+		$b->{stuckWatchdogItem}     = $item;
+		$b->{stuckWatchdogPosition} = $position;
+		$b->{stuckWatchdogSince}    = time();
+		return;
+	}
+
+	return if time() - $b->{stuckWatchdogSince} < STUCK_ALSA_PLAYBACK_WATCHDOG_SECONDS;
+
+	$log->warn(
+		'Soloist playback position appears stuck at '
+		. sprintf( '%s', $position )
+		. ' while status is "playing" (ALSA/apulse backend) for at least '
+		. STUCK_ALSA_PLAYBACK_WATCHDOG_SECONDS
+		. 's -- forcing a track skip to recover'
+	);
+	_runSoloistCtl( $b, 'next' );
+	@{$b}{qw(stuckWatchdogItem stuckWatchdogPosition stuckWatchdogSince)} = ();
+}
+
 sub _relayAutoplayGateReady {
 	my ($b) = @_;
 	my $path = $b->{relayReadyFile} || '';
@@ -1324,6 +1377,7 @@ sub pollMetadata {
 		_maybeApplyConfiguredVolumeOnConnect( $b, $playback );
 		next if _maybeDisconnectBridgeForExternalSource( $playerId, $b, $client, $url, $playback );
 		_applyPlaybackTransition( $playerId, $b, $client, $url, $playback );
+		_maybeRecoverStuckAlsaPlayback( $b, $state, $playback );
 		_updateIdleDisconnectState( $b, $playback );
 		next if _maybeRestartIdleBridge( $playerId, $b, $client, $playback );
 		_publishMetadataForPlayer( $b, $client, $url, $state );

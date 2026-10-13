@@ -2,8 +2,22 @@
 
 ## Unreleased
 
-- ALSA/apulse backend: fix tracks cutting off a few seconds before the
-  real end and failing to advance to the next one. Root cause: the
+- ALSA/apulse backend: add a watchdog that force-skips a track when
+  Soloist's own reported playback position freezes (`status` stays
+  `"playing"` but `position` stops advancing) instead of letting LMS
+  hang on that track indefinitely. This is a mitigation, not a root-cause
+  fix: a prior attempt to prevent the freeze by clamping the shim's
+  playback buffer (`APULSE_MAX_TLENGTH_MS`, see entry below) was tested
+  on real hardware and did **not** stop the freeze from recurring, so
+  the true cause inside the closed-source shim/Soloist interaction is
+  still unidentified. The watchdog (in `Plugin.pm`, ALSA backend only)
+  waits 8 seconds of unchanged position while actively playing, then
+  issues the existing `ctl next` command to force a track skip and
+  resume playback -- at the cost of losing the tail of the stuck track.
+  **Unverified on real hardware as of this commit.**
+- ALSA/apulse backend: attempted fix (confirmed **insufficient** by a
+  real-hardware retest) for tracks cutting off a few seconds before the
+  real end and failing to advance to the next one. Root cause theory:
   bundled shim negotiates a multi-second playback buffer by default
   (observed via its own connect log: `tlength=705600` bytes at
   44.1kHz/16-bit/stereo = exactly 4.0s), and Soloist tracks playback
@@ -16,16 +30,20 @@
   A/B: the same track transitioned cleanly on the Pulse/PipeWire
   backend (which correctly drains on cork/flush) but stalled
   indefinitely at the end of the track on the ALSA/apulse backend.
-  Fix: clamp the shim's buffer via its undocumented
+  Mitigation attempted: clamp the shim's buffer via its undocumented
   `APULSE_MAX_TLENGTH_MS` (found via binary string inspection,
   alongside `APULSE_PLAYBACK_DEVICE`/`APULSE_DIAG`/`APULSE_YIELD_PATH`)
   to 300ms by default, matching the ALSA capture side's existing
   `--buffer-time=300000`. Override with
   `SOLOIST_SHIM_MAX_TLENGTH_MS=<ms>` if a different value is needed.
+  Left in place (it's a reasonable change regardless, and may still
+  help on some hardware), but a real-hardware retest showed the exact
+  same freeze pattern recurring afterwards, so it is **not** sufficient
+  on its own -- see the watchdog entry above for the current mitigation.
   (This supersedes the "stops after one track" entry below: that fix
   -- gating the shim's diagnostics off by default -- was real and
   worth keeping, but turned out not to be the actual root cause of
-  end-of-track stalls; this buffer-size fix is.)
+  end-of-track stalls.)
 - ALSA/apulse backend: confirmed working end-to-end on real hardware
   (DietPi + `snd-aloop` + bundled x86_64 shim) across multiple
   consecutive tracks and automatic track transitions, with continuous
