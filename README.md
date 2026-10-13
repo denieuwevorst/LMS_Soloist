@@ -298,8 +298,17 @@ Setup:
 3. Set **Experimental PCM shim directory** to the directory containing
    the `libpulse.so.0` you just built (e.g. the
    `contrib/experimental-pcm-shim` path itself).
+   This path must be readable/searchable by the user running LMS
+   (`squeezeboxserver` on most installs): **do not point it at `/root/...`**
+   unless you have explicitly opened those directory permissions up for the
+   service user.
 4. Leave **Soloist binary path** at the raw `soloist` binary, same as on
    x86_64 for the ALSA backend.
+5. The bridge clamps the shim's requested playback buffer to `300ms` by
+   default (`SOLOIST_SHIM_MAX_TLENGTH_MS`). This keeps Soloist's own
+   playback clock close to audio that has actually drained through the
+   shim and avoids immediate pause/track-end timing glitches seen with
+   larger Pulse-style buffers.
 
 No ALSA loopback device prefix is needed or used for this backend; each
 player gets its own PCM FIFO automatically.

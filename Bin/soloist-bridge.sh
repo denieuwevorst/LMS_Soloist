@@ -225,9 +225,26 @@ case "$SOLOIST_AUDIO_BACKEND" in
 		: "${ALSA_CAPTURE_DEVICE:?ALSA_CAPTURE_DEVICE is required when SOLOIST_AUDIO_BACKEND=alsa}"
 		;;
 	pcm-shim)
-		: "${SOLOIST_PCM_SHIM_DIR:?SOLOIST_PCM_SHIM_DIR is required when SOLOIST_AUDIO_BACKEND=pcm-shim (directory containing contrib/experimental-pcm-shim's built libpulse.so.0)}"
-		if [ ! -f "${SOLOIST_PCM_SHIM_DIR}/libpulse.so.0" ]; then
-			log "ERROR: '${SOLOIST_PCM_SHIM_DIR}/libpulse.so.0' not found -- build it first: cd contrib/experimental-pcm-shim && make"
+		: "${SOLOIST_PCM_SHIM_DIR:?SOLOIST_PCM_SHIM_DIR is required when SOLOIST_AUDIO_BACKEND=pcm-shim (directory containing the built libpulse.so.0 from contrib/experimental-pcm-shim)}"
+		SOLOIST_PCM_SHIM_LIB="${SOLOIST_PCM_SHIM_DIR}/libpulse.so.0"
+		if [ ! -d "$SOLOIST_PCM_SHIM_DIR" ]; then
+			log "ERROR: shim directory '$SOLOIST_PCM_SHIM_DIR' does not exist or is not accessible to the LMS service user"
+			exit 1
+		fi
+		if [ ! -x "$SOLOIST_PCM_SHIM_DIR" ]; then
+			log "ERROR: shim directory '$SOLOIST_PCM_SHIM_DIR' exists but is not searchable/executable by the LMS service user; avoid /root and use a world-readable path"
+			exit 1
+		fi
+		if [ ! -e "$SOLOIST_PCM_SHIM_LIB" ]; then
+			log "ERROR: '$SOLOIST_PCM_SHIM_LIB' not found -- build it first: cd contrib/experimental-pcm-shim && make"
+			exit 1
+		fi
+		if [ ! -f "$SOLOIST_PCM_SHIM_LIB" ]; then
+			log "ERROR: '$SOLOIST_PCM_SHIM_LIB' exists but is not a regular file"
+			exit 1
+		fi
+		if [ ! -r "$SOLOIST_PCM_SHIM_LIB" ]; then
+			log "ERROR: '$SOLOIST_PCM_SHIM_LIB' exists but is not readable by the LMS service user; avoid /root and fix permissions"
 			exit 1
 		fi
 		;;
@@ -428,11 +445,12 @@ if [ "${SOLOIST_SHIM_ACTIVE:-0}" = "1" ] && [ "${SOLOIST_SHIM_DIAG:-0}" = "1" ];
 	SOLOIST_ENV_PREFIX+=(APULSE_DIAG=1 APULSE_YIELD_PATH="${SOLOIST_SHIM_YIELD_PATH}")
 fi
 if [ "$SOLOIST_AUDIO_BACKEND" = "pcm-shim" ]; then
+	SOLOIST_SHIM_MAX_TLENGTH_MS="${SOLOIST_SHIM_MAX_TLENGTH_MS:-300}"
 	# The shim defaults to s24 (packed) output if SOLOIST_SHIM_FORMAT is
 	# unset, but the capture side below is hardcoded to s16le/44100 (same
 	# fixed assumption the "alsa" backend's arecord capture makes) -- so
 	# this must force s16 explicitly, or audio would be garbled/wrong-speed.
-	SOLOIST_ENV_PREFIX+=(SOLOIST_SHIM_OUT="$SOLOIST_PCM_SHIM_FIFO" SOLOIST_SHIM_FORMAT=s16 SOLOIST_SHIM_RATE=44100 SOLOIST_SHIM_LOG="$SOLOIST_PCM_SHIM_LOG")
+	SOLOIST_ENV_PREFIX+=(SOLOIST_SHIM_OUT="$SOLOIST_PCM_SHIM_FIFO" SOLOIST_SHIM_FORMAT=s16 SOLOIST_SHIM_RATE=44100 SOLOIST_SHIM_LOG="$SOLOIST_PCM_SHIM_LOG" SOLOIST_SHIM_MAX_TLENGTH_MS="$SOLOIST_SHIM_MAX_TLENGTH_MS")
 fi
 if [ "${#SOLOIST_ENV_PREFIX[@]}" -gt 0 ]; then
 	env "${SOLOIST_ENV_PREFIX[@]}" "$SOLOIST_BIN" "${SOLOIST_ARGS[@]}" &
