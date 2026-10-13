@@ -2,6 +2,30 @@
 
 ## Unreleased
 
+- ALSA/apulse backend: fix tracks cutting off a few seconds before the
+  real end and failing to advance to the next one. Root cause: the
+  bundled shim negotiates a multi-second playback buffer by default
+  (observed via its own connect log: `tlength=705600` bytes at
+  44.1kHz/16-bit/stereo = exactly 4.0s), and Soloist tracks playback
+  *position* by how much audio it has handed to the stream, not by
+  what has actually reached the speaker. With that much buffered,
+  Soloist's own clock can consider a track "finished" several seconds
+  before the real, still-queued audio has drained; when it then
+  corks/flushes the stream for the transition, that last stretch of
+  real audio is discarded instead of played out. Confirmed via a direct
+  A/B: the same track transitioned cleanly on the Pulse/PipeWire
+  backend (which correctly drains on cork/flush) but stalled
+  indefinitely at the end of the track on the ALSA/apulse backend.
+  Fix: clamp the shim's buffer via its undocumented
+  `APULSE_MAX_TLENGTH_MS` (found via binary string inspection,
+  alongside `APULSE_PLAYBACK_DEVICE`/`APULSE_DIAG`/`APULSE_YIELD_PATH`)
+  to 300ms by default, matching the ALSA capture side's existing
+  `--buffer-time=300000`. Override with
+  `SOLOIST_SHIM_MAX_TLENGTH_MS=<ms>` if a different value is needed.
+  (This supersedes the "stops after one track" entry below: that fix
+  -- gating the shim's diagnostics off by default -- was real and
+  worth keeping, but turned out not to be the actual root cause of
+  end-of-track stalls; this buffer-size fix is.)
 - ALSA/apulse backend: confirmed working end-to-end on real hardware
   (DietPi + `snd-aloop` + bundled x86_64 shim) across multiple
   consecutive tracks and automatic track transitions, with continuous

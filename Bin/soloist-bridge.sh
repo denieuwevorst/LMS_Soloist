@@ -337,6 +337,28 @@ else
 			SOLOIST_SHIM_YIELD_PATH="${SOLOIST_CACHE_DIR}/shim-alsa-yield.raw"
 			log "SOLOIST_SHIM_DIAG=1: enabling shim diagnostics; raw yield dump -> ${SOLOIST_SHIM_YIELD_PATH} (delete manually when done; adds per-call logging overhead -- leave off for normal use)"
 		fi
+
+		# The shim normally negotiates a ~4 second playback buffer
+		# (observed via its own connect log: "tlength=705600" bytes at
+		# 44.1kHz/16-bit/stereo = 705600 / (44100*4) = 4.0s exactly).
+		# Soloist tracks playback *position* by how much audio it has
+		# handed to this stream, not by what has actually reached the
+		# speaker -- so with a 4s buffer its own clock finishes a track
+		# up to 4s before the real, still-queued audio has drained. When
+		# it then corks/flushes the stream for the track transition, that
+		# last ~4s of real audio gets dropped instead of played out,
+		# which is exactly the "cuts off a few seconds before the end and
+		# doesn't advance" symptom seen on this backend (confirmed absent
+		# on the Pulse/PipeWire backend, where a real server drains
+		# streams correctly on cork/flush). The bundled shim supports an
+		# undocumented APULSE_MAX_TLENGTH_MS clamp (found via binary
+		# string inspection, alongside APULSE_PLAYBACK_DEVICE/APULSE_DIAG/
+		# APULSE_YIELD_PATH); set it to the same 300ms buffer-time already
+		# used for ALSA capture above, so Soloist's own virtual clock can
+		# only race a few hundred ms ahead of real output instead of
+		# several seconds.
+		SOLOIST_SHIM_MAX_TLENGTH_MS="${SOLOIST_SHIM_MAX_TLENGTH_MS:-300}"
+		log "bundled shim: clamping playback buffer via APULSE_MAX_TLENGTH_MS=${SOLOIST_SHIM_MAX_TLENGTH_MS} (reduces how far Soloist's own position tracking can race ahead of real ALSA output; override with SOLOIST_SHIM_MAX_TLENGTH_MS if you see underruns/glitches)"
 	fi
 	ARECORD_INPUT_ARGS=(arecord -c2 -f S16_LE -r 44100 -t raw --buffer-time=300000 --period-time=50000 -D "${ALSA_CAPTURE_DEVICE}")
 	CAPTURE_INPUT_ARGS=(-f s16le -ar 44100 -ac 2 -i pipe:0)
@@ -363,6 +385,9 @@ log "starting soloist: device='${DEVICE_NAME}' backend=${SOLOIST_AUDIO_BACKEND} 
 SOLOIST_ENV_PREFIX=()
 if [ -n "${SOLOIST_LD_LIBRARY_PATH:-}" ]; then
 	SOLOIST_ENV_PREFIX+=(LD_LIBRARY_PATH="$SOLOIST_LD_LIBRARY_PATH")
+fi
+if [ "${SOLOIST_SHIM_ACTIVE:-0}" = "1" ]; then
+	SOLOIST_ENV_PREFIX+=(APULSE_MAX_TLENGTH_MS="${SOLOIST_SHIM_MAX_TLENGTH_MS}")
 fi
 if [ "${SOLOIST_SHIM_ACTIVE:-0}" = "1" ] && [ "${SOLOIST_SHIM_DIAG:-0}" = "1" ]; then
 	SOLOIST_ENV_PREFIX+=(APULSE_DIAG=1 APULSE_YIELD_PATH="${SOLOIST_SHIM_YIELD_PATH}")

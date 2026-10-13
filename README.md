@@ -619,7 +619,26 @@ sound** — work through these in order:
    shim at all. Leave this off for normal use -- the per-call logging
    runs on the shim's real-time audio thread and can itself cause
    glitches/dropouts if left on.
-5. Also check for `Failed to create secure directory (.../.config/pulse)`
+5. If playback plays correctly but **cuts off a few hundred
+   milliseconds to a few seconds before the real end of a track and
+   LMS never advances to the next one** (specific to the ALSA/apulse
+   backend -- the Pulse/PipeWire backend doesn't have this issue): the
+   bundled shim negotiates a playback buffer several seconds deep by
+   default, and Soloist's own position tracking is based on how much
+   audio it has *handed to* the stream, not how much has actually
+   reached the speaker. With a deep buffer, Soloist's own clock can
+   think a track has finished seconds before the real, still-queued
+   audio has drained, and then cork/flush the stream for the next
+   track -- discarding that last bit of real audio instead of playing
+   it out. The bridge clamps this via the shim's undocumented
+   `APULSE_MAX_TLENGTH_MS` to 300ms by default (matching the ALSA
+   capture side's own `--buffer-time=300000`), so Soloist's clock can
+   only race a few hundred ms ahead of real output instead of several
+   seconds. Override with `SOLOIST_SHIM_MAX_TLENGTH_MS=<ms>` in the
+   bridge's environment if you need a different value (e.g. raise it if
+   you hear underruns/glitches on very constrained hardware, at the
+   cost of reintroducing some of this end-of-track mismatch).
+6. Also check for `Failed to create secure directory (.../.config/pulse)`
    / `Failed to load cookie file` in that same log — this means the
    service account's `$HOME` isn't writable, preventing Soloist from
    completing PulseAudio's cookie-based authentication. The bridge script
