@@ -1,15 +1,18 @@
-# Experimental direct-PCM pulse shim (NOT wired into the plugin)
+# Experimental direct-PCM pulse shim (now wired in as the `pcm-shim` backend)
 
-> **Status: experimental, partially validated, not used by the
-> bridge/plugin yet.** This directory holds an alternative
-> `libpulse.so.0` replacement (`pulse_shim.c`) proposed as a possible
-> successor to the bundled apulse-based shim in `alsa-lib/`. It now
-> **builds and runs** here (confirmed: it compiles cleanly against real
-> `libpulse-dev` headers and plays audio via the included `test_client`),
-> but it has **not yet been run against the real Soloist binary** --
-> only against a synthetic test client linked against the real pulse
-> headers. Treat it as a promising candidate to keep evaluating, not a
-> supported backend.
+> **Status: experimental, smoke-tested against the real Soloist binary,
+> but not yet exercised through this plugin's full bridge for extended
+> use.** This directory holds an alternative `libpulse.so.0` replacement
+> (`pulse_shim.c`) that is now wired in as an opt-in third audio backend
+> (`audioBackend = pcm-shim`) alongside the existing Pulse and ALSA/apulse
+> backends -- see the main `README.md`'s "Backend choices" section for how
+> to enable it. It **builds, plays audio via the included `test_client`,
+> and has been confirmed against the real `soloist` binary on real
+> hardware**, including a full automatic track-to-track transition that
+> stalls under the ALSA/apulse backend. What remains unverified is
+> extended/varied real-world use *through the plugin's own bridge*
+> (`Bin/soloist-bridge.sh`'s `pcm-shim` branch) rather than a manual
+> standalone invocation.
 
 ## Why this exists
 

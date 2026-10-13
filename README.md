@@ -119,6 +119,9 @@ For EACH selected player (its own stable "slot", persisted across restarts):
 - Optional ALSA/apulse backend removes the hard requirement for a running
   PulseAudio/PipeWire stack on the host, as long as you provide an
   apulse-style Soloist wrapper and matching ALSA loopback devices.
+- Optional experimental direct-PCM shim backend goes further: no Pulse
+  server *and* no ALSA loopback card, at the cost of being newer and
+  less validated (see [Backend choices](#backend-choices)).
 
 ## Prerequisites
 
@@ -200,14 +203,10 @@ On other architectures, the plugin still expects your configured
 launcher) that makes Soloist's Pulse client API calls land on ALSA
 instead.
 
-There's also an **experimental, not-yet-integrated** alternative shim
-under `contrib/experimental-pcm-shim/` that paces playback on a real
-clock and reports position from actual drained bytes rather than bytes
-handed to it -- proposed as a possible fix for the ALSA/apulse backend's
-known end-of-track stall (see Troubleshooting below and
-`CHANGELOG.md`). It is unvalidated against the real Soloist binary and
-is not wired into the plugin; see that directory's own README for how
-to build and evaluate it yourself before considering it.
+There's also a separate **experimental direct-PCM shim backend** (see
+section 3 below) that avoids the ALSA loopback card entirely and fixes
+this backend's known end-of-track stall -- consider it if you hit that
+issue.
 
 Required packages:
 
@@ -259,6 +258,51 @@ Lyrion's server log, install them directly:
 ```bash
 sudo apt install -y libjson-xs-perl libproc-background-perl
 ```
+
+### 3. Experimental direct-PCM shim backend (optional, no Pulse server, no ALSA loopback)
+
+This is a newer, simpler alternative to the ALSA/apulse backend above. It
+uses a different, purpose-built `libpulse.so.0` replacement -- shipped
+unbuilt under `contrib/experimental-pcm-shim/` -- that writes Soloist's
+raw PCM straight to a FIFO instead of trying to open a real ALSA device.
+The bridge's ffmpeg capture then reads that FIFO directly. That means:
+
+- No PulseAudio/PipeWire server.
+- No ALSA loopback (`snd-aloop`) card, so no `modprobe`/persistence step
+  and no loopback substream-count planning.
+- It paces playback on a real clock and reports position from bytes it
+  has actually written out, rather than bytes merely handed to it --
+  which is why it also fixes the ALSA/apulse backend's known
+  end-of-track stall (see Troubleshooting below): a manual test against
+  the real `soloist` binary on real hardware played a full track to the
+  end and auto-advanced to the next one without stalling.
+
+It is still **experimental**: unlike the Pulse and ALSA/apulse backends,
+it has only been smoke-tested manually outside the plugin (a direct
+`LD_LIBRARY_PATH=... soloist ...` invocation), not yet run through this
+plugin's own bridge for extended or varied real-world use. The shim is
+also not prebuilt or bundled -- you build it yourself, once, on the
+target device.
+
+Setup:
+
+1. Build the shim on your device:
+   ```bash
+   cd contrib/experimental-pcm-shim
+   make
+   ```
+   See that directory's own `README.md` for build prerequisites and
+   troubleshooting.
+2. Point the plugin's **Audio backend** setting at **Experimental
+   direct-PCM shim**.
+3. Set **Experimental PCM shim directory** to the directory containing
+   the `libpulse.so.0` you just built (e.g. the
+   `contrib/experimental-pcm-shim` path itself).
+4. Leave **Soloist binary path** at the raw `soloist` binary, same as on
+   x86_64 for the ALSA backend.
+
+No ALSA loopback device prefix is needed or used for this backend; each
+player gets its own PCM FIFO automatically.
 
 ## Debian helper script (Pulse backend only)
 
@@ -657,6 +701,14 @@ sound** — work through these in order:
    skip`), the underlying freeze is still occurring and the last bit of
    that track's audio is being lost; please report this with
    `bridge.log` from around the skip.
+
+   If this keeps recurring, consider trying the **experimental
+   direct-PCM shim backend** instead (see [Backend choices](#backend-choices)
+   section 3): it tracks position from bytes it has actually written
+   out rather than bytes merely handed to it, which avoids this whole
+   class of bug -- confirmed on real hardware with a full, unassisted
+   automatic track transition that stalled under the ALSA/apulse
+   backend.
 6. Also check for `Failed to create secure directory (.../.config/pulse)`
    / `Failed to load cookie file` in that same log — this means the
    service account's `$HOME` isn't writable, preventing Soloist from
