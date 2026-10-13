@@ -96,6 +96,7 @@ static int out_open_locked(void)
         memset(&a, 0, sizeof a);
         a.sun_family = AF_UNIX;
         strncpy(a.sun_path, cfg.out, sizeof a.sun_path - 1);
+        a.sun_path[sizeof a.sun_path - 1] = 0;
         fd = socket(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC | SOCK_NONBLOCK, 0);
         if (fd < 0) return -1;
         if (connect(fd, (struct sockaddr *) &a, sizeof a) < 0) { close(fd); return -1; }

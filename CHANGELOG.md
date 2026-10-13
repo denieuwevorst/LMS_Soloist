@@ -6,12 +6,19 @@
   replacement proposed as a possible fix for the ALSA/apulse backend's
   end-of-track stall (it paces playback on a real clock and reports
   position from actual drained bytes, rather than bytes handed to it).
-  **Not wired into the plugin or bridge** -- unvalidated against the
-  real Soloist binary, and would need a new direct-PCM-FIFO capture
-  path to integrate (a different audio path than the ALSA loopback
-  capture both existing backends use). Ships with a `Makefile` and a
-  `check-symbols.sh` so it can be evaluated independently; see that
-  directory's README for full status and required next steps.
+  Confirmed to build cleanly (after fixing 6 const-qualifier mismatches
+  vs. the real `libpulse-dev` headers, plus a `sun_path`
+  null-termination fix) and to play correct-pitch, correct-length audio
+  via a self-contained test client (`test_client.c`, `make test`) that
+  doesn't require the real Soloist binary. **Still not wired into the
+  plugin or bridge, and still unvalidated against the real Soloist
+  binary** -- integrating it would need a new direct-PCM-FIFO capture
+  path (a different audio path than the ALSA loopback capture both
+  existing backends use). Ships with a `Makefile`, `test_client.c` and
+  a `check-symbols.sh` (now dlopen/strings-aware, since Soloist likely
+  dlopens libpulse rather than linking it) so it can be evaluated
+  independently; see that directory's README for full status and
+  required next steps.
 - ALSA/apulse backend: add a watchdog that force-skips a track when
   Soloist's own reported playback position freezes (`status` stays
   `"playing"` but `position` stops advancing) instead of letting LMS

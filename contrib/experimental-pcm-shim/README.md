@@ -1,12 +1,15 @@
 # Experimental direct-PCM pulse shim (NOT wired into the plugin)
 
-> **Status: experimental, unvalidated, not used by the bridge/plugin yet.**
-> This directory holds an alternative `libpulse.so.0` replacement
-> (`pulse_shim.c`) that was proposed as a possible successor to the
-> bundled apulse-based shim in `alsa-lib/`. It has **not** been compiled
-> or run against the real Soloist binary in this repository's history --
-> only build/run instructions and a symbol-coverage check are provided
-> here. Treat it as a candidate to evaluate, not a supported backend.
+> **Status: experimental, partially validated, not used by the
+> bridge/plugin yet.** This directory holds an alternative
+> `libpulse.so.0` replacement (`pulse_shim.c`) proposed as a possible
+> successor to the bundled apulse-based shim in `alsa-lib/`. It now
+> **builds and runs** here (confirmed: it compiles cleanly against real
+> `libpulse-dev` headers and plays audio via the included `test_client`),
+> but it has **not yet been run against the real Soloist binary** --
+> only against a synthetic test client linked against the real pulse
+> headers. Treat it as a promising candidate to keep evaluating, not a
+> supported backend.
 
 ## Why this exists
 
@@ -39,7 +42,9 @@ binary.
 
 ## What's in this directory
 
-- `pulse_shim.c` -- the shim source, as proposed. Implements both
+- `pulse_shim.c` -- the shim source, as proposed (with a handful of
+  build fixes applied here: const-qualifier mismatches against the real
+  headers, and a `sun_path` null-termination fix). Implements both
   `pa_mainloop` and `pa_threaded_mainloop`, sample conversion from
   U8/S16LE/S24LE/S24_32LE/S32LE/FLOAT32LE to a fixed output format,
   real-time pacing, FIFO/unix-socket/file output, and the handful of
@@ -49,29 +54,47 @@ binary.
   through those directly (rather than through
   `pa_threaded_mainloop_{lock,wait,signal}`) will not work with it. It
   also does not support recording (playback-only, one stream type).
-- `Makefile` -- builds `libpulse.so.0` from `pulse_shim.c`. Needs `gcc`
-  and the PulseAudio headers (`libpulse-dev`) at build time only;
-  nothing from the real libpulse is linked at run time. Cross-compile
-  for a Pi with `CC=aarch64-linux-gnu-gcc` (64-bit) or
-  `CC=arm-linux-gnueabihf-gcc` (32-bit) plus the matching headers.
+- `test_client.c` -- a minimal client (threaded mainloop, async API) that
+  plays a 440Hz tone through the real PulseAudio client API, linked
+  against the real pulse headers for compile-time correctness checking.
+  Lets you validate the shim's playback path end-to-end **without**
+  needing the real (closed-source) Soloist binary at all. Confirmed
+  working: exact byte count/duration, correct pitch and level.
+- `Makefile` -- builds `libpulse.so.0` from `pulse_shim.c`, plus a
+  `make test` target that builds `test_client` and plays a 2s tone
+  through the shim into `/tmp/shim-test.raw`. Needs `gcc` and the
+  PulseAudio headers (`libpulse-dev`) at build time only; nothing from
+  the real libpulse is linked at run time. Cross-compile for a Pi with
+  `CC=aarch64-linux-gnu-gcc` (64-bit) or `CC=arm-linux-gnueabihf-gcc`
+  (32-bit) plus the matching headers.
 - `check-symbols.sh` -- compares the `pa_*` symbols a binary (e.g. the
-  real `soloist` binary) imports against the ones this shim exports, so
-  you can tell whether it's a safe drop-in **before** trying it for real.
+  real `soloist` binary) needs against the ones this shim exports, so
+  you can tell whether it's a safe drop-in **before** trying it for
+  real. Handles both a normally dynamically-linked binary (`nm`) and one
+  that `dlopen()`s `libpulse.so.0` at runtime (falls back to scanning
+  the binary's strings table for `pa_*` names) -- Soloist likely does
+  the latter, since it needs to probe for PipeWire vs. Pulse at runtime.
 
-## How to evaluate this on your own device (required before any integration)
+## How to evaluate this on your own device
 
 ```sh
 cd contrib/experimental-pcm-shim
 make                                   # -> ./libpulse.so.0
+make test                              # self-contained smoke test (no Soloist needed)
 ./check-symbols.sh /usr/local/bin/soloist ./libpulse.so.0
 ```
+
+**Confirmed here:** `make` builds cleanly against real `libpulse-dev`
+headers, and `make test` plays a correct-length, correct-pitch tone
+through the shim. **Not yet confirmed:** behavior with the real Soloist
+binary.
 
 If `check-symbols.sh` reports missing symbols, Soloist will fail to
 start (or crash on first use of one of them) under this shim -- those
 calls would need to be added before it's usable at all.
 
-If symbols check out, smoke-test real playback manually, independent of
-the plugin, before considering integration:
+Once symbols check out, smoke-test real playback manually with Soloist
+itself, independent of the plugin, before considering integration:
 
 ```sh
 mkfifo /tmp/soloist-pcm.fifo
