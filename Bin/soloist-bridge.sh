@@ -26,6 +26,7 @@
 #                     SOLOIST_SHIM_DIR
 
 set -u
+set -o pipefail
 
 : "${SOLOIST_BIN:?SOLOIST_BIN is required}"
 : "${DEVICE_NAME:?DEVICE_NAME is required}"
@@ -71,16 +72,29 @@ export XDG_CONFIG_HOME="${SOLOIST_DATA_DIR}/.config"
 mkdir -p "${XDG_CONFIG_HOME}/pulse"
 
 # Everything this script and its children (soloist, ffmpeg, the relay)
-# print goes to a dedicated per-player log file from here on, in addition
-# to wherever this process's stdout/stderr was already headed (which, when
-# launched via Proc::Background from inside Lyrion, may not go anywhere
-# you can easily see). This is the file to check when a specific player's
-# device doesn't show up in Spotify: Soloist's own "ready" / "waiting for
-# login" / error lines land here directly.
+# print goes to a dedicated per-player log file from here on. This is the
+# file to check when a specific player's device doesn't show up in
+# Spotify: Soloist's own "ready" / "waiting for login" / error lines land
+# here directly.
+#
+# Deliberately NOT `exec > >(tee -a "$LOG_FILE") 2>&1`: GNU tee fully
+# buffers its output (typically ~4KB) whenever its stdout isn't a TTY,
+# which is always true here since nothing reads this script's own
+# stdout/stderr. That silently delays recent log lines -- including ones
+# that always print on a working code path -- from ever reaching the file
+# while the process is still alive and otherwise working fine, which made
+# earlier debugging sessions look like code wasn't running when it was.
+# A plain append redirection writes directly, with no buffering process
+# in between, so every log line lands immediately.
 LOG_FILE="${LOG_FILE:-${SOLOIST_CACHE_DIR}/bridge.log}"
-exec > >(tee -a "$LOG_FILE") 2>&1
+exec >> "$LOG_FILE" 2>&1
 echo "=== bridge starting $(date -Iseconds) (log: $LOG_FILE) ==="
 echo "HOME=${HOME} XDG_CONFIG_HOME=${XDG_CONFIG_HOME}"
+# Self-identify the script actually being executed, so a pasted log can
+# always answer "is this really the file I think was deployed?" without a
+# separate SSH round-trip to grep/diff/sha1sum it by hand.
+_SELF_PATH="$(readlink -f "${BASH_SOURCE[0]}" 2>/dev/null || echo "${BASH_SOURCE[0]}")"
+echo "[soloist-bridge] running script: ${_SELF_PATH} (mtime=$(date -r "${_SELF_PATH}" -Iseconds 2>/dev/null || echo unknown), size=$(wc -c < "${_SELF_PATH}" 2>/dev/null || echo unknown) bytes, lines=$(wc -l < "${_SELF_PATH}" 2>/dev/null || echo unknown))"
 
 SOLOIST_PID=""
 SILENCE_PID=""
@@ -101,6 +115,90 @@ cleanup() {
 trap cleanup EXIT TERM INT
 
 log() { echo "[soloist-bridge] $*" >&2; }
+
+# Resolve a bare ALSA card *name* (e.g. "Loopback" in "hw:Loopback,0,0") to
+# its numeric card index from /proc/asound/cards. ALSA's own name-based
+# lookup (snd_config_get_card) fails -- silently, from apulse's point of
+# view -- when two or more cards share the same name ("Cannot get card
+# index for Loopback"), which can happen if snd-aloop was loaded more than
+# once without unique id= values. Resolving to the numeric index here makes
+# the device string unambiguous and avoids that silent playback/capture
+# failure. Already-numeric prefixes (e.g. "hw:1,0,0") pass through unchanged.
+_alsa_resolve_card_name() {
+	local dev="$1"
+	local prefix="${dev%%:*}"
+	local rest="${dev#*:}"
+	local card="${rest%%,*}"
+	local remainder=""
+	if [ "$rest" != "$card" ]; then
+		remainder="${rest#*,}"
+	fi
+
+	case "$card" in
+		''|*[!0-9]*) ;;
+		*) printf '%s\n' "$dev"; return 0 ;;
+	esac
+
+	if [ ! -r /proc/asound/cards ]; then
+		printf '%s\n' "$dev"
+		return 0
+	fi
+
+	local all_ids=() all_idxs=() matches=() line idx id
+	while IFS= read -r line; do
+		if [[ "$line" =~ ^[[:space:]]*([0-9]+)[[:space:]]\[([^]]*)\]: ]]; then
+			idx="${BASH_REMATCH[1]}"
+			id="${BASH_REMATCH[2]}"
+			id="${id%"${id##*[![:space:]]}"}"
+			id="${id#"${id%%[![:space:]]*}"}"
+			all_idxs+=("$idx")
+			all_ids+=("$id")
+			if [ "$id" = "$card" ]; then
+				matches+=("$idx")
+			fi
+		fi
+	done < /proc/asound/cards
+
+	# No exact match -- fall back to a case-insensitive substring match
+	# (e.g. the card is really named "Loopback 1" or "snd_aloop") before
+	# giving up, since the exact driver-assigned id can vary by kernel/host.
+	local fuzzy=0
+	if [ "${#matches[@]}" -eq 0 ] && [ "${#all_ids[@]}" -gt 0 ]; then
+		local lower_card i
+		lower_card="${card,,}"
+		for i in "${!all_ids[@]}"; do
+			if [[ "${all_ids[$i],,}" == *"${lower_card}"* ]]; then
+				matches+=("${all_idxs[$i]}")
+				fuzzy=1
+			fi
+		done
+	fi
+
+	if [ "${#matches[@]}" -eq 0 ]; then
+		local known="(none)"
+		if [ "${#all_ids[@]}" -gt 0 ]; then
+			known=""
+			for i in "${!all_ids[@]}"; do
+				known="${known}${known:+, }${all_idxs[$i]}='${all_ids[$i]}'"
+			done
+		fi
+		log "WARNING: no ALSA card named '${card}' found in /proc/asound/cards (known cards: ${known}) -- leaving '${dev}' as-is; arecord/apulse may fail to open it"
+		printf '%s\n' "$dev"
+		return 0
+	fi
+
+	if [ "$fuzzy" -eq 1 ]; then
+		log "WARNING: no ALSA card exactly named '${card}'; using substring match (indices: ${matches[*]}) instead -- check 'cat /proc/asound/cards' if this picks the wrong device"
+	elif [ "${#matches[@]}" -gt 1 ]; then
+		log "WARNING: ${#matches[@]} ALSA cards are named '${card}' (indices: ${matches[*]}) -- ALSA's name lookup is ambiguous for duplicate card names and can silently fail to open devices (e.g. 'Cannot get card index for ${card}'). Using the first match (index ${matches[0]}); rename the extra loopback instances (e.g. modprobe snd-aloop id=...) or configure a numeric device prefix to remove this ambiguity."
+	fi
+
+	if [ -n "$remainder" ]; then
+		printf '%s:%s,%s\n' "$prefix" "${matches[0]}" "$remainder"
+	else
+		printf '%s:%s\n' "$prefix" "${matches[0]}"
+	fi
+}
 
 if ! command -v "$PYTHON_BIN" >/dev/null 2>&1; then
 	log "ERROR: $PYTHON_BIN not found -- the relay needs Python 3"
@@ -127,6 +225,7 @@ esac
 CAPTURE_INPUT_ARGS=()
 SOLOIST_AUDIO_TARGET_DESC=""
 PCM_CAPTURE_ARGS=()
+ARECORD_INPUT_ARGS=()
 CAPTURE_MODE="ffmpeg"
 RELAY_EXTRA_ARGS=()
 
@@ -175,14 +274,94 @@ else
 	# flag, so this mode uses either the bundled x86_64 libpulse shim or a
 	# caller-provided wrapper/equivalent launcher that honors
 	# APULSE_PLAYBACK_DEVICE.
+	#
+	# SOLOIST_LD_LIBRARY_PATH is intentionally NOT `export`ed here: it must
+	# only affect Soloist's own process (below), not every later command in
+	# this script. An `export` would leak into arecord/ffmpeg too, and the
+	# shim's bundled libpulse.so.0 stub can shadow the *system* libpulse via
+	# the dynamic linker for any later command, breaking unrelated ALSA
+	# config hooks that dlopen the real libpulse (symptom: arecord failing
+	# with "undefined symbol: pa_mainloop_new" and "Unknown PCM ...").
+	SOLOIST_LD_LIBRARY_PATH=""
+	SOLOIST_SHIM_ACTIVE=0
 	if [ -n "$SOLOIST_SHIM_DIR" ] && [ -f "${SOLOIST_SHIM_DIR}/libpulse.so.0" ]; then
-		export LD_LIBRARY_PATH="${SOLOIST_SHIM_DIR}${LD_LIBRARY_PATH:+:${LD_LIBRARY_PATH}}"
+		SOLOIST_LD_LIBRARY_PATH="${SOLOIST_SHIM_DIR}${LD_LIBRARY_PATH:+:${LD_LIBRARY_PATH}}"
+		SOLOIST_SHIM_ACTIVE=1
 		log "using bundled Soloist pulse shim from '${SOLOIST_SHIM_DIR}'"
 	else
 		log "no bundled Soloist pulse shim active; ALSA backend expects the configured soloist path to handle Pulse->ALSA itself"
 	fi
-	export APULSE_PLAYBACK_DEVICE="${APULSE_PLAYBACK_DEVICE:-$ALSA_PLAYBACK_DEVICE}"
-	CAPTURE_INPUT_ARGS=(-f alsa -ac 2 -ar 44100 -i "${ALSA_CAPTURE_DEVICE}")
+	ALSA_PLAYBACK_DEVICE="$(_alsa_resolve_card_name "$ALSA_PLAYBACK_DEVICE")"
+	ALSA_CAPTURE_DEVICE="$(_alsa_resolve_card_name "$ALSA_CAPTURE_DEVICE")"
+	export APULSE_PLAYBACK_DEVICE="$(_alsa_resolve_card_name "${APULSE_PLAYBACK_DEVICE:-$ALSA_PLAYBACK_DEVICE}")"
+	if ! command -v arecord >/dev/null 2>&1; then
+		log "ERROR: arecord not found -- ALSA backend capture needs alsa-utils"
+		exit 1
+	fi
+	if [ "$SOLOIST_SHIM_ACTIVE" = "1" ]; then
+		# The bundled shim calls snd_pcm_open() directly on whatever string
+		# is in APULSE_PLAYBACK_DEVICE (confirmed via its own APULSE_DIAG
+		# log: "pcm open hw:1,0,0 failed: No such file or directory"), so
+		# there is no "volumio" fallback name to work around -- it genuinely
+		# opens our configured device string as-is. The capture side of this
+		# very same loopback card already opens fine via "plughw:1,1,0", but
+		# the raw "hw:1,0,0" (no plug layer) fails outright for playback on
+		# at least some hosts/kernel versions of snd-aloop. Upgrade the
+		# shim's playback device to plughw to match, which adds ALSA's plug
+		# conversion/negotiation layer instead of requiring an exact direct
+		# hardware open.
+		case "$APULSE_PLAYBACK_DEVICE" in
+			hw:*)
+				SHIM_PLAYBACK_DEVICE="plughw:${APULSE_PLAYBACK_DEVICE#hw:}"
+				log "bundled shim: upgrading playback device '${APULSE_PLAYBACK_DEVICE}' -> '${SHIM_PLAYBACK_DEVICE}' (raw ALSA 'hw:' open fails for this shim on some hosts; 'plughw:' adds the plug layer it needs)"
+				export APULSE_PLAYBACK_DEVICE="$SHIM_PLAYBACK_DEVICE"
+				;;
+		esac
+
+		# Diagnostic-only: the bundled shim supports APULSE_DIAG (verbose
+		# pcm-open/connect logging to its own stderr, logged on EVERY
+		# single Pulse API call, which lands in this player's bridge.log
+		# since Soloist is a child of this script) and APULSE_YIELD_PATH
+		# (dumps the raw audio frames it receives from Soloist to a file).
+		# This was enabled unconditionally while chasing the original
+		# silent-playback bug (now fixed above, confirmed by real audio
+		# finally reaching the relay) and is now opt-in only
+		# (SOLOIST_SHIM_DIAG=1 in the bridge's environment), off by
+		# default: logging on every single API call is real per-callback
+		# overhead on a real-time audio thread, which is exactly the kind
+		# of thing that can cause audible glitches/dropouts on constrained
+		# hardware (e.g. a Pi or low-power x86 box) -- leaving it on
+		# unconditionally risked *causing* playback problems rather than
+		# just diagnosing them.
+		if [ "${SOLOIST_SHIM_DIAG:-0}" = "1" ]; then
+			SOLOIST_SHIM_YIELD_PATH="${SOLOIST_CACHE_DIR}/shim-alsa-yield.raw"
+			log "SOLOIST_SHIM_DIAG=1: enabling shim diagnostics; raw yield dump -> ${SOLOIST_SHIM_YIELD_PATH} (delete manually when done; adds per-call logging overhead -- leave off for normal use)"
+		fi
+
+		# The shim normally negotiates a ~4 second playback buffer
+		# (observed via its own connect log: "tlength=705600" bytes at
+		# 44.1kHz/16-bit/stereo = 705600 / (44100*4) = 4.0s exactly).
+		# Soloist tracks playback *position* by how much audio it has
+		# handed to this stream, not by what has actually reached the
+		# speaker -- so with a 4s buffer its own clock finishes a track
+		# up to 4s before the real, still-queued audio has drained. When
+		# it then corks/flushes the stream for the track transition, that
+		# last ~4s of real audio gets dropped instead of played out,
+		# which is exactly the "cuts off a few seconds before the end and
+		# doesn't advance" symptom seen on this backend (confirmed absent
+		# on the Pulse/PipeWire backend, where a real server drains
+		# streams correctly on cork/flush). The bundled shim supports an
+		# undocumented APULSE_MAX_TLENGTH_MS clamp (found via binary
+		# string inspection, alongside APULSE_PLAYBACK_DEVICE/APULSE_DIAG/
+		# APULSE_YIELD_PATH); set it to the same 300ms buffer-time already
+		# used for ALSA capture above, so Soloist's own virtual clock can
+		# only race a few hundred ms ahead of real output instead of
+		# several seconds.
+		SOLOIST_SHIM_MAX_TLENGTH_MS="${SOLOIST_SHIM_MAX_TLENGTH_MS:-300}"
+		log "bundled shim: clamping playback buffer via APULSE_MAX_TLENGTH_MS=${SOLOIST_SHIM_MAX_TLENGTH_MS} (reduces how far Soloist's own position tracking can race ahead of real ALSA output; override with SOLOIST_SHIM_MAX_TLENGTH_MS if you see underruns/glitches)"
+	fi
+	ARECORD_INPUT_ARGS=(arecord -c2 -f S16_LE -r 44100 -t raw --buffer-time=300000 --period-time=50000 -D "${ALSA_CAPTURE_DEVICE}")
+	CAPTURE_INPUT_ARGS=(-f s16le -ar 44100 -ac 2 -i pipe:0)
 	SOLOIST_AUDIO_TARGET_DESC="ALSA playback ${APULSE_PLAYBACK_DEVICE} / capture ${ALSA_CAPTURE_DEVICE}"
 	log "using ALSA/apulse backend with APULSE_PLAYBACK_DEVICE='${APULSE_PLAYBACK_DEVICE}' and capture='${ALSA_CAPTURE_DEVICE}'"
 fi
@@ -203,7 +382,21 @@ if [ "$SOLOIST_AUDIO_BACKEND" = "pulse" ]; then
 fi
 
 log "starting soloist: device='${DEVICE_NAME}' backend=${SOLOIST_AUDIO_BACKEND} target='${SOLOIST_AUDIO_TARGET_DESC}' ws=${WS_ENDPOINT} data-dir=${SOLOIST_DATA_DIR}"
-"$SOLOIST_BIN" "${SOLOIST_ARGS[@]}" &
+SOLOIST_ENV_PREFIX=()
+if [ -n "${SOLOIST_LD_LIBRARY_PATH:-}" ]; then
+	SOLOIST_ENV_PREFIX+=(LD_LIBRARY_PATH="$SOLOIST_LD_LIBRARY_PATH")
+fi
+if [ "${SOLOIST_SHIM_ACTIVE:-0}" = "1" ]; then
+	SOLOIST_ENV_PREFIX+=(APULSE_MAX_TLENGTH_MS="${SOLOIST_SHIM_MAX_TLENGTH_MS}")
+fi
+if [ "${SOLOIST_SHIM_ACTIVE:-0}" = "1" ] && [ "${SOLOIST_SHIM_DIAG:-0}" = "1" ]; then
+	SOLOIST_ENV_PREFIX+=(APULSE_DIAG=1 APULSE_YIELD_PATH="${SOLOIST_SHIM_YIELD_PATH}")
+fi
+if [ "${#SOLOIST_ENV_PREFIX[@]}" -gt 0 ]; then
+	env "${SOLOIST_ENV_PREFIX[@]}" "$SOLOIST_BIN" "${SOLOIST_ARGS[@]}" &
+else
+	"$SOLOIST_BIN" "${SOLOIST_ARGS[@]}" &
+fi
 SOLOIST_PID=$!
 
 # Poll for actual readiness instead of blindly sleeping a fixed amount.
@@ -343,7 +536,7 @@ case "$FORMAT" in
 				log "ERROR: arecord not found -- PCM direct mode on the ALSA backend needs alsa-utils"
 				exit 1
 			fi
-			PCM_CAPTURE_ARGS=(arecord -d0 -c2 -f S16_LE -r 44100 -t raw --buffer-time=300000 --period-time=50000 -D "${ALSA_CAPTURE_DEVICE}")
+			PCM_CAPTURE_ARGS=(arecord -c2 -f S16_LE -r 44100 -t raw --buffer-time=300000 --period-time=50000 -D "${ALSA_CAPTURE_DEVICE}")
 		fi
 		;;
 	*)
@@ -376,7 +569,17 @@ for _try in $(seq 1 10); do
 		break
 	fi
 	if ( exec 3<>"/dev/tcp/127.0.0.1/${RELAY_PORT}" ) 2>/dev/null; then
-		exec 3>&- 3<&- 2>/dev/null
+		# IMPORTANT: this must stay a braced *group*, not a bare `exec`.
+		# A bare top-level `exec 3>&- 3<&- 2>/dev/null` here would permanently
+		# redirect this shell's own stderr to /dev/null for the rest of the
+		# script (exec without a command changes the current shell's fd
+		# table, it doesn't fork), silently swallowing every later log()
+		# call (including every "starting ... capture" / "stream ready"
+		# line) while already-forked children keep logging fine -- which is
+		# exactly the "lines that must print never show up" bug this once
+		# was. `{ ... } 2>/dev/null` scopes the stderr redirect to just the
+		# fd-3 close, restoring fd 2 immediately afterwards.
+		{ exec 3>&- 3<&-; } 2>/dev/null
 		RELAY_READY=1
 		break
 	fi
@@ -387,6 +590,8 @@ if [ "$RELAY_READY" != "1" ]; then
 	log "ERROR: relay failed to start -- check python3 is available and the port isn't in use"
 	exit 1
 fi
+
+log "relay confirmed ready, preparing capture pipeline (mode=${CAPTURE_MODE}, backend=${SOLOIST_AUDIO_BACKEND})"
 
 # ---------------------------------------------------------------------------
 # 4. Capture the backend output ONCE and write continuously into the FIFO.
@@ -405,8 +610,20 @@ capture_supervisor() {
 
 	while kill -0 "$SOLOIST_PID" 2>/dev/null; do
 		if [ "$CAPTURE_MODE" = "pcm-direct" ]; then
+			log "starting PCM capture: ${PCM_CAPTURE_ARGS[*]} > ${FIFO_PATH}"
 			"${PCM_CAPTURE_ARGS[@]}" > "$FIFO_PATH" &
+		elif [ "$SOLOIST_AUDIO_BACKEND" = "alsa" ]; then
+			log "starting ALSA capture: ${ARECORD_INPUT_ARGS[*]} | ${FFMPEG_BIN} ... -f ${MUX_FORMAT} ${FIFO_PATH}"
+			"${ARECORD_INPUT_ARGS[@]}" | \
+				"$FFMPEG_BIN" -nostdin -hide_banner -loglevel warning -y \
+					-fflags +genpts \
+					"${CAPTURE_INPUT_ARGS[@]}" \
+					"${ENCODE_ARGS[@]}" \
+					"${MUX_ARGS[@]}" \
+					-f "$MUX_FORMAT" \
+					"$FIFO_PATH" &
 		else
+			log "starting ${CAPTURE_MODE} capture: ${FFMPEG_BIN} ... -f ${MUX_FORMAT} ${FIFO_PATH}"
 			"$FFMPEG_BIN" -nostdin -hide_banner -loglevel warning -y \
 				-fflags +genpts \
 				"${CAPTURE_INPUT_ARGS[@]}" \
@@ -417,26 +634,18 @@ capture_supervisor() {
 		fi
 		CUR_CAPTURE_PID=$!
 		wait "$CUR_CAPTURE_PID"
+		CAPTURE_STATUS=$?
 		CUR_CAPTURE_PID=""
 
 		if kill -0 "$SOLOIST_PID" 2>/dev/null; then
-			log "${CAPTURE_MODE} capture exited -- restarting in 2s (relay/clients unaffected)"
+			log "${CAPTURE_MODE} capture exited with status ${CAPTURE_STATUS} -- restarting in 2s (relay/clients unaffected)"
 			sleep 2
 		fi
 	done
 }
 
-capture_supervisor &
-FFMPEG_SUP_PID=$!
-
 log "stream ready: http://$(hostname -I 2>/dev/null | awk '{print $1}'):${RELAY_PORT}/soloist.${STREAM_EXTENSION}"
-
-# ---------------------------------------------------------------------------
-# Supervise: only Soloist dying is fatal for the whole bridge.
-# ---------------------------------------------------------------------------
-while kill -0 "$SOLOIST_PID" 2>/dev/null; do
-	sleep 3
-done
+capture_supervisor
 
 wait "$SOLOIST_PID" 2>/dev/null
 code=$?

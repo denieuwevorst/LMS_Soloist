@@ -77,6 +77,14 @@ use constant RELAY_AUTOPLAY_READY_TIMEOUT => 1.0; # seconds
 use constant RELAY_AUTOPLAY_READY_MAX_AGE => 1.0; # seconds
 use constant SOLOIST_BINARY_WARN_AFTER_DAYS => 80;
 use constant SOLOIST_DOWNLOADS_URL          => 'https://developer.spotify.com/documentation/soloist/reference/downloads-and-updates';
+# Workaround for an ALSA/apulse-backend-only bug: Soloist's own reported
+# playback position can freeze (status stays "playing" but position
+# stops advancing, typically near a track's end) without ever
+# transitioning to the next track. This isn't seen on the Pulse/PipeWire
+# backend. If position hasn't moved for this long while Soloist still
+# claims "playing", force a skip via `ctl next` so LMS doesn't hang
+# indefinitely on a stuck track.
+use constant STUCK_ALSA_PLAYBACK_WATCHDOG_SECONDS => 8;
 
 $prefs->init({
 	soloistBin      => '/usr/local/bin/soloist',
@@ -84,7 +92,7 @@ $prefs->init({
 	pythonBin       => 'python3',
 	audioBackend    => 'pulse',           # pulse | alsa
 	pipewireSink    => 'soloist_sink',    # base name; each player gets _<slot> appended
-	alsaDevicePrefix => 'hw:Loopback',    # ALSA/apulse backend: playback = <prefix>,0,<slot>; capture = <prefix>,1,<slot>
+	alsaDevicePrefix => 'hw:Loopback',    # ALSA/apulse backend: playback = <prefix>,0,<slot>; capture auto-prefers plughw:<card>,1,<slot> when prefix starts with hw:
 	wsPortBase      => 9091,              # each player gets +<slot>
 	relayPortBase   => 9077,              # each player gets +<slot>
 	format          => 'mp3',             # mp3 | flac | pcm
@@ -409,9 +417,26 @@ sub _slotFor {
 	return $slot;
 }
 
+sub _alsaDeviceFor {
+	my ( $prefix, $dev, $slot, $forCapture ) = @_;
+
+	return unless defined $prefix && length $prefix;
+
+	if ( !$forCapture ) {
+		return $prefix . ',' . $dev . ',' . $slot;
+	}
+
+	if ( $prefix =~ /^(plug)?hw:([^,]+)$/ ) {
+		return 'plughw:' . $2 . ',' . $dev . ',' . $slot;
+	}
+
+	return $prefix . ',' . $dev . ',' . $slot;
+}
+
 sub _configFor {
 	my ( $playerId, $playerName ) = @_;
 	my $slot = _slotFor($playerId);
+	my $alsaPrefix = $prefs->get('alsaDevicePrefix');
 
 	return {
 		slot       => $slot,
@@ -420,8 +445,8 @@ sub _configFor {
 		backend    => $prefs->get('audioBackend') || 'pulse',
 		format     => currentFormatSpec()->{key},
 		sink       => $prefs->get('pipewireSink') . '_' . $slot,
-		alsaPlaybackDevice => $prefs->get('alsaDevicePrefix') . ',0,' . $slot,
-		alsaCaptureDevice  => $prefs->get('alsaDevicePrefix') . ',1,' . $slot,
+		alsaPlaybackDevice => _alsaDeviceFor( $alsaPrefix, 0, $slot, 0 ),
+		alsaCaptureDevice  => _alsaDeviceFor( $alsaPrefix, 1, $slot, 1 ),
 		dataDir    => catdir( $baseDataDir, "player_$slot" ),
 		cacheDir   => catdir( $baseCacheDir, "player_$slot" ),
 		fifoPath   => catfile( $baseCacheDir, "player_$slot", 'audio.fifo' ),
@@ -615,6 +640,9 @@ sub _startBridge {
 		notPlayingSince       => undef,
 		pausedSince           => undef,
 		idleDisconnectArmed   => 0,
+		stuckWatchdogItem     => undef,
+		stuckWatchdogPosition => undef,
+		stuckWatchdogSince    => undef,
 	};
 }
 
@@ -1071,6 +1099,48 @@ sub _playbackStateForBridge {
 	};
 }
 
+sub _maybeRecoverStuckAlsaPlayback {
+	my ( $b, $state, $playback ) = @_;
+
+	# ALSA/apulse-backend-only workaround -- see
+	# STUCK_ALSA_PLAYBACK_WATCHDOG_SECONDS above for why this exists.
+	unless ( ( $b->{backend} || '' ) eq 'alsa' && $playback->{reallyPlayingHere} ) {
+		@{$b}{qw(stuckWatchdogItem stuckWatchdogPosition stuckWatchdogSince)} = ();
+		return;
+	}
+
+	my $item     = $state->{item};
+	my $position = $state->{position};
+	unless ( ref $item && defined $position ) {
+		@{$b}{qw(stuckWatchdogItem stuckWatchdogPosition stuckWatchdogSince)} = ();
+		return;
+	}
+
+	my $sameItem = $b->{stuckWatchdogItem} && $item == $b->{stuckWatchdogItem};
+	my $samePosition = $sameItem
+		&& defined $b->{stuckWatchdogPosition}
+		&& $position == $b->{stuckWatchdogPosition};
+
+	unless ( $sameItem && $samePosition ) {
+		$b->{stuckWatchdogItem}     = $item;
+		$b->{stuckWatchdogPosition} = $position;
+		$b->{stuckWatchdogSince}    = time();
+		return;
+	}
+
+	return if time() - $b->{stuckWatchdogSince} < STUCK_ALSA_PLAYBACK_WATCHDOG_SECONDS;
+
+	$log->warn(
+		'Soloist playback position appears stuck at '
+		. sprintf( '%s', $position )
+		. ' while status is "playing" (ALSA/apulse backend) for at least '
+		. STUCK_ALSA_PLAYBACK_WATCHDOG_SECONDS
+		. 's -- forcing a track skip to recover'
+	);
+	_runSoloistCtl( $b, 'next' );
+	@{$b}{qw(stuckWatchdogItem stuckWatchdogPosition stuckWatchdogSince)} = ();
+}
+
 sub _relayAutoplayGateReady {
 	my ($b) = @_;
 	my $path = $b->{relayReadyFile} || '';
@@ -1307,6 +1377,7 @@ sub pollMetadata {
 		_maybeApplyConfiguredVolumeOnConnect( $b, $playback );
 		next if _maybeDisconnectBridgeForExternalSource( $playerId, $b, $client, $url, $playback );
 		_applyPlaybackTransition( $playerId, $b, $client, $url, $playback );
+		_maybeRecoverStuckAlsaPlayback( $b, $state, $playback );
 		_updateIdleDisconnectState( $b, $playback );
 		next if _maybeRestartIdleBridge( $playerId, $b, $client, $playback );
 		_publishMetadataForPlayer( $b, $client, $url, $state );

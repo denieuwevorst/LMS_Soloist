@@ -2,6 +2,158 @@
 
 ## Unreleased
 
+- Add `contrib/experimental-pcm-shim/`: an alternative `libpulse.so.0`
+  replacement proposed as a possible fix for the ALSA/apulse backend's
+  end-of-track stall (it paces playback on a real clock and reports
+  position from actual drained bytes, rather than bytes handed to it).
+  **Not wired into the plugin or bridge** -- unvalidated against the
+  real Soloist binary, and would need a new direct-PCM-FIFO capture
+  path to integrate (a different audio path than the ALSA loopback
+  capture both existing backends use). Ships with a `Makefile` and a
+  `check-symbols.sh` so it can be evaluated independently; see that
+  directory's README for full status and required next steps.
+- ALSA/apulse backend: add a watchdog that force-skips a track when
+  Soloist's own reported playback position freezes (`status` stays
+  `"playing"` but `position` stops advancing) instead of letting LMS
+  hang on that track indefinitely. This is a mitigation, not a root-cause
+  fix: a prior attempt to prevent the freeze by clamping the shim's
+  playback buffer (`APULSE_MAX_TLENGTH_MS`, see entry below) was tested
+  on real hardware and did **not** stop the freeze from recurring, so
+  the true cause inside the closed-source shim/Soloist interaction is
+  still unidentified. The watchdog (in `Plugin.pm`, ALSA backend only)
+  waits 8 seconds of unchanged position while actively playing, then
+  issues the existing `ctl next` command to force a track skip and
+  resume playback -- at the cost of losing the tail of the stuck track.
+  **Unverified on real hardware as of this commit.**
+- ALSA/apulse backend: attempted fix (confirmed **insufficient** by a
+  real-hardware retest) for tracks cutting off a few seconds before the
+  real end and failing to advance to the next one. Root cause theory:
+  bundled shim negotiates a multi-second playback buffer by default
+  (observed via its own connect log: `tlength=705600` bytes at
+  44.1kHz/16-bit/stereo = exactly 4.0s), and Soloist tracks playback
+  *position* by how much audio it has handed to the stream, not by
+  what has actually reached the speaker. With that much buffered,
+  Soloist's own clock can consider a track "finished" several seconds
+  before the real, still-queued audio has drained; when it then
+  corks/flushes the stream for the transition, that last stretch of
+  real audio is discarded instead of played out. Confirmed via a direct
+  A/B: the same track transitioned cleanly on the Pulse/PipeWire
+  backend (which correctly drains on cork/flush) but stalled
+  indefinitely at the end of the track on the ALSA/apulse backend.
+  Mitigation attempted: clamp the shim's buffer via its undocumented
+  `APULSE_MAX_TLENGTH_MS` (found via binary string inspection,
+  alongside `APULSE_PLAYBACK_DEVICE`/`APULSE_DIAG`/`APULSE_YIELD_PATH`)
+  to 300ms by default, matching the ALSA capture side's existing
+  `--buffer-time=300000`. Override with
+  `SOLOIST_SHIM_MAX_TLENGTH_MS=<ms>` if a different value is needed.
+  Left in place (it's a reasonable change regardless, and may still
+  help on some hardware), but a real-hardware retest showed the exact
+  same freeze pattern recurring afterwards, so it is **not** sufficient
+  on its own -- see the watchdog entry above for the current mitigation.
+  (This supersedes the "stops after one track" entry below: that fix
+  -- gating the shim's diagnostics off by default -- was real and
+  worth keeping, but turned out not to be the actual root cause of
+  end-of-track stalls.)
+- ALSA/apulse backend: confirmed working end-to-end on real hardware
+  (DietPi + `snd-aloop` + bundled x86_64 shim) across multiple
+  consecutive tracks and automatic track transitions, with continuous
+  audible playback, no capture restarts, and no shim/ALSA errors. This
+  closes out the "stops after one track" symptom reported against an
+  earlier commit in this series -- it was caused by the shim's
+  `APULSE_DIAG` debug logging (see below) being left enabled
+  unconditionally, and was resolved simply by gating that logging back
+  behind the `SOLOIST_SHIM_DIAG=1` opt-in (default off).
+- ALSA/apulse backend: fix the real silent-playback bug with the bundled
+  x86_64 shim. The shim's own `APULSE_DIAG` debug log (temporarily
+  enabled while investigating, see below) pinpointed the exact failure:
+  `pcm open hw:1,0,0 failed: No such file or directory` -- Soloist
+  genuinely produced real audio and the shim buffered it correctly
+  (confirmed via its own write-queue log growing across repeated
+  writes), but opening the raw `hw:` ALSA device for **playback** failed
+  outright on this host, even though the very same loopback card's
+  paired **capture** device opened fine via `plughw:`. Fix: when the
+  bundled shim is active, upgrade its playback device from `hw:...` to
+  `plughw:...` before launching Soloist, mirroring the upgrade already
+  applied on the capture side. Confirmed fixed: audio now reaches real
+  hardware and is audible.
+  (An earlier commit in this series incorrectly assumed the shim
+  hardcoded its output to a PCM literally named `volumio`
+  (`plug:volumio`) and ignored `APULSE_PLAYBACK_DEVICE` entirely, and
+  added a `~/.asoundrc` alias to work around that. Binary string
+  analysis of the shim showed it does read `APULSE_PLAYBACK_DEVICE`
+  directly; that workaround was dead code and has been removed.)
+- ALSA/apulse backend: the shim also exposes two built-in debug hooks
+  used to diagnose the above (`APULSE_DIAG` for verbose per-call
+  logging, `APULSE_YIELD_PATH` for a raw-PCM dump of what Soloist
+  actually sends it) -- gated behind `SOLOIST_SHIM_DIAG=1` (off by
+  default). Per-call logging runs on the shim's real-time audio thread,
+  so leaving it on by default risked introducing its own audible
+  glitches/dropouts on constrained hardware.
+- ALSA/apulse backend: stop `export`ing the bundled Soloist pulse shim's
+  `LD_LIBRARY_PATH` globally. It was only meant to affect Soloist's own
+  playback process, but a global `export` leaked it into every later
+  command in the script too -- including the `arecord` capture process,
+  which has nothing to do with Pulse at all. With the shim directory
+  ahead of the system path, the dynamic linker resolved the shim's
+  bundled (stub) `libpulse.so.0` instead of the real system one whenever
+  ALSA's config layer tried to dlopen its own "pulse" conf-hook plugin,
+  which needs the *real* libpulse symbols (e.g. `pa_mainloop_new`) --
+  breaking with "undefined symbol" and cascading into "Unknown PCM
+  <device>" for `arecord`, which is what actually caused audio capture to
+  fail every single time on the ALSA backend. Scope the shim's
+  `LD_LIBRARY_PATH` to just the Soloist invocation instead.
+- Fix a bug where the bridge's own stderr got permanently redirected to
+  `/dev/null` the first time the relay-readiness probe succeeded, because
+  its fd-3 cleanup used a bare `exec ... 2>/dev/null` (which changes the
+  current shell's fds for good, not just for that statement) instead of a
+  scoped `{ ... } 2>/dev/null` group. This silently swallowed every
+  bridge log line from that point on -- including every capture-start and
+  capture-exit-status line -- and, worse, the real stderr output from
+  every `arecord`/`ffmpeg` capture child launched afterwards, very likely
+  hiding the actual no-sound root cause behind a misleadingly "quiet" log.
+- Stop piping the bridge's own log output through `tee`. GNU `tee` fully
+  buffers its writes whenever its stdout isn't a TTY (always true here),
+  which can delay recently-logged lines -- including ones on a working,
+  always-executed code path -- from ever reaching `bridge.log` while the
+  process is still running normally. Write directly to the log file
+  instead (`exec >> "$LOG_FILE" 2>&1`), with no buffering process in the
+  middle, so every log line lands immediately.
+- ALSA/apulse backend: stop sharing one device string between playback and
+  capture. The bridge now keeps Soloist playback on the raw loopback
+  playback side while preferring the plug-converted loopback capture side,
+  which matches hosts where the loopback monitor only exposes FLOAT_LE on
+  the raw capture node.
+- ALSA/apulse backend: when the backend uses ffmpeg for FLAC/MP3 output,
+  capture from ALSA with `arecord` first and feed raw PCM into ffmpeg via
+  stdin instead of relying on ffmpeg to open the ALSA device directly.
+  This avoids host-specific ffmpeg/ALSA device parsing failures while
+  keeping the existing encoding/relay path intact.
+- ALSA/apulse backend: resolve the configured loopback card *name* (e.g.
+  `Loopback`) to its numeric ALSA card index before launching Soloist or
+  `arecord`. When two or more cards share the same name -- which happens
+  if `snd-aloop` was loaded more than once without unique `id=` values --
+  ALSA's name-based lookup is ambiguous and can fail to open the device
+  with no audible error (`Cannot get card index for Loopback`), which
+  looked like "Soloist plays but there's no sound". The bridge now logs a
+  `WARNING` naming every matching card index in that case and picks the
+  first one so playback still works instead of failing open. If no card
+  matches the configured name at all, it falls back to a case-insensitive
+  substring match and logs every ALSA card id it actually sees in
+  `/proc/asound/cards`, so the real card names are visible in `bridge.log`
+  without needing a separate shell session.
+- Run the ALSA/apulse capture supervisor loop in the foreground (it already
+  polls Soloist's own liveness internally) instead of backgrounding it
+  behind a duplicate supervisory loop, and log the exact capture command
+  plus its exit status on every restart, to make capture-pipeline failures
+  visible in `bridge.log` instead of silent.
+- Add `Bin/setup-alsa-prereqs.sh`, a companion to the existing
+  Pulse-backend helper script, that installs the ALSA/apulse backend's
+  Debian packages and -- the actual root cause found while debugging a
+  real "no sound" report -- loads `snd-aloop` and persists both the
+  module load and its substream count across reboots, since a plain
+  `modprobe snd-aloop` only lasts until the next reboot and its absence
+  is otherwise silent (Soloist "plays" normally with no audible output).
+
 ## 0.3.49
 
 - Stop using the Soloist executable file timestamp to estimate expiry age.

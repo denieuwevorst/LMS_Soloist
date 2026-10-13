@@ -180,10 +180,34 @@ On **x86_64**, this branch now ships a bundled `libpulse.so.0` shim under
 `alsa-lib/amd64/` and loads it automatically on the ALSA backend, so your
 configured **Soloist binary path** can be the raw `soloist` binary.
 
+Note: that bundled shim is **not** apulse. It's a purpose-built
+`libpulse.so.0` replacement that genuinely honors
+`APULSE_PLAYBACK_DEVICE` and opens it directly via ALSA's
+`snd_pcm_open()`. The bridge automatically upgrades a plain `hw:` device
+to `plughw:` for this shim specifically, because on at least some
+hosts the raw `hw:` PCM type fails to open for **playback** even though
+the paired `plughw:` capture device opens fine on the very same card
+(confirmed via the shim's own diagnostic logging). You don't need to do
+anything for this; it happens automatically whenever the bundled shim
+is active. If you instead supply your own wrapper/launcher (see below),
+that wrapper's own Pulse-to-ALSA shim is expected to honor
+`APULSE_PLAYBACK_DEVICE` in the normal apulse way, and you're free to
+configure whatever device string it needs directly via **ALSA loopback
+device prefix**.
+
 On other architectures, the plugin still expects your configured
 **Soloist binary path** to be an apulse-style wrapper (or equivalent
 launcher) that makes Soloist's Pulse client API calls land on ALSA
 instead.
+
+There's also an **experimental, not-yet-integrated** alternative shim
+under `contrib/experimental-pcm-shim/` that paces playback on a real
+clock and reports position from actual drained bytes rather than bytes
+handed to it -- proposed as a possible fix for the ALSA/apulse backend's
+known end-of-track stall (see Troubleshooting below and
+`CHANGELOG.md`). It is unvalidated against the real Soloist binary and
+is not wired into the plugin; see that directory's own README for how
+to build and evaluate it yourself before considering it.
 
 Required packages:
 
@@ -193,22 +217,36 @@ sudo apt install -y alsa-utils ffmpeg python3
 
 Typical setup:
 
-1. Load or persist the ALSA loopback module:
+1. Load the ALSA loopback module **and make it persist across reboots** --
+   a plain `modprobe` only loads it for the current boot, and if it's
+   missing after a reboot the ALSA backend will silently have no device to
+   use (Soloist "plays" with no audible output, and `arecord`/apulse will
+   fail to find it):
    ```bash
    sudo modprobe snd-aloop
+   echo snd-aloop | sudo tee /etc/modules-load.d/snd-aloop.conf
    ```
+   Confirm it's actually present with `cat /proc/asound/cards` -- you
+   should see a card literally named `Loopback`. The
+   [ALSA helper script](#debian-helper-script-alsaapulse-backend-only)
+   below does all of this for you, including picking a substream count
+   for multiple players.
 2. Point the plugin's **Audio backend** setting at **ALSA/apulse
    loopback**.
 3. On **x86_64**, point **Soloist binary path** at the raw `soloist`
    binary. On other architectures, point it at a wrapper that launches
    Soloist under `apulse` (or an equivalent shim).
 4. Leave **ALSA loopback device prefix** at `hw:Loopback` unless your
-   loopback card uses a different name.
+   loopback card uses a different name. The plugin will keep Soloist
+   playback on `hw:` and automatically prefer `plughw:` on the capture
+   side when the prefix starts with `hw:`. On the ALSA backend the bridge
+   captures with `arecord` first and only then feeds ffmpeg, so hosts where
+   ffmpeg's direct ALSA device parsing is picky can still work reliably.
 
 With the default prefix, player slot `N` maps to:
 
 - Soloist playback: `hw:Loopback,0,N`
-- ffmpeg capture: `hw:Loopback,1,N`
+- arecord capture: `plughw:Loopback,1,N`
 
 That means your ALSA loopback setup must provide enough substreams for the
 number of selected players you plan to run in parallel.
@@ -254,6 +292,39 @@ audio setup.
 The helper intentionally does **not** download the Soloist binary or set
 your API key; those stay manual because they're tied to your architecture
 and Spotify developer account.
+
+## Debian helper script (ALSA/apulse backend only)
+
+To install the Debian-side prerequisites for the **optional ALSA/apulse
+backend** and make the ALSA loopback module persist across reboots
+(skipping this step is the single most common cause of "Soloist plays but
+there's no sound" on this backend), run:
+
+```bash
+curl -fsSL -o setup-alsa-prereqs.sh \
+  https://raw.githubusercontent.com/denieuwevorst/LMS_Soloist/main/Bin/setup-alsa-prereqs.sh
+chmod +x setup-alsa-prereqs.sh
+sudo ./setup-alsa-prereqs.sh
+```
+
+What it does:
+- installs the required Debian packages for the ALSA/apulse backend
+- loads `snd-aloop` now with enough substreams for the players you plan to
+  run (`--substreams N`, default 8), and persists both the module load
+  (`/etc/modules-load.d/snd-aloop.conf`) and its substream count
+  (`/etc/modprobe.d/snd-aloop-soloist.conf`) so a reboot doesn't silently
+  remove your loopback device
+- verifies a `Loopback` card actually shows up in `/proc/asound/cards`
+  afterward
+- detects the Lyrion systemd service and its runtime user, adds that user
+  to the `audio` group if it exists, and restarts Lyrion
+
+Use `sudo ./setup-alsa-prereqs.sh --lyrion-user <user>` if your Lyrion
+service user can't be auto-detected, or `--skip-apt` if you already
+installed the packages yourself and only want the loopback/service setup.
+If you plan to use the default Pulse/PipeWire backend instead, use
+`setup-debian-prereqs.sh` above instead of this one.
+
 ## Install
 
 https://raw.githubusercontent.com/denieuwevorst/lms-spotify-soloist/main/repo.xml
@@ -455,6 +526,25 @@ backend**. Either switch to the ALSA/apulse backend or see
 - Check that player's `bridge.log` for the exact playback/capture devices
   it tried to use. The ALSA backend logs both `APULSE_PLAYBACK_DEVICE` and
   the ffmpeg capture device at startup.
+- If `arecord`/apulse fail with `ALSA lib confmisc.c:... Cannot get card
+  index for Loopback` (or audio opens but is silent with no error at all),
+  check `bridge.log` for the resolver's own `WARNING` line, which tells
+  you exactly which case you're in:
+  - `no ALSA card named 'Loopback' found ... (known cards: 0='PCH')` (or
+    similar, with **no** `Loopback` in the list) means the loopback kernel
+    module **simply isn't loaded right now** -- most likely it was loaded
+    manually once (e.g. for testing) but never made to persist across a
+    reboot. Fix: `sudo modprobe snd-aloop` and persist it with
+    `echo snd-aloop | sudo tee /etc/modules-load.d/snd-aloop.conf`, then
+    restart that player.
+  - `N ALSA cards are named 'Loopback' (indices: ...)` means you have
+    **more than one** loopback card with the same name (e.g. `snd-aloop`
+    loaded more than once without unique `id=` values), which makes
+    ALSA's name-based lookup ambiguous and can silently fail to open
+    either side of the pipe. The bridge resolves this to the first
+    matching numeric index automatically, but to remove the ambiguity
+    for good, unload the extra instances or give each one a unique
+    `id=` when loading `snd-aloop`.
 
 **Bridge starts, but the device never shows up in the Spotify app**
 - Check that player's status in the plugin's settings page — "running" or
@@ -512,8 +602,62 @@ sound** — work through these in order:
    ffmpeg -f alsa -i hw:Loopback,1,<slot> -t 5 -af volumedetect -f null - 2>&1 | grep -i "mean_volume\|max_volume"
    ```
    Substitute your configured device prefix if you changed it from
-   `hw:Loopback`.
-5. Also check for `Failed to create secure directory (.../.config/pulse)`
+   `hw:Loopback`. If this is **also** silent (no audio reaching the
+   capture side at all) while using the **bundled x86_64 shim**, verify
+   the loopback hardware pairing itself works independent of Soloist:
+   ```bash
+   speaker-test -D hw:Loopback,0,<slot> -c2 -r44100 -twav &
+   SPID=$!; sleep 1
+   arecord -D plughw:Loopback,1,<slot> -c2 -f S16_LE -r44100 -d3 /tmp/looptest.wav
+   kill $SPID 2>/dev/null
+   ffmpeg -y -i /tmp/looptest.wav -af volumedetect -f null - 2>&1 | grep -i "mean_volume\|max_volume"
+   ```
+   If that still shows real levels but regular playback doesn't, check
+   `bridge.log` for a `pcm open ... failed` line from `soloist-shim:`
+   right after the `cork 0` that starts playback. The bundled shim opens
+   the exact device string in `APULSE_PLAYBACK_DEVICE` via
+   `snd_pcm_open()`; the bridge already upgrades a plain `hw:` device to
+   `plughw:` for this shim (raw `hw:` playback opens have been observed
+   to fail outright on some hosts even when the paired `plughw:` capture
+   device on the same card works fine), but if you still see a `pcm
+   open ... failed` line, temporarily set `SOLOIST_SHIM_DIAG=1` in the
+   bridge's environment for one run to get verbose per-call shim logging
+   (`APULSE_DIAG`) plus a raw audio dump at
+   `<cache-dir>/player_<N>/shim-alsa-yield.raw` (`APULSE_YIELD_PATH`) to
+   see exactly what's failing and whether real audio is reaching the
+   shim at all. Leave this off for normal use -- the per-call logging
+   runs on the shim's real-time audio thread and can itself cause
+   glitches/dropouts if left on.
+5. If playback plays correctly but **cuts off a few hundred
+   milliseconds to a few seconds before the real end of a track and
+   LMS never advances to the next one** (specific to the ALSA/apulse
+   backend -- the Pulse/PipeWire backend doesn't have this issue): the
+   bundled shim negotiates a playback buffer several seconds deep by
+   default, and Soloist's own position tracking is based on how much
+   audio it has *handed to* the stream, not how much has actually
+   reached the speaker. With a deep buffer, Soloist's own clock can
+   think a track has finished seconds before the real, still-queued
+   audio has drained, and then cork/flush the stream for the next
+   track -- discarding that last bit of real audio instead of playing
+   it out. The bridge clamps this via the shim's undocumented
+   `APULSE_MAX_TLENGTH_MS` to 300ms by default (matching the ALSA
+   capture side's own `--buffer-time=300000`), so Soloist's clock can
+   only race a few hundred ms ahead of real output instead of several
+   seconds. Override with `SOLOIST_SHIM_MAX_TLENGTH_MS=<ms>` in the
+   bridge's environment if you need a different value (e.g. raise it if
+   you hear underruns/glitches on very constrained hardware, at the
+   cost of reintroducing some of this end-of-track mismatch). **Note:**
+   on real hardware this buffer clamp alone was not always enough to
+   stop the freeze from recurring -- as a backstop, the plugin also
+   runs a watchdog (ALSA backend only) that force-skips a track if
+   Soloist still reports `"playing"` with an unchanged position for 8
+   seconds, so LMS doesn't hang indefinitely even if the freeze
+   happens. If you see frequent forced skips in the Lyrion log
+   (`Soloist playback position appears stuck ... forcing a track
+   skip`), the underlying freeze is still occurring and the last bit of
+   that track's audio is being lost; please report this with
+   `bridge.log` from around the skip.
+6. Also check for `Failed to create secure directory (.../.config/pulse)`
    / `Failed to load cookie file` in that same log — this means the
    service account's `$HOME` isn't writable, preventing Soloist from
    completing PulseAudio's cookie-based authentication. The bridge script
