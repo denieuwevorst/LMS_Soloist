@@ -96,6 +96,7 @@ static int out_open_locked(void)
         memset(&a, 0, sizeof a);
         a.sun_family = AF_UNIX;
         strncpy(a.sun_path, cfg.out, sizeof a.sun_path - 1);
+        a.sun_path[sizeof a.sun_path - 1] = 0;
         fd = socket(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC | SOCK_NONBLOCK, 0);
         if (fd < 0) return -1;
         if (connect(fd, (struct sockaddr *) &a, sizeof a) < 0) { close(fd); return -1; }
@@ -308,7 +309,7 @@ pa_mainloop_api *pa_mainloop_get_api(pa_mainloop *m) { return &m->tm.api; }
 int pa_mainloop_prepare(pa_mainloop *m, int timeout) { (void) m; (void) timeout; return 0; }
 int pa_mainloop_poll(pa_mainloop *m) { (void) m; return 0; }
 int pa_mainloop_dispatch(pa_mainloop *m) { (void) m; return 0; }
-int pa_mainloop_get_retval(pa_mainloop *m) { return m->retval; }
+int pa_mainloop_get_retval(const pa_mainloop *m) { return m->retval; }
 void pa_mainloop_wakeup(pa_mainloop *m)
 {
     pthread_mutex_lock(&m->tm.q);
@@ -490,8 +491,8 @@ pa_proplist *pa_proplist_new(void) { return calloc(1, sizeof(pa_proplist)); }
 void pa_proplist_free(pa_proplist *p) { free(p); }
 int pa_proplist_sets(pa_proplist *p, const char *k, const char *v) { (void) p; (void) k; (void) v; return 0; }
 int pa_proplist_setf(pa_proplist *p, const char *k, const char *fmt, ...) { (void) p; (void) k; (void) fmt; return 0; }
-const char *pa_proplist_gets(pa_proplist *p, const char *k) { (void) p; (void) k; return NULL; }
-int pa_proplist_contains(pa_proplist *p, const char *k) { (void) p; (void) k; return 0; }
+const char *pa_proplist_gets(const pa_proplist *p, const char *k) { (void) p; (void) k; return NULL; }
+int pa_proplist_contains(const pa_proplist *p, const char *k) { (void) p; (void) k; return 0; }
 pa_proplist *pa_proplist_copy(const pa_proplist *p) { (void) p; return pa_proplist_new(); }
 int pa_proplist_unset(pa_proplist *p, const char *k) { (void) p; (void) k; return 0; }
 
@@ -1086,9 +1087,9 @@ uint32_t pa_stream_get_device_index(const pa_stream *s) { (void) s; return 0; }
 const char *pa_stream_get_device_name(const pa_stream *s) { (void) s; return "soloist_lms"; }
 int pa_stream_is_suspended(const pa_stream *s) { (void) s; return 0; }
 int pa_stream_is_corked(const pa_stream *s) { return s->corked; }
-const pa_sample_spec *pa_stream_get_sample_spec(const pa_stream *s) { return &s->ss; }
-const pa_channel_map *pa_stream_get_channel_map(const pa_stream *s) { return &s->map; }
-const pa_buffer_attr *pa_stream_get_buffer_attr(const pa_stream *s) { return &s->attr; }
+const pa_sample_spec *pa_stream_get_sample_spec(pa_stream *s) { return &s->ss; }
+const pa_channel_map *pa_stream_get_channel_map(pa_stream *s) { return &s->map; }
+const pa_buffer_attr *pa_stream_get_buffer_attr(pa_stream *s) { return &s->attr; }
 
 #define SETCB(name, type, field, ud) \
     void pa_stream_set_##name##_callback(pa_stream *s, type cb, void *u) { s->field = cb; s->ud = u; }

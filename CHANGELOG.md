@@ -2,16 +2,43 @@
 
 ## Unreleased
 
+## 0.3.50
+
+- Add a third, fully wired-in **experimental direct-PCM shim** audio
+  backend (`audioBackend = pcm-shim`), alongside the existing Pulse and
+  ALSA/apulse backends. Uses the `libpulse.so.0` replacement in
+  `contrib/experimental-pcm-shim/` (added as an unintegrated experiment
+  in a previous unreleased entry below): Soloist writes raw PCM straight
+  to a per-player FIFO this plugin creates, and the bridge's ffmpeg
+  capture reads that FIFO directly. This needs **no** Pulse/PipeWire
+  server and **no** ALSA loopback (`snd-aloop`) card at all -- the
+  simplest audio path of the three. Confirmed on real hardware (DietPi,
+  real `soloist` binary, not just the shim's own test client): playback
+  starts, audio is correct, and -- the specific bug this backend was
+  built to fix -- **automatic track transitions now work**, unlike the
+  ALSA/apulse backend's confirmed end-of-track stall.
+  Still experimental and opt-in: the shim itself is not prebuilt or
+  bundled (run `make` in `contrib/experimental-pcm-shim` on-device first
+  and point the new "Experimental PCM shim directory" setting at the
+  result), and it has only been smoke-tested manually outside the
+  plugin so far, not run for extended/varied real-world LMS use. New
+  settings: audio backend option `pcm-shim`, and "Experimental PCM shim
+  directory" (`pcmShimDir` pref / `SOLOIST_PCM_SHIM_DIR` env). The
+  Pulse and ALSA/apulse backends are unchanged.
 - Add `contrib/experimental-pcm-shim/`: an alternative `libpulse.so.0`
   replacement proposed as a possible fix for the ALSA/apulse backend's
   end-of-track stall (it paces playback on a real clock and reports
   position from actual drained bytes, rather than bytes handed to it).
-  **Not wired into the plugin or bridge** -- unvalidated against the
-  real Soloist binary, and would need a new direct-PCM-FIFO capture
-  path to integrate (a different audio path than the ALSA loopback
-  capture both existing backends use). Ships with a `Makefile` and a
-  `check-symbols.sh` so it can be evaluated independently; see that
-  directory's README for full status and required next steps.
+  Confirmed to build cleanly (after fixing 6 const-qualifier mismatches
+  vs. the real `libpulse-dev` headers, plus a `sun_path`
+  null-termination fix) and to play correct-pitch, correct-length audio
+  via a self-contained test client (`test_client.c`, `make test`) that
+  doesn't require the real Soloist binary. Ships with a `Makefile`,
+  `test_client.c` and a `check-symbols.sh` (dlopen/strings-aware, since
+  Soloist likely dlopens libpulse rather than linking it) so it can be
+  evaluated independently; see that directory's README for full status.
+  (Now wired into the plugin/bridge as the `pcm-shim` backend -- see the
+  entry above.)
 - ALSA/apulse backend: add a watchdog that force-skips a track when
   Soloist's own reported playback position freezes (`status` stays
   `"playing"` but `position` stops advancing) instead of letting LMS

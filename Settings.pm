@@ -22,7 +22,7 @@ sub page {
 
 sub prefs {
 	return ( $prefs, qw(
-		soloistBin ffmpegBin pythonBin audioBackend pipewireSink alsaDevicePrefix wsPortBase relayPortBase
+		soloistBin ffmpegBin pythonBin audioBackend pipewireSink alsaDevicePrefix pcmShimDir wsPortBase relayPortBase
 		format bitrate initialVolume deviceNameSuffix apiKey relayBind autostart
 		idleDisconnectSeconds
 	) );
@@ -52,6 +52,8 @@ sub handler {
 		my $newBackend      = $params->{pref_audioBackend} || $oldBackend;
 		my $oldAlsaPrefix   = $prefs->get('alsaDevicePrefix') || 'hw:Loopback';
 		my $newAlsaPrefix   = $params->{pref_alsaDevicePrefix} || $oldAlsaPrefix;
+		my $oldPcmShimDir   = $prefs->get('pcmShimDir') || '';
+		my $newPcmShimDir   = $params->{pref_pcmShimDir} || '';
 		my @toStart;
 		my @toStop;
 		my @toRestart;
@@ -75,6 +77,7 @@ sub handler {
 					$oldGlobalFormat ne $newGlobalFormat ||
 					$oldBackend ne $newBackend ||
 					$oldAlsaPrefix ne $newAlsaPrefix ||
+					$oldPcmShimDir ne $newPcmShimDir ||
 					(
 						$newGlobalFormat eq 'mp3' &&
 						$oldBitrate ne $newBitrate

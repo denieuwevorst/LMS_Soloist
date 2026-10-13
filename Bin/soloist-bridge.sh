@@ -7,10 +7,17 @@
 # Audio path:
 #   - Pulse backend: PipeWire/PulseAudio null-sink -> ffmpeg capture of that
 #     sink's monitor -> named pipe -> audio-relay.py
-#   - ALSA backend: bundled shim or wrapper -> ALSA playback device ->
+#   - ALSA backend: bundled apulse shim or wrapper -> ALSA playback device ->
 #     bridge capture from the matching ALSA loopback device -> named pipe
 #     -> audio-relay.py
-# The relay role is identical either way and replaces Icecast; see
+#   - pcm-shim backend: contrib/experimental-pcm-shim's libpulse.so.0
+#     replacement writes raw PCM straight to a FIFO this script creates ->
+#     ffmpeg reads that FIFO directly -> named pipe -> audio-relay.py. No
+#     Pulse/PipeWire server and no ALSA loopback (snd-aloop) card needed at
+#     all for this backend -- only the shim's own build-time dependency on
+#     libpulse-dev headers (see contrib/experimental-pcm-shim/README.md).
+#     Opt-in and still less validated than the other two backends.
+# The relay role is identical in all three cases and replaces Icecast; see
 # Bin/audio-relay.py for why the relay reads from a FIFO.
 #
 # Metadata is NOT handled here -- Plugin.pm consumes Soloist's pushed
@@ -23,7 +30,8 @@
 #                     PYTHON_BIN SOLOIST_AUDIO_BACKEND PIPEWIRE_SINK
 #                     ALSA_PLAYBACK_DEVICE ALSA_CAPTURE_DEVICE
 #                     RELAY_READY_FILE RELAY_FLUSH_FILE FFMPEG_BIN
-#                     SOLOIST_SHIM_DIR
+#                     SOLOIST_SHIM_DIR SOLOIST_PCM_SHIM_DIR
+#                     SOLOIST_PCM_SHIM_FIFO SOLOIST_PCM_SHIM_LOG
 
 set -u
 set -o pipefail
@@ -49,6 +57,9 @@ RELAY_READY_FILE="${RELAY_READY_FILE:-${SOLOIST_CACHE_DIR}/relay.ready}"
 RELAY_FLUSH_FILE="${RELAY_FLUSH_FILE:-${SOLOIST_CACHE_DIR}/relay.flush}"
 PYTHON_BIN="${PYTHON_BIN:-python3}"
 SOLOIST_SHIM_DIR="${SOLOIST_SHIM_DIR:-}"
+SOLOIST_PCM_SHIM_DIR="${SOLOIST_PCM_SHIM_DIR:-}"
+SOLOIST_PCM_SHIM_FIFO="${SOLOIST_PCM_SHIM_FIFO:-}"
+SOLOIST_PCM_SHIM_LOG="${SOLOIST_PCM_SHIM_LOG:-0}"
 WS_ENDPOINT="127.0.0.1:${WS_PORT}"
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -213,8 +224,15 @@ case "$SOLOIST_AUDIO_BACKEND" in
 		: "${ALSA_PLAYBACK_DEVICE:?ALSA_PLAYBACK_DEVICE is required when SOLOIST_AUDIO_BACKEND=alsa}"
 		: "${ALSA_CAPTURE_DEVICE:?ALSA_CAPTURE_DEVICE is required when SOLOIST_AUDIO_BACKEND=alsa}"
 		;;
+	pcm-shim)
+		: "${SOLOIST_PCM_SHIM_DIR:?SOLOIST_PCM_SHIM_DIR is required when SOLOIST_AUDIO_BACKEND=pcm-shim (directory containing contrib/experimental-pcm-shim's built libpulse.so.0)}"
+		if [ ! -f "${SOLOIST_PCM_SHIM_DIR}/libpulse.so.0" ]; then
+			log "ERROR: '${SOLOIST_PCM_SHIM_DIR}/libpulse.so.0' not found -- build it first: cd contrib/experimental-pcm-shim && make"
+			exit 1
+		fi
+		;;
 	*)
-		log "ERROR: unsupported SOLOIST_AUDIO_BACKEND '$SOLOIST_AUDIO_BACKEND' (expected pulse or alsa)"
+		log "ERROR: unsupported SOLOIST_AUDIO_BACKEND '$SOLOIST_AUDIO_BACKEND' (expected pulse, alsa, or pcm-shim)"
 		exit 1
 		;;
 esac
@@ -269,6 +287,23 @@ if [ "$SOLOIST_AUDIO_BACKEND" = "pulse" ]; then
 
 	CAPTURE_INPUT_ARGS=(-f pulse -i "${PIPEWIRE_SINK}.monitor")
 	SOLOIST_AUDIO_TARGET_DESC="Pulse/PipeWire sink ${PIPEWIRE_SINK}"
+elif [ "$SOLOIST_AUDIO_BACKEND" = "pcm-shim" ]; then
+	# This backend needs none of the ALSA-loopback/arecord/plughw plumbing
+	# the "alsa" backend requires: the shim writes raw PCM straight to a
+	# FIFO we create below, and ffmpeg reads that FIFO directly. See
+	# contrib/experimental-pcm-shim/README.md for the shim's status.
+	#
+	# SOLOIST_LD_LIBRARY_PATH is intentionally NOT `export`ed here, for the
+	# same reason as the "alsa" backend above: it must only affect
+	# Soloist's own process (below), not every later command in this
+	# script (ffmpeg doesn't need or want this shim's libpulse.so.0 ahead
+	# of the real one on its library path).
+	SOLOIST_LD_LIBRARY_PATH="${SOLOIST_PCM_SHIM_DIR}${LD_LIBRARY_PATH:+:${LD_LIBRARY_PATH}}"
+	SOLOIST_PCM_SHIM_FIFO="${SOLOIST_PCM_SHIM_FIFO:-${SOLOIST_CACHE_DIR}/pcm-shim.fifo}"
+	[ -p "$SOLOIST_PCM_SHIM_FIFO" ] || { rm -f "$SOLOIST_PCM_SHIM_FIFO"; mkfifo "$SOLOIST_PCM_SHIM_FIFO"; }
+	CAPTURE_INPUT_ARGS=(-f s16le -ar 44100 -ac 2 -i "$SOLOIST_PCM_SHIM_FIFO")
+	SOLOIST_AUDIO_TARGET_DESC="experimental pcm-shim FIFO ${SOLOIST_PCM_SHIM_FIFO}"
+	log "using experimental pcm-shim backend from '${SOLOIST_PCM_SHIM_DIR}', raw PCM FIFO=${SOLOIST_PCM_SHIM_FIFO}"
 else
 	# The ALSA path is intentionally opt-in: Soloist still has no native ALSA
 	# flag, so this mode uses either the bundled x86_64 libpulse shim or a
@@ -391,6 +426,13 @@ if [ "${SOLOIST_SHIM_ACTIVE:-0}" = "1" ]; then
 fi
 if [ "${SOLOIST_SHIM_ACTIVE:-0}" = "1" ] && [ "${SOLOIST_SHIM_DIAG:-0}" = "1" ]; then
 	SOLOIST_ENV_PREFIX+=(APULSE_DIAG=1 APULSE_YIELD_PATH="${SOLOIST_SHIM_YIELD_PATH}")
+fi
+if [ "$SOLOIST_AUDIO_BACKEND" = "pcm-shim" ]; then
+	# The shim defaults to s24 (packed) output if SOLOIST_SHIM_FORMAT is
+	# unset, but the capture side below is hardcoded to s16le/44100 (same
+	# fixed assumption the "alsa" backend's arecord capture makes) -- so
+	# this must force s16 explicitly, or audio would be garbled/wrong-speed.
+	SOLOIST_ENV_PREFIX+=(SOLOIST_SHIM_OUT="$SOLOIST_PCM_SHIM_FIFO" SOLOIST_SHIM_FORMAT=s16 SOLOIST_SHIM_RATE=44100 SOLOIST_SHIM_LOG="$SOLOIST_PCM_SHIM_LOG")
 fi
 if [ "${#SOLOIST_ENV_PREFIX[@]}" -gt 0 ]; then
 	env "${SOLOIST_ENV_PREFIX[@]}" "$SOLOIST_BIN" "${SOLOIST_ARGS[@]}" &
@@ -531,6 +573,11 @@ case "$FORMAT" in
 				exit 1
 			fi
 			PCM_CAPTURE_ARGS=(parec --raw --rate=44100 --channels=2 --format=s16le --latency-msec=300 --process-time-msec=50 -d "${PIPEWIRE_SINK}.monitor")
+		elif [ "$SOLOIST_AUDIO_BACKEND" = "pcm-shim" ]; then
+			# The shim already writes raw s16le/44100/stereo PCM straight to
+			# its own FIFO -- just forward those bytes on, no capture tool
+			# needed.
+			PCM_CAPTURE_ARGS=(cat "$SOLOIST_PCM_SHIM_FIFO")
 		else
 			if ! command -v arecord >/dev/null 2>&1; then
 				log "ERROR: arecord not found -- PCM direct mode on the ALSA backend needs alsa-utils"

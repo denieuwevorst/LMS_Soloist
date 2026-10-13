@@ -90,9 +90,10 @@ $prefs->init({
 	soloistBin      => '/usr/local/bin/soloist',
 	ffmpegBin       => '/usr/bin/ffmpeg',
 	pythonBin       => 'python3',
-	audioBackend    => 'pulse',           # pulse | alsa
+	audioBackend    => 'pulse',           # pulse | alsa | pcm-shim
 	pipewireSink    => 'soloist_sink',    # base name; each player gets _<slot> appended
 	alsaDevicePrefix => 'hw:Loopback',    # ALSA/apulse backend: playback = <prefix>,0,<slot>; capture auto-prefers plughw:<card>,1,<slot> when prefix starts with hw:
+	pcmShimDir      => '',                # pcm-shim backend: directory with contrib/experimental-pcm-shim's built libpulse.so.0 (not bundled -- build it on-device first)
 	wsPortBase      => 9091,              # each player gets +<slot>
 	relayPortBase   => 9077,              # each player gets +<slot>
 	format          => 'mp3',             # mp3 | flac | pcm
@@ -193,7 +194,22 @@ sub _applySoloistExecEnv {
 	my $backend = $prefs->get('audioBackend') || 'pulse';
 
 	delete $ENV{APULSE_PLAYBACK_DEVICE};
-	return unless $backend eq 'alsa';
+	return unless $backend eq 'alsa' || $backend eq 'pcm-shim';
+
+	if ( $backend eq 'pcm-shim' ) {
+		# ctl/--version invocations are short-lived, don't touch real audio
+		# hardware, and don't need SOLOIST_SHIM_OUT pointed anywhere specific
+		# -- only LD_LIBRARY_PATH, so Soloist's unconditional libpulse
+		# dlopen() at startup finds this shim instead of failing outright on
+		# a host with no real PulseAudio/PipeWire installed.
+		my $shimDir = $b ? $b->{pcmShimDir} : $prefs->get('pcmShimDir');
+		if ( $shimDir && length $shimDir ) {
+			$ENV{LD_LIBRARY_PATH} = length( $ENV{LD_LIBRARY_PATH} || '' )
+				? $shimDir . ':' . $ENV{LD_LIBRARY_PATH}
+				: $shimDir;
+		}
+		return;
+	}
 
 	if ( my $shimDir = bundledSoloistShimDir() ) {
 		$ENV{LD_LIBRARY_PATH} = length( $ENV{LD_LIBRARY_PATH} || '' )
@@ -453,6 +469,8 @@ sub _configFor {
 		relayReadyFile => catfile( $baseCacheDir, "player_$slot", 'relay.ready' ),
 		relayFlushFile => catfile( $baseCacheDir, "player_$slot", 'relay.flush' ),
 		soloistShimDir => bundledSoloistShimDir(),
+		pcmShimDir => $prefs->get('pcmShimDir'),
+		pcmShimFifo => catfile( $baseCacheDir, "player_$slot", 'pcm-shim.fifo' ),
 		deviceName => $playerName . $prefs->get('deviceNameSuffix'),
 	};
 }
@@ -607,6 +625,8 @@ sub _startBridge {
 	local $ENV{RELAY_READY_FILE}  = $cfg->{relayReadyFile};
 	local $ENV{RELAY_FLUSH_FILE}  = $cfg->{relayFlushFile};
 	local $ENV{SOLOIST_SHIM_DIR}  = $cfg->{soloistShimDir};
+	local $ENV{SOLOIST_PCM_SHIM_DIR}  = $cfg->{pcmShimDir};
+	local $ENV{SOLOIST_PCM_SHIM_FIFO} = $cfg->{pcmShimFifo};
 
 	$log->info( "starting soloist bridge for player '" . $client->name . "' (device='$cfg->{deviceName}', slot=$cfg->{slot})" );
 
