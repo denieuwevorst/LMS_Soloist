@@ -11,6 +11,9 @@
  *   SOLOIST_SHIM_FORMAT  s16 | s24 | s32 (interleaved stereo LE)   (s24, packed)
  *   SOLOIST_SHIM_RATE    output rate in Hz, 0 = pass through       (44100)
  *   SOLOIST_SHIM_LOG     0 quiet, 1 info, 2 trace API calls         (0)
+ *   SOLOIST_SHIM_MAX_TLENGTH_MS  clamp requested tlength/prebuf/minreq
+ *                     to this many ms to keep Soloist's virtual playback
+ *                     clock close to real drained audio              (0=off)
  *
  * Playback is paced against the wall clock, so the reader sees real-time PCM
  * no matter how fast the application writes. If nobody is reading, audio is
@@ -38,7 +41,7 @@
 
 /* ------------------------------------------------------------------ config */
 
-static struct { char out[512]; int bytes; int rate; int log; } cfg;
+static struct { char out[512]; int bytes; int rate; int log; int max_tlength_ms; } cfg;
 static pthread_once_t cfg_once = PTHREAD_ONCE_INIT;
 
 static void cfg_init(void)
@@ -54,6 +57,7 @@ static void cfg_init(void)
     cfg.rate = 44100;
     if ((e = getenv("SOLOIST_SHIM_RATE"))) cfg.rate = atoi(e);
     cfg.log = (e = getenv("SOLOIST_SHIM_LOG")) ? atoi(e) : 0;
+    cfg.max_tlength_ms = (e = getenv("SOLOIST_SHIM_MAX_TLENGTH_MS")) ? atoi(e) : 0;
 }
 #define CFG() pthread_once(&cfg_once, cfg_init)
 #define LOG(l, ...) do { CFG(); if (cfg.log >= (l)) { \
@@ -1022,6 +1026,7 @@ int pa_stream_connect_playback(pa_stream *s, const char *dev, const pa_buffer_at
 {
     size_t fs;
     pa_sample_format_t f;
+    uint32_t max_tlength_bytes = 0;
     (void) dev; (void) vol; (void) sync;
 
     if (!s || s->state != PA_STREAM_UNCONNECTED) return -1;
@@ -1043,6 +1048,17 @@ int pa_stream_connect_playback(pa_stream *s, const char *dev, const pa_buffer_at
     s->attr.prebuf = (attr && attr->prebuf != (uint32_t) -1) ? attr->prebuf : s->attr.tlength;
     s->attr.maxlength = (attr && attr->maxlength != (uint32_t) -1) ? attr->maxlength : s->attr.tlength * 4;
     s->attr.fragsize = (uint32_t) -1;
+    if (cfg.max_tlength_ms > 0) {
+        max_tlength_bytes = (uint32_t) pa_usec_to_bytes((pa_usec_t) cfg.max_tlength_ms * 1000u, &s->ss);
+        if (max_tlength_bytes > 0 && s->attr.tlength > max_tlength_bytes)
+            s->attr.tlength = max_tlength_bytes;
+        if (s->attr.prebuf > s->attr.tlength)
+            s->attr.prebuf = s->attr.tlength;
+        if (s->attr.minreq > s->attr.tlength)
+            s->attr.minreq = s->attr.tlength;
+        if (s->attr.maxlength != (uint32_t) -1 && s->attr.maxlength < s->attr.tlength)
+            s->attr.maxlength = s->attr.tlength;
+    }
     s->prebuf = s->attr.prebuf;
     s->minreq = s->attr.minreq ? s->attr.minreq : fs;
     s->requested = s->attr.tlength;
@@ -1052,8 +1068,8 @@ int pa_stream_connect_playback(pa_stream *s, const char *dev, const pa_buffer_at
     s->thread_started = pthread_create(&s->th, NULL, writer_main, s) == 0;
     if (!s->thread_started) return -1;
 
-    LOG(1, "connect_playback: tlength=%u minreq=%u prebuf=%u out=%s fmt=%dB rate=%d",
-        s->attr.tlength, s->attr.minreq, s->attr.prebuf, cfg.out, cfg.bytes, cfg.rate);
+    LOG(1, "connect_playback: tlength=%u minreq=%u prebuf=%u max_tlength_ms=%d out=%s fmt=%dB rate=%d",
+        s->attr.tlength, s->attr.minreq, s->attr.prebuf, cfg.max_tlength_ms, cfg.out, cfg.bytes, cfg.rate);
     stream_post_state(s, PA_STREAM_CREATING);
     stream_post_state(s, PA_STREAM_READY);
     pthread_mutex_lock(&s->lk);

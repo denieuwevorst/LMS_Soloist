@@ -129,6 +129,11 @@ the `SOLOIST_SHIM_RATE`/format chosen) or crashes.
 | `SOLOIST_SHIM_FORMAT` | Output sample width: `s16`, `s24` (packed 3-byte), or `s32`. | `s24` |
 | `SOLOIST_SHIM_RATE` | Output rate in Hz, `0` passes the stream's own rate through unchanged. | `44100` |
 | `SOLOIST_SHIM_LOG` | `0` quiet, `1` info (connects/disconnects, overflows), `2` also traces API calls. | `0` |
+| `SOLOIST_SHIM_MAX_TLENGTH_MS` | Clamp requested PulseAudio `tlength`/`prebuf`/`minreq` to this many milliseconds to keep Soloist's virtual playback clock close to real drained audio. | `0` (off) |
+
+(The plugin's `pcm-shim` backend now sets `SOLOIST_SHIM_MAX_TLENGTH_MS=300`
+by default because real Soloist builds can otherwise over-buffer and then
+mis-handle immediate pause and track-end timing through a shimmed sink.)
 
 (An earlier reference document attached alongside this source used a
 different variable naming scheme, `SOLOIST_PCM_*`, for what appears to

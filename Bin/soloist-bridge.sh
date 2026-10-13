@@ -445,11 +445,12 @@ if [ "${SOLOIST_SHIM_ACTIVE:-0}" = "1" ] && [ "${SOLOIST_SHIM_DIAG:-0}" = "1" ];
 	SOLOIST_ENV_PREFIX+=(APULSE_DIAG=1 APULSE_YIELD_PATH="${SOLOIST_SHIM_YIELD_PATH}")
 fi
 if [ "$SOLOIST_AUDIO_BACKEND" = "pcm-shim" ]; then
+	SOLOIST_SHIM_MAX_TLENGTH_MS="${SOLOIST_SHIM_MAX_TLENGTH_MS:-300}"
 	# The shim defaults to s24 (packed) output if SOLOIST_SHIM_FORMAT is
 	# unset, but the capture side below is hardcoded to s16le/44100 (same
 	# fixed assumption the "alsa" backend's arecord capture makes) -- so
 	# this must force s16 explicitly, or audio would be garbled/wrong-speed.
-	SOLOIST_ENV_PREFIX+=(SOLOIST_SHIM_OUT="$SOLOIST_PCM_SHIM_FIFO" SOLOIST_SHIM_FORMAT=s16 SOLOIST_SHIM_RATE=44100 SOLOIST_SHIM_LOG="$SOLOIST_PCM_SHIM_LOG")
+	SOLOIST_ENV_PREFIX+=(SOLOIST_SHIM_OUT="$SOLOIST_PCM_SHIM_FIFO" SOLOIST_SHIM_FORMAT=s16 SOLOIST_SHIM_RATE=44100 SOLOIST_SHIM_LOG="$SOLOIST_PCM_SHIM_LOG" SOLOIST_SHIM_MAX_TLENGTH_MS="$SOLOIST_SHIM_MAX_TLENGTH_MS")
 fi
 if [ "${#SOLOIST_ENV_PREFIX[@]}" -gt 0 ]; then
 	env "${SOLOIST_ENV_PREFIX[@]}" "$SOLOIST_BIN" "${SOLOIST_ARGS[@]}" &
