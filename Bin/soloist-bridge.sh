@@ -225,7 +225,7 @@ case "$SOLOIST_AUDIO_BACKEND" in
 		: "${ALSA_CAPTURE_DEVICE:?ALSA_CAPTURE_DEVICE is required when SOLOIST_AUDIO_BACKEND=alsa}"
 		;;
 	pcm-shim)
-		: "${SOLOIST_PCM_SHIM_DIR:?SOLOIST_PCM_SHIM_DIR is required when SOLOIST_AUDIO_BACKEND=pcm-shim (directory containing contrib/experimental-pcm-shim's built libpulse.so.0)}"
+		: "${SOLOIST_PCM_SHIM_DIR:?SOLOIST_PCM_SHIM_DIR is required when SOLOIST_AUDIO_BACKEND=pcm-shim (directory containing the built libpulse.so.0 from contrib/experimental-pcm-shim)}"
 		if [ ! -f "${SOLOIST_PCM_SHIM_DIR}/libpulse.so.0" ]; then
 			log "ERROR: '${SOLOIST_PCM_SHIM_DIR}/libpulse.so.0' not found -- build it first: cd contrib/experimental-pcm-shim && make"
 			exit 1
