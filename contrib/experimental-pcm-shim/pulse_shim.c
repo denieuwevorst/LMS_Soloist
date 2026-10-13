@@ -827,7 +827,8 @@ static void ev_stream_write_fn(void *a)
 }
 static void stream_post_write(pa_stream *s)   /* caller holds s->lk */
 {
-    if (s->write_pending || s->requested < s->minreq) return;
+    if (s->write_pending || s->requested == 0) return;
+    if (s->requested < s->minreq && (s->clock_on || s->corked)) return;
     s->write_pending = 1;
     ml_post(s->c->ml, ev_stream_write_fn, pa_stream_ref(s));
 }
@@ -989,6 +990,7 @@ static void *writer_main(void *arg)
                             (unsigned long long) s->consumed_bytes,
                             (unsigned long long) s->written_bytes,
                             s->requested, s->prebuf, s->minreq);
+                        stream_post_write(s);
                         if (s->drain_op) drained = 1;
                     }
                 } else {
@@ -1167,8 +1169,7 @@ int pa_stream_write(pa_stream *s, const void *data, size_t nbytes, pa_free_cb_t 
     overflow = took < nbytes;
     s->written_bytes += took;
     s->requested = s->requested > nbytes ? s->requested - nbytes : 0;
-    if (s->requested >= s->minreq)
-        stream_post_write(s);
+    stream_post_write(s);
     pthread_mutex_unlock(&s->lk);
     if (free_cb && data != s->scratch) free_cb((void *) data);
     if (overflow) LOG(1, "ring overflow: dropped %zu bytes", nbytes - took);
