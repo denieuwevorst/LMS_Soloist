@@ -298,6 +298,10 @@ Setup:
 3. Set **Experimental PCM shim directory** to the directory containing
    the `libpulse.so.0` you just built (e.g. the
    `contrib/experimental-pcm-shim` path itself).
+   This path must be readable/searchable by the user running LMS
+   (`squeezeboxserver` on most installs): **do not point it at `/root/...`**
+   unless you have explicitly opened those directory permissions up for the
+   service user.
 4. Leave **Soloist binary path** at the raw `soloist` binary, same as on
    x86_64 for the ALSA backend.
 

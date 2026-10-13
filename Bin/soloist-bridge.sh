@@ -226,8 +226,25 @@ case "$SOLOIST_AUDIO_BACKEND" in
 		;;
 	pcm-shim)
 		: "${SOLOIST_PCM_SHIM_DIR:?SOLOIST_PCM_SHIM_DIR is required when SOLOIST_AUDIO_BACKEND=pcm-shim (directory containing the built libpulse.so.0 from contrib/experimental-pcm-shim)}"
-		if [ ! -f "${SOLOIST_PCM_SHIM_DIR}/libpulse.so.0" ]; then
-			log "ERROR: '${SOLOIST_PCM_SHIM_DIR}/libpulse.so.0' not found -- build it first: cd contrib/experimental-pcm-shim && make"
+		SOLOIST_PCM_SHIM_LIB="${SOLOIST_PCM_SHIM_DIR}/libpulse.so.0"
+		if [ ! -d "$SOLOIST_PCM_SHIM_DIR" ]; then
+			log "ERROR: shim directory '$SOLOIST_PCM_SHIM_DIR' does not exist or is not accessible to the LMS service user"
+			exit 1
+		fi
+		if [ ! -x "$SOLOIST_PCM_SHIM_DIR" ]; then
+			log "ERROR: shim directory '$SOLOIST_PCM_SHIM_DIR' exists but is not searchable/executable by the LMS service user; avoid /root and use a world-readable path"
+			exit 1
+		fi
+		if [ ! -e "$SOLOIST_PCM_SHIM_LIB" ]; then
+			log "ERROR: '$SOLOIST_PCM_SHIM_LIB' not found -- build it first: cd contrib/experimental-pcm-shim && make"
+			exit 1
+		fi
+		if [ ! -f "$SOLOIST_PCM_SHIM_LIB" ]; then
+			log "ERROR: '$SOLOIST_PCM_SHIM_LIB' exists but is not a regular file"
+			exit 1
+		fi
+		if [ ! -r "$SOLOIST_PCM_SHIM_LIB" ]; then
+			log "ERROR: '$SOLOIST_PCM_SHIM_LIB' exists but is not readable by the LMS service user; avoid /root and fix permissions"
 			exit 1
 		fi
 		;;
