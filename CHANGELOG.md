@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+- Add `contrib/experimental-pcm-shim/`: an alternative `libpulse.so.0`
+  replacement proposed as a possible fix for the ALSA/apulse backend's
+  end-of-track stall (it paces playback on a real clock and reports
+  position from actual drained bytes, rather than bytes handed to it).
+  **Not wired into the plugin or bridge** -- unvalidated against the
+  real Soloist binary, and would need a new direct-PCM-FIFO capture
+  path to integrate (a different audio path than the ALSA loopback
+  capture both existing backends use). Ships with a `Makefile` and a
+  `check-symbols.sh` so it can be evaluated independently; see that
+  directory's README for full status and required next steps.
 - ALSA/apulse backend: add a watchdog that force-skips a track when
   Soloist's own reported playback position freezes (`status` stays
   `"playing"` but `position` stops advancing) instead of letting LMS

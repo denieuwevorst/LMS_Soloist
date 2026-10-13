@@ -200,6 +200,15 @@ On other architectures, the plugin still expects your configured
 launcher) that makes Soloist's Pulse client API calls land on ALSA
 instead.
 
+There's also an **experimental, not-yet-integrated** alternative shim
+under `contrib/experimental-pcm-shim/` that paces playback on a real
+clock and reports position from actual drained bytes rather than bytes
+handed to it -- proposed as a possible fix for the ALSA/apulse backend's
+known end-of-track stall (see Troubleshooting below and
+`CHANGELOG.md`). It is unvalidated against the real Soloist binary and
+is not wired into the plugin; see that directory's own README for how
+to build and evaluate it yourself before considering it.
+
 Required packages:
 
 ```bash
