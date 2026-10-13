@@ -968,7 +968,7 @@ static void *writer_main(void *arg)
             s->clock_on = 0;
         } else {
             if (!s->clock_on) {
-                if (avail > 0 && (s->fill >= s->prebuf || s->force_start || s->drain_op)) {
+                if (avail > 0 && (s->fill >= s->prebuf || (s->force_start && s->fill >= s->minreq) || s->drain_op)) {
                     s->clock_on = 1;
                     s->force_start = 0;
                     s->started_once = 1;
@@ -985,6 +985,10 @@ static void *writer_main(void *arg)
                     if (due > 0) {                    /* ran dry */
                         s->clock_on = 0;
                         underflow = 1;
+                        LOG(1, "stream underflow: consumed=%llu written=%llu requested=%zu prebuf=%zu minreq=%zu",
+                            (unsigned long long) s->consumed_bytes,
+                            (unsigned long long) s->written_bytes,
+                            s->requested, s->prebuf, s->minreq);
                         if (s->drain_op) drained = 1;
                     }
                 } else {
@@ -1163,6 +1167,8 @@ int pa_stream_write(pa_stream *s, const void *data, size_t nbytes, pa_free_cb_t 
     overflow = took < nbytes;
     s->written_bytes += took;
     s->requested = s->requested > nbytes ? s->requested - nbytes : 0;
+    if (s->requested >= s->minreq)
+        stream_post_write(s);
     pthread_mutex_unlock(&s->lk);
     if (free_cb && data != s->scratch) free_cb((void *) data);
     if (overflow) LOG(1, "ring overflow: dropped %zu bytes", nbytes - took);
