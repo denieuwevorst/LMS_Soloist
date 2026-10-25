@@ -44,6 +44,10 @@ sub handler {
 		# -then-restart-everything on every save.
 		my $oldSelected = $prefs->get('selectedPlayers') || {};
 		my $newSelected = {};
+		my $oldPlayerFormats = $prefs->get('playerFormatOverrides') || {};
+		my $newPlayerFormats = {
+			%{ ref $oldPlayerFormats eq 'HASH' ? $oldPlayerFormats : {} }
+		};
 		my $oldGlobalFormat = $prefs->get('format')  || 'mp3';
 		my $newGlobalFormat = $params->{pref_format} || $oldGlobalFormat;
 		my $oldBitrate      = $prefs->get('bitrate') || '320k';
@@ -62,8 +66,23 @@ sub handler {
 			my $id    = $player->{id};
 			my $isOn  = $params->{ 'enabled.' . $id } ? 1 : 0;
 			my $wasOn = $oldSelected->{$id} ? 1 : 0;
+			my $oldOverride = ref $oldPlayerFormats eq 'HASH' ? $oldPlayerFormats->{$id} : undef;
+			$oldOverride = undef unless defined $oldOverride && $oldOverride =~ /^(?:mp3|flac|pcm)$/;
+			my $formatParam = 'format.' . $id;
+			my $newOverride = exists $params->{$formatParam} ? $params->{$formatParam} : $oldOverride;
+			$newOverride = undef unless defined $newOverride && $newOverride =~ /^(?:mp3|flac|pcm)$/;
+			my $oldFormat = $oldOverride || $oldGlobalFormat;
+			my $newFormat = $newOverride || $newGlobalFormat;
 
 			$newSelected->{$id} = 1 if $isOn;
+			if ( exists $params->{$formatParam} ) {
+				if ($newOverride) {
+					$newPlayerFormats->{$id} = $newOverride;
+				}
+				else {
+					delete $newPlayerFormats->{$id};
+				}
+			}
 
 			if ( $isOn && !$wasOn ) {
 				push @toStart, $id;
@@ -74,12 +93,12 @@ sub handler {
 			elsif (
 				$isOn && $wasOn &&
 				(
-					$oldGlobalFormat ne $newGlobalFormat ||
+					$oldFormat ne $newFormat ||
 					$oldBackend ne $newBackend ||
 					$oldAlsaPrefix ne $newAlsaPrefix ||
 					$oldPcmShimDir ne $newPcmShimDir ||
 					(
-						$newGlobalFormat eq 'mp3' &&
+						$newFormat eq 'mp3' &&
 						$oldBitrate ne $newBitrate
 					)
 				)
@@ -89,7 +108,7 @@ sub handler {
 		}
 
 		$prefs->set( 'selectedPlayers', $newSelected );
-		$prefs->remove('playerFormats');
+		$prefs->set( 'playerFormatOverrides', $newPlayerFormats );
 		$prefs->set( 'format',  $newGlobalFormat );
 		$prefs->set( 'bitrate', $newBitrate );
 
@@ -107,11 +126,13 @@ sub handler {
 	}
 
 	my $selected = $prefs->get('selectedPlayers') || {};
+	my $playerFormats = $prefs->get('playerFormatOverrides') || {};
 	for my $player (@players) {
 		my $id = $player->{id};
 		$player->{enabled}   = $selected->{$id} ? 1 : 0;
 		$player->{running}   = Plugins::SpotifySoloist::Plugin::bridgeRunning($id);
 		$player->{streamUrl} = Plugins::SpotifySoloist::Plugin::bridgeStreamUrlFor($id);
+		$player->{formatOverride} = ref $playerFormats eq 'HASH' ? ( $playerFormats->{$id} || '' ) : '';
 	}
 	$params->{players} = \@players;
 	$params->{soloistBinaryStatus} = Plugins::SpotifySoloist::Plugin::soloistBinaryStatus();

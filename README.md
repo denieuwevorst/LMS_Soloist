@@ -494,6 +494,11 @@ unless your loopback card is named differently.
 
 ## Format: mp3, flac, or PCM/WAV
 
+The settings page offers a default format plus an override for each
+player. Existing installations continue to use the default until an
+override is selected. Changing one override restarts only that player's
+bridge.
+
 The `flac` option sends a native, continuous FLAC stream (`audio/flac`),
 not Ogg-FLAC. It uses fast, low-buffer encoder settings for live playback;
 select it only for players with FLAC decoding support.
@@ -502,10 +507,12 @@ The `pcm` option sends uncompressed 44.1 kHz, stereo, signed 16-bit PCM
 inside a continuous WAV stream (`audio/wav`). It avoids encoder latency and
 is intended for diagnosing or minimizing startup delay on players with
 WAV/PCM support. It uses approximately 1.4 Mbit/s, so use MP3 or FLAC when
-bandwidth matters. On this branch, PCM/WAV now also skips ffmpeg entirely:
-the bridge captures raw PCM directly (`parec` on the Pulse backend or
-`arecord` on the ALSA backend) and the built-in relay serves it as a
-streaming WAV response. To add headroom without starving LMS when the relay
+bandwidth matters. PCM/WAV skips ffmpeg entirely: the bridge captures raw
+PCM directly (`parec` on the Pulse backend, `arecord` on the ALSA backend,
+or the custom FIFO on the direct-PCM shim backend) and the built-in relay
+serves it as a streaming WAV response. LMS can apply its normal conversion
+pipeline if the selected player cannot accept WAV directly; it otherwise
+sends WAV unchanged. To add headroom without starving LMS when the relay
 queue runs dry, the PCM path now uses a real **300 ms capture buffer** on
 the input side instead (`parec --latency-msec=300` on Pulse/PipeWire or an
 equivalent `arecord` buffer on ALSA). On this branch, PCM/WAV also
@@ -519,9 +526,11 @@ stalling.
 | `flac` | Players with FLAC support | Lossless bridge encoding |
 | `pcm` | Players with WAV/PCM support | Lowest encoder latency; highest bandwidth |
 
-The **Stream format** setting applies to all selected players. Saving a
-format change restarts all selected player bridges so the new relay format
-takes effect immediately.
+The **Default stream format** applies to players whose table entry is
+**Default**. Each player can override it independently; saving restarts
+only enabled bridges whose effective format changed. MP3 and FLAC are
+encoded in the bridge with ffmpeg. PCM/WAV avoids bridge encoding and lets
+LMS decide whether that player needs its normal server-side transcoding.
 
 ## Known limitations
 

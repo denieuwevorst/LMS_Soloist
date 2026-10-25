@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+## 0.3.51
+
+- Add per-player stream-format overrides to the settings page. Each player
+  can independently use the global default, MP3, FLAC, or PCM/WAV; saving
+  restarts only running bridges whose effective format (or applicable MP3
+  bitrate) changed. Existing installations continue using the global
+  format until an override is selected.
 - Direct-PCM shim: complete real-hardware validation through the plugin's
   LMS bridge. Soloist now loads the custom shim after adding the three
   Pulse compatibility symbols required by its up-front capability probe

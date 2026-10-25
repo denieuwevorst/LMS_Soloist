@@ -105,6 +105,7 @@ $prefs->init({
 	autostart       => 1,
 	idleDisconnectSeconds => 30,
 	selectedPlayers => {},                # { playerID => 1, ... }
+	playerFormatOverrides => {},          # { playerID => mp3|flac|pcm } (missing = global format)
 	playerSlots     => {},                # { playerID => slot int }, stable across restarts
 });
 
@@ -163,6 +164,13 @@ sub currentFormatSpec {
 		bufferKb      => $bufferKb,
 		( defined $bitrate ? ( bitrate => $bitrate ) : () ),
 	};
+}
+
+sub formatForPlayer {
+	my ($playerId) = @_;
+	my $overrides = $prefs->get('playerFormatOverrides') || {};
+	my $format = ref $overrides eq 'HASH' ? _normalizedFormatKey( $overrides->{$playerId} ) : undef;
+	return $format || currentFormatSpec()->{key};
 }
 
 sub currentFormatSpecForUrl {
@@ -459,7 +467,7 @@ sub _configFor {
 		wsPort     => $prefs->get('wsPortBase') + $slot,
 		relayPort  => $prefs->get('relayPortBase') + $slot,
 		backend    => $prefs->get('audioBackend') || 'pulse',
-		format     => currentFormatSpec()->{key},
+		format     => formatForPlayer($playerId),
 		sink       => $prefs->get('pipewireSink') . '_' . $slot,
 		alsaPlaybackDevice => _alsaDeviceFor( $alsaPrefix, 0, $slot, 0 ),
 		alsaCaptureDevice  => _alsaDeviceFor( $alsaPrefix, 1, $slot, 1 ),
