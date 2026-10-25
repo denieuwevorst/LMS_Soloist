@@ -45,7 +45,7 @@ use JSON::XS qw(decode_json);
 use Proc::Background;
 use Time::HiRes ();
 use Time::Local qw(timegm);
-use POSIX qw(dup2 WNOHANG uname);
+use POSIX qw(dup2 WNOHANG);
 
 use Slim::Utils::Log;
 use Slim::Utils::Prefs;
@@ -77,22 +77,12 @@ use constant RELAY_AUTOPLAY_READY_TIMEOUT => 1.0; # seconds
 use constant RELAY_AUTOPLAY_READY_MAX_AGE => 1.0; # seconds
 use constant SOLOIST_BINARY_WARN_AFTER_DAYS => 80;
 use constant SOLOIST_DOWNLOADS_URL          => 'https://developer.spotify.com/documentation/soloist/reference/downloads-and-updates';
-# Workaround for an ALSA/apulse-backend-only bug: Soloist's own reported
-# playback position can freeze (status stays "playing" but position
-# stops advancing, typically near a track's end) without ever
-# transitioning to the next track. This isn't seen on the Pulse/PipeWire
-# backend. If position hasn't moved for this long while Soloist still
-# claims "playing", force a skip via `ctl next` so LMS doesn't hang
-# indefinitely on a stuck track.
-use constant STUCK_ALSA_PLAYBACK_WATCHDOG_SECONDS => 8;
-
 $prefs->init({
 	soloistBin      => '/usr/local/bin/soloist',
 	ffmpegBin       => '/usr/bin/ffmpeg',
 	pythonBin       => 'python3',
-	audioBackend    => 'pulse',           # pulse | alsa | pcm-shim
+	audioBackend    => 'pulse',           # pulse | pcm-shim
 	pipewireSink    => 'soloist_sink',    # base name; each player gets _<slot> appended
-	alsaDevicePrefix => 'hw:Loopback',    # ALSA/apulse backend: playback = <prefix>,0,<slot>; capture auto-prefers plughw:<card>,1,<slot> when prefix starts with hw:
 	pcmShimDir      => '',                # pcm-shim backend: directory with contrib/experimental-pcm-shim's built libpulse.so.0 (not bundled -- build it on-device first)
 	wsPortBase      => 9091,              # each player gets +<slot>
 	relayPortBase   => 9077,              # each player gets +<slot>
@@ -181,52 +171,17 @@ sub currentFormatSpecForUrl {
 	return currentFormatSpec('mp3');
 }
 
-sub _soloistHostArch {
-	my @uname = eval { POSIX::uname() };
-	my $arch = $uname[4] || '';
-	$arch =~ s/^\s+|\s+$//g;
-	return $arch;
-}
-
-sub bundledSoloistShimDir {
-	my $arch = _soloistHostArch();
-	return unless $arch eq 'x86_64' || $arch eq 'amd64';
-
-	my $dir = catdir( dirname(__FILE__), 'alsa-lib', 'amd64' );
-	my $shim = catfile( $dir, 'libpulse.so.0' );
-	return -f $shim ? $dir : undef;
-}
-
 sub _applySoloistExecEnv {
 	my ($b) = @_;
 	my $backend = $prefs->get('audioBackend') || 'pulse';
 
-	delete $ENV{APULSE_PLAYBACK_DEVICE};
-	return unless $backend eq 'alsa' || $backend eq 'pcm-shim';
+	return unless $backend eq 'pcm-shim';
 
-	if ( $backend eq 'pcm-shim' ) {
-		# ctl/--version invocations are short-lived, don't touch real audio
-		# hardware, and don't need SOLOIST_SHIM_OUT pointed anywhere specific
-		# -- only LD_LIBRARY_PATH, so Soloist's unconditional libpulse
-		# dlopen() at startup finds this shim instead of failing outright on
-		# a host with no real PulseAudio/PipeWire installed.
-		my $shimDir = $b ? $b->{pcmShimDir} : $prefs->get('pcmShimDir');
-		if ( $shimDir && length $shimDir ) {
-			$ENV{LD_LIBRARY_PATH} = length( $ENV{LD_LIBRARY_PATH} || '' )
-				? $shimDir . ':' . $ENV{LD_LIBRARY_PATH}
-				: $shimDir;
-		}
-		return;
-	}
-
-	if ( my $shimDir = bundledSoloistShimDir() ) {
+	my $shimDir = $b ? $b->{pcmShimDir} : $prefs->get('pcmShimDir');
+	if ( $shimDir && length $shimDir ) {
 		$ENV{LD_LIBRARY_PATH} = length( $ENV{LD_LIBRARY_PATH} || '' )
 			? $shimDir . ':' . $ENV{LD_LIBRARY_PATH}
 			: $shimDir;
-	}
-
-	if ( $b && $b->{alsaPlaybackDevice} ) {
-		$ENV{APULSE_PLAYBACK_DEVICE} = $b->{alsaPlaybackDevice};
 	}
 }
 
@@ -332,6 +287,9 @@ sub initPlugin {
 
 	$baseDataDir  = catdir( Slim::Utils::OSDetect::dirsFor('prefs'), 'plugin-spotifysoloist', 'data' );
 	$baseCacheDir = catdir( Slim::Utils::OSDetect::dirsFor('cache'), 'plugin-spotifysoloist', 'cache' );
+	my $backend = $prefs->get('audioBackend') || 'pulse';
+	$prefs->set( 'audioBackend', 'pulse' )
+		unless $backend eq 'pulse' || $backend eq 'pcm-shim';
 
 	# Preserve the plugin cache tree across LMS restarts. The earlier
 	# cache-wipe logic was added to suppress stale-player state, but that
@@ -441,42 +399,24 @@ sub _slotFor {
 	return $slot;
 }
 
-sub _alsaDeviceFor {
-	my ( $prefix, $dev, $slot, $forCapture ) = @_;
-
-	return unless defined $prefix && length $prefix;
-
-	if ( !$forCapture ) {
-		return $prefix . ',' . $dev . ',' . $slot;
-	}
-
-	if ( $prefix =~ /^(plug)?hw:([^,]+)$/ ) {
-		return 'plughw:' . $2 . ',' . $dev . ',' . $slot;
-	}
-
-	return $prefix . ',' . $dev . ',' . $slot;
-}
-
 sub _configFor {
 	my ( $playerId, $playerName ) = @_;
 	my $slot = _slotFor($playerId);
-	my $alsaPrefix = $prefs->get('alsaDevicePrefix');
+	my $backend = $prefs->get('audioBackend') || 'pulse';
+	$backend = 'pulse' unless $backend eq 'pulse' || $backend eq 'pcm-shim';
 
 	return {
 		slot       => $slot,
 		wsPort     => $prefs->get('wsPortBase') + $slot,
 		relayPort  => $prefs->get('relayPortBase') + $slot,
-		backend    => $prefs->get('audioBackend') || 'pulse',
+		backend    => $backend,
 		format     => formatForPlayer($playerId),
 		sink       => $prefs->get('pipewireSink') . '_' . $slot,
-		alsaPlaybackDevice => _alsaDeviceFor( $alsaPrefix, 0, $slot, 0 ),
-		alsaCaptureDevice  => _alsaDeviceFor( $alsaPrefix, 1, $slot, 1 ),
 		dataDir    => catdir( $baseDataDir, "player_$slot" ),
 		cacheDir   => catdir( $baseCacheDir, "player_$slot" ),
 		fifoPath   => catfile( $baseCacheDir, "player_$slot", 'audio.fifo' ),
 		relayReadyFile => catfile( $baseCacheDir, "player_$slot", 'relay.ready' ),
 		relayFlushFile => catfile( $baseCacheDir, "player_$slot", 'relay.flush' ),
-		soloistShimDir => bundledSoloistShimDir(),
 		pcmShimDir => $prefs->get('pcmShimDir'),
 		pcmShimFifo => catfile( $baseCacheDir, "player_$slot", 'pcm-shim.fifo' ),
 		deviceName => $playerName . $prefs->get('deviceNameSuffix'),
@@ -617,8 +557,6 @@ sub _startBridge {
 	local $ENV{PYTHON_BIN}        = $prefs->get('pythonBin');
 	local $ENV{SOLOIST_AUDIO_BACKEND} = $cfg->{backend};
 	local $ENV{PIPEWIRE_SINK}     = $cfg->{sink};
-	local $ENV{ALSA_PLAYBACK_DEVICE} = $cfg->{alsaPlaybackDevice};
-	local $ENV{ALSA_CAPTURE_DEVICE}  = $cfg->{alsaCaptureDevice};
 	local $ENV{FORMAT}            = $cfg->{format};
 	local $ENV{BITRATE}           = $prefs->get('bitrate');
 	local $ENV{SOLOIST_INITIAL_VOLUME} = _initialVolume();
@@ -632,7 +570,6 @@ sub _startBridge {
 	local $ENV{FIFO_PATH}         = $cfg->{fifoPath};
 	local $ENV{RELAY_READY_FILE}  = $cfg->{relayReadyFile};
 	local $ENV{RELAY_FLUSH_FILE}  = $cfg->{relayFlushFile};
-	local $ENV{SOLOIST_SHIM_DIR}  = $cfg->{soloistShimDir};
 	local $ENV{SOLOIST_PCM_SHIM_DIR}  = $cfg->{pcmShimDir};
 	local $ENV{SOLOIST_PCM_SHIM_FIFO} = $cfg->{pcmShimFifo};
 
@@ -668,9 +605,6 @@ sub _startBridge {
 		notPlayingSince       => undef,
 		pausedSince           => undef,
 		idleDisconnectArmed   => 0,
-		stuckWatchdogItem     => undef,
-		stuckWatchdogPosition => undef,
-		stuckWatchdogSince    => undef,
 	};
 }
 
@@ -1127,48 +1061,6 @@ sub _playbackStateForBridge {
 	};
 }
 
-sub _maybeRecoverStuckAlsaPlayback {
-	my ( $b, $state, $playback ) = @_;
-
-	# ALSA/apulse-backend-only workaround -- see
-	# STUCK_ALSA_PLAYBACK_WATCHDOG_SECONDS above for why this exists.
-	unless ( ( $b->{backend} || '' ) eq 'alsa' && $playback->{reallyPlayingHere} ) {
-		@{$b}{qw(stuckWatchdogItem stuckWatchdogPosition stuckWatchdogSince)} = ();
-		return;
-	}
-
-	my $item     = $state->{item};
-	my $position = $state->{position};
-	unless ( ref $item && defined $position ) {
-		@{$b}{qw(stuckWatchdogItem stuckWatchdogPosition stuckWatchdogSince)} = ();
-		return;
-	}
-
-	my $sameItem = $b->{stuckWatchdogItem} && $item == $b->{stuckWatchdogItem};
-	my $samePosition = $sameItem
-		&& defined $b->{stuckWatchdogPosition}
-		&& $position == $b->{stuckWatchdogPosition};
-
-	unless ( $sameItem && $samePosition ) {
-		$b->{stuckWatchdogItem}     = $item;
-		$b->{stuckWatchdogPosition} = $position;
-		$b->{stuckWatchdogSince}    = time();
-		return;
-	}
-
-	return if time() - $b->{stuckWatchdogSince} < STUCK_ALSA_PLAYBACK_WATCHDOG_SECONDS;
-
-	$log->warn(
-		'Soloist playback position appears stuck at '
-		. sprintf( '%s', $position )
-		. ' while status is "playing" (ALSA/apulse backend) for at least '
-		. STUCK_ALSA_PLAYBACK_WATCHDOG_SECONDS
-		. 's -- forcing a track skip to recover'
-	);
-	_runSoloistCtl( $b, 'next' );
-	@{$b}{qw(stuckWatchdogItem stuckWatchdogPosition stuckWatchdogSince)} = ();
-}
-
 sub _relayAutoplayGateReady {
 	my ($b) = @_;
 	my $path = $b->{relayReadyFile} || '';
@@ -1405,7 +1297,6 @@ sub pollMetadata {
 		_maybeApplyConfiguredVolumeOnConnect( $b, $playback );
 		next if _maybeDisconnectBridgeForExternalSource( $playerId, $b, $client, $url, $playback );
 		_applyPlaybackTransition( $playerId, $b, $client, $url, $playback );
-		_maybeRecoverStuckAlsaPlayback( $b, $state, $playback );
 		_updateIdleDisconnectState( $b, $playback );
 		next if _maybeRestartIdleBridge( $playerId, $b, $client, $playback );
 		_publishMetadataForPlayer( $b, $client, $url, $state );

@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+## 0.3.52
+
+- Remove the superseded ALSA/apulse loopback backend, its `snd-aloop`
+  setup helper, bundled compatibility library, settings, capture pipeline,
+  and stuck-playback workaround. Pulse/PipeWire remains the default, while
+  the validated direct-PCM shim is the supported no-Pulse backend. Legacy
+  `audioBackend = alsa` preferences safely fall back to Pulse until the
+  administrator selects the direct-PCM shim in settings.
+
 ## 0.3.51
 
 - Add per-player stream-format overrides to the settings page. Each player

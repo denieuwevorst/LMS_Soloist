@@ -15,7 +15,7 @@
 # What it does NOT do:
 #   - download/install the Spotify Soloist binary
 #   - set your Soloist API key in the plugin
-#   - configure the optional ALSA/apulse backend
+#   - build or configure the optional direct-PCM shim backend
 
 set -euo pipefail
 
@@ -213,5 +213,5 @@ log "done"
 log "next steps:"
 log "  1. Put the Soloist binary somewhere stable (for example /usr/local/bin/soloist)"
 log "  2. Paste your Soloist API key into the plugin settings in Lyrion"
-log "  3. Keep the plugin on its default Pulse/PipeWire backend, or switch to the optional ALSA/apulse backend if you have ALSA loopback set up (x86_64 can use the bundled shim; other architectures still need their own wrapper)"
+log "  3. Keep the plugin on its default Pulse/PipeWire backend, or build and select the optional direct-PCM shim backend"
 log "  4. Toggle the desired players on in the plugin settings page"
