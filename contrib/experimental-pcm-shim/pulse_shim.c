@@ -63,6 +63,13 @@ static void cfg_init(void)
 #define LOG(l, ...) do { CFG(); if (cfg.log >= (l)) { \
     fprintf(stderr, "[soloist-shim] " __VA_ARGS__); fputc('\n', stderr); } } while (0)
 
+__attribute__((constructor))
+static void shim_loaded(void)
+{
+    LOG(1, "loaded build 2026-10-25.1: out=%s format=%dB rate=%d max_tlength_ms=%d",
+        cfg.out, cfg.bytes, cfg.rate, cfg.max_tlength_ms);
+}
+
 static uint64_t now_ns(void)
 {
     struct timespec ts;

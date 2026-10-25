@@ -135,6 +135,18 @@ the `SOLOIST_SHIM_RATE`/format chosen) or crashes.
 by default because real Soloist builds can otherwise over-buffer and then
 mis-handle immediate pause and track-end timing through a shimmed sink.)
 
+With `SOLOIST_SHIM_LOG=1`, a current build logs an unmistakable load marker
+before Soloist calls any PulseAudio API:
+
+```text
+[soloist-shim] loaded build 2026-10-25.1: ...
+```
+
+If the bridge confirms that it passed `SOLOIST_SHIM_LOG=1` but this marker
+never appears, Soloist did not load this `libpulse.so.0` (or an older shim
+binary is still deployed). Check the live process directly with
+`grep libpulse.so.0 /proc/<soloist-pid>/maps`.
+
 (An earlier reference document attached alongside this source used a
 different variable naming scheme, `SOLOIST_PCM_*`, for what appears to
 be a related but not identical project. The table above matches what
