@@ -11,15 +11,14 @@ No Icecast server is required.
 
 The plugin supports two backends:
 
-1. **PulseAudio/PipeWire** (default) - Soloist writes to an isolated null sink
-   per player. The bridge captures that sink's monitor.
-2. **Direct PCM shim** (experimental) - a locally built `libpulse.so.0`
+1. **Direct PCM shim** (default) - a locally built `libpulse.so.0`
    compatibility library writes Soloist's raw PCM directly to a per-player
    FIFO. This backend does not require a running PulseAudio or PipeWire server.
+2. **PulseAudio/PipeWire** - Soloist writes to an isolated null sink per
+   player. The bridge captures that sink's monitor.
 
 The former ALSA/apulse loopback backend has been removed. Existing
-`audioBackend = alsa` preferences safely fall back to the Pulse backend; select
-the direct PCM shim explicitly after upgrading if the host has no Pulse server.
+`audioBackend = alsa` preferences safely migrate to the direct PCM shim.
 
 ## Audio path
 

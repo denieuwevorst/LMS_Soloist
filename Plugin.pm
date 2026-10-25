@@ -81,7 +81,7 @@ $prefs->init({
 	soloistBin      => '/usr/local/bin/soloist',
 	ffmpegBin       => '/usr/bin/ffmpeg',
 	pythonBin       => 'python3',
-	audioBackend    => 'pulse',           # pulse | pcm-shim
+	audioBackend    => 'pcm-shim',        # pcm-shim | pulse
 	pipewireSink    => 'soloist_sink',    # base name; each player gets _<slot> appended
 	pcmShimDir      => '',                # pcm-shim backend: directory with contrib/experimental-pcm-shim's built libpulse.so.0 (not bundled -- build it on-device first)
 	wsPortBase      => 9091,              # each player gets +<slot>
@@ -173,7 +173,7 @@ sub currentFormatSpecForUrl {
 
 sub _applySoloistExecEnv {
 	my ($b) = @_;
-	my $backend = $prefs->get('audioBackend') || 'pulse';
+	my $backend = $prefs->get('audioBackend') || 'pcm-shim';
 
 	return unless $backend eq 'pcm-shim';
 
@@ -287,8 +287,8 @@ sub initPlugin {
 
 	$baseDataDir  = catdir( Slim::Utils::OSDetect::dirsFor('prefs'), 'plugin-spotifysoloist', 'data' );
 	$baseCacheDir = catdir( Slim::Utils::OSDetect::dirsFor('cache'), 'plugin-spotifysoloist', 'cache' );
-	my $backend = $prefs->get('audioBackend') || 'pulse';
-	$prefs->set( 'audioBackend', 'pulse' )
+	my $backend = $prefs->get('audioBackend') || 'pcm-shim';
+	$prefs->set( 'audioBackend', 'pcm-shim' )
 		unless $backend eq 'pulse' || $backend eq 'pcm-shim';
 
 	# Preserve the plugin cache tree across LMS restarts. The earlier
@@ -402,8 +402,8 @@ sub _slotFor {
 sub _configFor {
 	my ( $playerId, $playerName ) = @_;
 	my $slot = _slotFor($playerId);
-	my $backend = $prefs->get('audioBackend') || 'pulse';
-	$backend = 'pulse' unless $backend eq 'pulse' || $backend eq 'pcm-shim';
+	my $backend = $prefs->get('audioBackend') || 'pcm-shim';
+	$backend = 'pcm-shim' unless $backend eq 'pulse' || $backend eq 'pcm-shim';
 
 	return {
 		slot       => $slot,

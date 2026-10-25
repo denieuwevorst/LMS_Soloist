@@ -74,8 +74,8 @@
 
 [% WRAPPER setting title="PLUGIN_SPOTIFYSOLOIST_AUDIOBACKEND" desc="PLUGIN_SPOTIFYSOLOIST_AUDIOBACKEND_DESC" %]
 	<select class="stdedit" name="pref_audioBackend" id="pref_audioBackend">
-		<option value="pulse" [% IF prefs.pref_audioBackend != 'pcm-shim' %]selected[% END %]>PipeWire/PulseAudio null-sinks</option>
-		<option value="pcm-shim"  [% IF prefs.pref_audioBackend == 'pcm-shim' %]selected[% END %]>Experimental direct-PCM shim (no Pulse/PipeWire server needed)</option>
+		<option value="pcm-shim" [% IF prefs.pref_audioBackend != 'pulse' %]selected[% END %]>Direct-PCM shim (default; no Pulse/PipeWire server needed)</option>
+		<option value="pulse" [% IF prefs.pref_audioBackend == 'pulse' %]selected[% END %]>PipeWire/PulseAudio null-sinks</option>
 	</select>
 [% END %]
 

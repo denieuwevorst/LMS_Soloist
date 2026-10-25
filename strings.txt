@@ -26,7 +26,7 @@ PLUGIN_SPOTIFYSOLOIST_AUDIOBACKEND
 	EN	Audio backend
 
 PLUGIN_SPOTIFYSOLOIST_AUDIOBACKEND_DESC
-	EN	PipeWire/PulseAudio uses the established null-sink bridge. The experimental direct-PCM shim is the no-Pulse option: build it on this host (see contrib/experimental-pcm-shim/README.md) and point "Experimental PCM shim directory" at the result.
+	EN	The direct-PCM shim is the default and needs no Pulse/PipeWire server: build it on this host (see contrib/experimental-pcm-shim/README.md) and point "Experimental PCM shim directory" at the result. PipeWire/PulseAudio remains available through the established null-sink bridge.
 
 PLUGIN_SPOTIFYSOLOIST_SINK
 	EN	PipeWire/PulseAudio sink name prefix

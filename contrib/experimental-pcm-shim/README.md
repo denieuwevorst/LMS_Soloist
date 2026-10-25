@@ -5,8 +5,8 @@ Spotify Soloist. Instead of connecting to a PulseAudio or PipeWire server, it
 writes decoded PCM to a FIFO or Unix socket selected through environment
 variables.
 
-The plugin exposes this as `audioBackend = pcm-shim`. The default
-Pulse/PipeWire backend remains available and unchanged.
+The plugin exposes this as the default `audioBackend = pcm-shim`.
+The Pulse/PipeWire backend remains available as an alternative.
 
 The direct PCM path has been validated on DietPi/LMS with Soloist
 1.3.8.36: Soloist loads the shim, writes PCM to the per-player FIFO, and LMS

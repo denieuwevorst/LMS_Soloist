@@ -52,7 +52,7 @@ sub handler {
 		my $newGlobalFormat = $params->{pref_format} || $oldGlobalFormat;
 		my $oldBitrate      = $prefs->get('bitrate') || '320k';
 		my $newBitrate      = $params->{pref_bitrate} || $oldBitrate;
-		my $oldBackend      = $prefs->get('audioBackend') || 'pulse';
+		my $oldBackend      = $prefs->get('audioBackend') || 'pcm-shim';
 		my $newBackend      = $params->{pref_audioBackend} || $oldBackend;
 		my $oldPcmShimDir   = $prefs->get('pcmShimDir') || '';
 		my $newPcmShimDir   = $params->{pref_pcmShimDir} || '';

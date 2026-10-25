@@ -2,14 +2,18 @@
 
 ## Unreleased
 
+## 0.3.53
+
+- Make the direct-PCM shim the default audio backend for new installations
+  and for migration from unsupported legacy backend values. Pulse/PipeWire
+  remains selectable in the plugin settings.
+
 ## 0.3.52
 
 - Remove the superseded ALSA/apulse loopback backend, its `snd-aloop`
   setup helper, bundled compatibility library, settings, capture pipeline,
-  and stuck-playback workaround. Pulse/PipeWire remains the default, while
-  the validated direct-PCM shim is the supported no-Pulse backend. Legacy
-  `audioBackend = alsa` preferences safely fall back to Pulse until the
-  administrator selects the direct-PCM shim in settings.
+  and stuck-playback workaround. Pulse/PipeWire remains available, while
+  the validated direct-PCM shim is the supported no-Pulse backend.
 
 ## 0.3.51
 
