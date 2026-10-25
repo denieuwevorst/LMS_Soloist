@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.3.54
 
 - Replace the Python HTTP audio relay with dependency-free static C relay
   binaries for x86_64, ARMv7, and ARMv8/AArch64. Preserve FIFO reopen,
