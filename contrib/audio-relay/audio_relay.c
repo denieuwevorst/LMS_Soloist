@@ -497,6 +497,7 @@ int main(int argc, char **argv)
 	signal(SIGTERM, handle_signal);
 	signal(SIGPIPE, SIG_IGN);
 
+	memset(clients, 0, sizeof(clients));
 	for (i = 0; i < MAX_CLIENTS; ++i)
 		clients[i].fd = -1;
 
