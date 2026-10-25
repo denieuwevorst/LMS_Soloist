@@ -5,12 +5,16 @@ Spotify Soloist. Instead of connecting to a PulseAudio or PipeWire server, it
 writes decoded PCM to a FIFO or Unix socket selected through environment
 variables.
 
-The plugin exposes this as `audioBackend = pcm-shim`. The default
-Pulse/PipeWire backend remains available and unchanged.
+The plugin exposes this as the default `audioBackend = pcm-shim`.
+The Pulse/PipeWire backend remains available as an alternative.
 
 The direct PCM path has been validated on DietPi/LMS with Soloist
 1.3.8.36: Soloist loads the shim, writes PCM to the per-player FIFO, and LMS
 plays the WAV stream without ffmpeg.
+
+A validated x86_64 build is bundled with the plugin at
+`Bin/Shim/X86_64/libpulse.so.0`. Build from this directory when targeting a
+different architecture or testing source changes.
 
 ## Build
 
@@ -28,7 +32,8 @@ libpulse.so.0
 ```
 
 Point the plugin's **Experimental PCM shim directory** setting at the directory
-containing that file.
+containing that file. On x86_64, the plugin selects its bundled build
+automatically.
 
 The LMS service account must be able to traverse the directory and read the
 library. A directory below `/root` is normally unsuitable.
@@ -93,8 +98,8 @@ Soloist currently requires compatibility exports including:
 - A future Soloist release may require additional Pulse symbols or semantics.
 - The plugin integration currently assumes stereo, 44.1 kHz, signed 16-bit
   little-endian PCM.
-- Build and deploy the library separately on each target architecture; no
-  prebuilt binary is bundled with the plugin.
+- The bundled binary supports x86_64 only. Build and deploy the library
+  separately on every other target architecture.
 - MP3 and FLAC bridge output still require ffmpeg. PCM/WAV does not.
 
 ## Clean

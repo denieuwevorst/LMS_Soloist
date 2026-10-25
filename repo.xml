@@ -12,7 +12,7 @@
 			url="https://github.com/denieuwevorst/LMS_Soloist/releases/download/v0.3.49/SpotifySoloist-0.3.49.zip"
 			sha="1445510bcc0396ca287921c6ce0cd34042c21bd6">
 			<title lang="EN">Spotify Soloist (Connect)</title>
-			<desc lang="EN">Run Spotify Soloist as a Spotify Connect target for your Lyrion players. One independent Connect device per selected Squeezebox player, real Now Playing metadata including cover art, and no Icecast or other separate streaming server required. Supports the default Pulse/PipeWire bridge plus an optional direct-PCM shim backend -- see the project README for prerequisites.</desc>
+			<desc lang="EN">Run Spotify Soloist as a Spotify Connect target for your Lyrion players. One independent Connect device per selected Squeezebox player, real Now Playing metadata including cover art, and no Icecast or other separate streaming server required. Uses the direct-PCM shim by default without a Pulse/PipeWire server, with the Pulse/PipeWire bridge still available as an alternative.</desc>
 		</plugin>
 	</plugins>
 </extensions>
