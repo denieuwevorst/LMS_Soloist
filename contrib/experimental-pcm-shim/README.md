@@ -12,9 +12,9 @@ The direct PCM path has been validated on DietPi/LMS with Soloist
 1.3.8.36: Soloist loads the shim, writes PCM to the per-player FIFO, and LMS
 plays the WAV stream without ffmpeg.
 
-A validated x86_64 build is bundled with the plugin at
-`Bin/Shim/X86_64/libpulse.so.0`. Build from this directory when targeting a
-different architecture or testing source changes.
+Validated builds are bundled at `Bin/X86_64`, `Bin/ARMv7`, and
+`Bin/ARMv8_Arch64`. Build from this directory when targeting another
+architecture or testing source changes.
 
 ## Build
 
@@ -32,8 +32,8 @@ libpulse.so.0
 ```
 
 Point the plugin's **Experimental PCM shim directory** setting at the directory
-containing that file. On x86_64, the plugin selects its bundled build
-automatically.
+containing that file. The plugin automatically selects a bundled build for
+x86_64, ARMv7, and ARMv8/AArch64.
 
 The LMS service account must be able to traverse the directory and read the
 library. A directory below `/root` is normally unsuitable.
@@ -62,7 +62,7 @@ Soloist
   -> direct byte forwarding for PCM/WAV
      or ffmpeg encoding for MP3/FLAC
   -> player_<slot>/audio.fifo
-  -> audio-relay.py
+  -> bundled C audio relay
   -> LMS/player
 ```
 
@@ -98,8 +98,8 @@ Soloist currently requires compatibility exports including:
 - A future Soloist release may require additional Pulse symbols or semantics.
 - The plugin integration currently assumes stereo, 44.1 kHz, signed 16-bit
   little-endian PCM.
-- The bundled binary supports x86_64 only. Build and deploy the library
-  separately on every other target architecture.
+- Bundled binaries support x86_64, ARMv7 hard-float, and ARMv8/AArch64.
+  Build and deploy the library separately on every other target architecture.
 - MP3 and FLAC bridge output still require ffmpeg. PCM/WAV does not.
 
 ## Clean

@@ -15,13 +15,13 @@ package Plugins::SpotifySoloist::Plugin;
 # Real Now Playing metadata (including cover art) works the same way as
 # before: a custom `soloist://` scheme routed through our own protocol
 # handler (ProtocolHandler.pm), same pattern as ShairTunes2's
-# `airplay://` + AIRPLAY.pm. No Icecast: Bin/audio-relay.py is a small
+# `airplay://` + AIRPLAY.pm. No Icecast: the bundled C audio relay is a small
 # embedded multi-client HTTP server per instance, fed by ffmpeg through a
 # FIFO (so ffmpeg restarts don't disturb the relay or connected clients).
 #
 # Division of labour:
 #   - Bin/soloist-bridge.sh: backend-specific audio setup, launches one
-#     Soloist instance, captures + feeds its own audio-relay.py via a
+#     Soloist instance, captures + feeds its own bundled audio relay via a
 #     dedicated FIFO. Fully parameterized by env vars -- one script,
 #     launched once per selected player with different env each time.
 #   - This module: allocates a stable port/backend-target/data-dir "slot" per
@@ -80,10 +80,9 @@ use constant SOLOIST_DOWNLOADS_URL          => 'https://developer.spotify.com/do
 $prefs->init({
 	soloistBin      => '/usr/local/bin/soloist',
 	ffmpegBin       => '/usr/bin/ffmpeg',
-	pythonBin       => 'python3',
 	audioBackend    => 'pcm-shim',        # pcm-shim | pulse
 	pipewireSink    => 'soloist_sink',    # base name; each player gets _<slot> appended
-	pcmShimDir      => '',                # optional override; x86_64 uses Bin/Shim/X86_64 by default
+	pcmShimDir      => '',                # optional override; supported bundled architectures are selected automatically
 	wsPortBase      => 9091,              # each player gets +<slot>
 	relayPortBase   => 9077,              # each player gets +<slot>
 	format          => 'mp3',             # mp3 | flac | pcm
@@ -171,13 +170,58 @@ sub currentFormatSpecForUrl {
 	return currentFormatSpec('mp3');
 }
 
-sub bundledPcmShimDir {
+sub _soloistElfMachine {
+	my $path = $prefs->get('soloistBin') || '';
+	return unless -f $path;
+
+	open my $fh, '<:raw', $path or return;
+	my $header = '';
+	my $read = read $fh, $header, 20;
+	close $fh;
+	return unless defined $read && $read == 20 && substr( $header, 0, 4 ) eq "\x7fELF";
+
+	my $byteOrder = unpack( 'C', substr( $header, 5, 1 ) );
+	return unless $byteOrder == 1 || $byteOrder == 2;
+	my $machineTemplate = $byteOrder == 2 ? 'n' : 'v';
+	return unpack( $machineTemplate, substr( $header, 18, 2 ) );
+}
+
+sub _hostBundledArch {
 	my @uname = eval { POSIX::uname() };
 	my $arch = lc( $uname[4] || '' );
-	return unless $arch eq 'x86_64' || $arch eq 'amd64';
+	return 'X86_64'       if $arch eq 'x86_64' || $arch eq 'amd64';
+	return 'ARMv7'        if $arch eq 'armv7l' || $arch eq 'armv7' || $arch eq 'armhf';
+	return 'ARMv8_Arch64' if $arch eq 'aarch64' || $arch eq 'arm64';
+	return;
+}
 
-	my $dir = catdir( dirname(__FILE__), 'Bin', 'Shim', 'X86_64' );
+sub _bundledPcmShimArch {
+	my $machine = _soloistElfMachine();
+	return 'X86_64'       if defined $machine && $machine == 62;
+	return 'ARMv7'        if defined $machine && $machine == 40;
+	return 'ARMv8_Arch64' if defined $machine && $machine == 183;
+
+	# A configured wrapper script has no ELF header. Fall back to the host
+	# architecture, which is correct for normal native Soloist installs.
+	return _hostBundledArch();
+}
+
+sub _bundledArchitectureDir {
+	my ($arch) = @_;
+	return unless $arch;
+	my $dir = catdir( dirname(__FILE__), 'Bin', $arch );
+	return -d $dir ? $dir : undef;
+}
+
+sub bundledPcmShimDir {
+	my $dir = _bundledArchitectureDir( _bundledPcmShimArch() ) or return;
 	return -f catfile( $dir, 'libpulse.so.0' ) ? $dir : undef;
+}
+
+sub bundledRelayBin {
+	my $dir = _bundledArchitectureDir( _hostBundledArch() ) or return;
+	my $relay = catfile( $dir, 'audio-relay' );
+	return -f $relay ? $relay : undef;
 }
 
 sub _applySoloistExecEnv {
@@ -300,8 +344,18 @@ sub initPlugin {
 	$prefs->set( 'audioBackend', 'pcm-shim' )
 		unless $backend eq 'pulse' || $backend eq 'pcm-shim';
 	my $bundledShimDir = bundledPcmShimDir();
+	my $configuredShimDir = $prefs->get('pcmShimDir') || '';
 	$prefs->set( 'pcmShimDir', $bundledShimDir )
-		if !$prefs->get('pcmShimDir') && $bundledShimDir;
+		if $bundledShimDir
+			&& (
+				!length $configuredShimDir
+				|| $configuredShimDir =~ m{
+					(?:^|[\\/])Bin[\\/]
+					(?:Shim[\\/])?
+					(?:X86_64|ARMv7|ARMv8_Arch64)
+					[\\/]?$
+				}x
+			);
 
 	# Preserve the plugin cache tree across LMS restarts. The earlier
 	# cache-wipe logic was added to suppress stale-player state, but that
@@ -431,6 +485,7 @@ sub _configFor {
 		relayFlushFile => catfile( $baseCacheDir, "player_$slot", 'relay.flush' ),
 		pcmShimDir => $prefs->get('pcmShimDir') || bundledPcmShimDir(),
 		pcmShimFifo => catfile( $baseCacheDir, "player_$slot", 'pcm-shim.fifo' ),
+		relayBin => bundledRelayBin(),
 		deviceName => $playerName . $prefs->get('deviceNameSuffix'),
 	};
 }
@@ -566,7 +621,7 @@ sub _startBridge {
 
 	local $ENV{SOLOIST_BIN}       = $prefs->get('soloistBin');
 	local $ENV{FFMPEG_BIN}        = $prefs->get('ffmpegBin');
-	local $ENV{PYTHON_BIN}        = $prefs->get('pythonBin');
+	local $ENV{RELAY_BIN}         = $cfg->{relayBin};
 	local $ENV{SOLOIST_AUDIO_BACKEND} = $cfg->{backend};
 	local $ENV{PIPEWIRE_SINK}     = $cfg->{sink};
 	local $ENV{FORMAT}            = $cfg->{format};
@@ -943,10 +998,28 @@ sub _mergeTraceEventIntoState {
 	}
 	elsif ( $type eq 'track_changed' ) {
 		$state->{item} = $event->{item};
+		if ( ( $b->{format} || '' ) eq 'pcm' ) {
+			my $item = ref $event->{item} eq 'HASH' ? $event->{item} : {};
+			my $decorations = ref $item->{decorations} eq 'HASH' ? $item->{decorations} : {};
+			my $identity = ref $decorations->{identity} eq 'HASH' ? $decorations->{identity} : {};
+			$b->{pendingSpotifyTrackChange} = 1;
+			$b->{lastTraceFlushedTitle} = $identity->{name} // '';
+			_requestRelayFlush( $b, 'Spotify track changed' );
+		}
 		return 1;
 	}
 	elsif ( $type eq 'playback_changed' ) {
-		$state->{status} = $event->{status} if exists $event->{status};
+		if ( exists $event->{status} ) {
+			$state->{status} = $event->{status};
+			if ( $event->{status} eq 'paused' ) {
+				$b->{pendingSpotifyPause} = 1;
+				$b->{pendingSpotifyResume} = 0;
+			}
+			elsif ( $event->{status} eq 'playing' ) {
+				$b->{pendingSpotifyResume} = $b->{spotifyPauseApplied} ? 1 : 0;
+				$b->{pendingSpotifyPause} = 0;
+			}
+		}
 		return 1;
 	}
 	elsif ( $type eq 'volume_changed' ) {
@@ -1094,6 +1167,45 @@ sub _maybeApplyConfiguredVolumeOnConnect {
 	$b->{wasActiveDevice} = $playback->{isActiveDevice} ? 1 : 0;
 }
 
+sub _applySpotifyTransportEvents {
+	my ( $b, $client, $url, $playback ) = @_;
+	my $onOwnStream = _clientIsOnOwnSoloistStream( $client, $url );
+
+	if ( $b->{pendingSpotifyPause} ) {
+		$b->{pendingSpotifyPause} = 0;
+		if ( $playback->{effectiveState} eq 'paused' && $onOwnStream ) {
+			$log->info( 'pausing ' . $client->name . ' immediately after Spotify paused playback' );
+			$b->{suppressLyrionTransportUntil} = time() + 1;
+			$client->execute( [ 'pause', 1 ] );
+			$b->{spotifyPauseApplied} = 1;
+		}
+	}
+
+	if ( $b->{pendingSpotifyResume} ) {
+		$b->{pendingSpotifyResume} = 0;
+		if ( $playback->{reallyPlayingHere} && $onOwnStream ) {
+			$log->info( 'resuming ' . $client->name . ' immediately after Spotify resumed playback' );
+			$b->{suppressLyrionTransportUntil} = time() + 1;
+			$client->execute( [ 'play' ] );
+			$b->{spotifyPauseApplied} = 0;
+		}
+	}
+
+	return unless $b->{pendingSpotifyTrackChange};
+	return unless $playback->{reallyPlayingHere};
+
+	$b->{pendingSpotifyTrackChange} = 0;
+	$b->{spotifyPauseApplied} = 0;
+	return unless $onOwnStream;
+
+	# Reopen the continuous HTTP stream at the new track boundary. The relay
+	# queue was flushed as soon as track_changed arrived; reconnecting here
+	# also discards bytes already buffered by LMS/the player.
+	$log->info( 'restarting ' . $client->name . ' stream immediately after Spotify changed track' );
+	$b->{suppressLyrionTransportUntil} = time() + 1;
+	$client->execute( [ 'playlist', 'play', $url ] );
+}
+
 sub _applyPlaybackTransition {
 	my ( $playerId, $b, $client, $url, $playback ) = @_;
 
@@ -1114,6 +1226,7 @@ sub _applyPlaybackTransition {
 		$b->{idleDisconnectArmed} = 1;
 		$b->{pendingAutoplaySince} = undef;
 		$b->{wasPlayingHere} = 1;
+		$b->{spotifyPauseApplied} = 0;
 		return;
 	}
 
@@ -1257,7 +1370,12 @@ sub _publishMetadataForPlayer {
 	Slim::Control::Request::notifyFromArray( $master, ['newmetadata'] );
 
 	if ( ( $meta->{title} // '' ) ne '' && ( $meta->{title} // '' ) ne $title ) {
-		_requestRelayFlush( $b, $title );
+		if ( ( $b->{lastTraceFlushedTitle} // '' ) eq $title ) {
+			delete $b->{lastTraceFlushedTitle};
+		}
+		else {
+			_requestRelayFlush( $b, $title );
+		}
 	}
 
 	$log->debug( 'metadata updated for ' . $client->name . ": $artist - $title" );
@@ -1308,6 +1426,7 @@ sub pollMetadata {
 		# still stops immediately when the active device is lost.
 		_maybeApplyConfiguredVolumeOnConnect( $b, $playback );
 		next if _maybeDisconnectBridgeForExternalSource( $playerId, $b, $client, $url, $playback );
+		_applySpotifyTransportEvents( $b, $client, $url, $playback );
 		_applyPlaybackTransition( $playerId, $b, $client, $url, $playback );
 		_updateIdleDisconnectState( $b, $playback );
 		next if _maybeRestartIdleBridge( $playerId, $b, $client, $playback );

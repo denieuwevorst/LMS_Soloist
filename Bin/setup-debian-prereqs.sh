@@ -112,7 +112,6 @@ ensure_packages() {
 		pulseaudio \
 		pulseaudio-utils \
 		ffmpeg \
-		python3 \
 		libjson-xs-perl \
 		libproc-background-perl
 }

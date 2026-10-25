@@ -6,6 +6,7 @@ into LMS and publishes track metadata and cover art through LMS's native
 interfaces.
 
 No Icecast server is required.
+The bundled HTTP relay is written in C; Python is not required at runtime.
 
 ## Audio backends
 
@@ -30,7 +31,7 @@ Spotify
   -> per-player Pulse/PipeWire null sink
   -> parec (PCM/WAV) or ffmpeg (MP3/FLAC)
   -> per-player FIFO
-  -> audio-relay.py
+  -> bundled C audio relay
   -> LMS/player
 ```
 
@@ -42,7 +43,7 @@ Spotify
   -> custom libpulse.so.0
   -> per-player raw-PCM FIFO
   -> direct forwarding (PCM/WAV) or ffmpeg (MP3/FLAC)
-  -> audio-relay.py
+  -> bundled C audio relay
   -> LMS/player
 ```
 
@@ -56,7 +57,6 @@ Common requirements:
 
 - Lyrion Music Server 8.0 or newer
 - Spotify Soloist and a valid Soloist API key
-- Python 3
 - ffmpeg for MP3 or FLAC bridge output
 
 Pulse backend requirements:
@@ -67,9 +67,8 @@ Pulse backend requirements:
 Direct PCM shim requirements:
 
 - a Soloist build compatible with the shim's exported Pulse API subset
-- x86_64 uses the bundled `Bin/Shim/X86_64/libpulse.so.0`
-- other architectures need a C compiler, `make`, and PulseAudio development
-  headers to build the shim locally
+- a bundled shim matching the Soloist executable: x86_64, ARMv7 hard-float,
+  or ARMv8/AArch64
 
 ## Installation
 
@@ -95,7 +94,7 @@ Install the Debian prerequisites:
 
 ```bash
 sudo apt update
-sudo apt install -y pulseaudio pulseaudio-utils ffmpeg python3
+sudo apt install -y pulseaudio pulseaudio-utils ffmpeg
 ```
 
 The plugin creates one null sink per enabled player and keeps it active while
@@ -106,14 +105,19 @@ not required by the direct PCM shim backend.
 
 ## Direct PCM shim backend
 
-On x86_64, the plugin automatically uses the validated shim bundled at:
+The plugin reads the configured Soloist executable's ELF architecture and
+automatically selects one of:
 
 ```text
-Bin/Shim/X86_64/libpulse.so.0
+Bin/X86_64/libpulse.so.0
+Bin/ARMv7/libpulse.so.0
+Bin/ARMv8_Arch64/libpulse.so.0
 ```
 
-No shim-directory configuration is required for the bundled binary. To
-override it, or on another architecture, build the source in
+If the configured Soloist path is a wrapper script, the plugin falls back to
+the host architecture reported by `uname`. No shim-directory configuration is
+required for these bundled architectures. To override the selected binary or
+support another architecture, build the source in
 `contrib/experimental-pcm-shim/` on the LMS host:
 
 ```bash
@@ -128,8 +132,8 @@ searchable by the LMS service account. Do not place it below `/root`; the
 In the plugin settings:
 
 1. Select **Experimental direct-PCM shim**.
-2. On x86_64, keep the automatically populated bundled shim directory. For a
-   custom build, set **Experimental PCM shim directory** to the directory
+2. Keep the automatically populated architecture-specific shim directory. For
+   a custom build, set **Experimental PCM shim directory** to the directory
    containing the built `libpulse.so.0`.
 3. Select **PCM/WAV** for the most direct path, or MP3/FLAC if the bridge
    should encode before LMS receives the stream.
