@@ -1,202 +1,104 @@
-# Experimental direct-PCM pulse shim (now wired in as the `pcm-shim` backend)
+# Experimental direct-PCM Pulse shim
 
-> **Status: experimental, now confirmed through this plugin's complete
-> bridge on real DietPi/LMS hardware.** This directory holds an
-> alternative `libpulse.so.0` replacement
-> (`pulse_shim.c`) that is now wired in as an opt-in third audio backend
-> (`audioBackend = pcm-shim`) alongside the existing Pulse and ALSA/apulse
-> backends -- see the main `README.md`'s "Backend choices" section for how
-> to enable it. It **builds, plays audio via the included `test_client`,
-> and has been confirmed against the real `soloist` binary on real
-> hardware**, including a full automatic track-to-track transition that
-> stalls under the ALSA/apulse backend. The complete plugin path is also
-> confirmed: Soloist loads this shim, raw PCM reaches the bridge FIFO,
-> and LMS plays the resulting WAV stream without ffmpeg. Extended and
-> multi-player use remain less tested than the default Pulse backend.
+This directory contains a small `libpulse.so.0` compatibility library for
+Spotify Soloist. Instead of connecting to a PulseAudio or PipeWire server, it
+writes decoded PCM to a FIFO or Unix socket selected through environment
+variables.
 
-## Why this exists
+The plugin exposes this as `audioBackend = pcm-shim`. The default
+Pulse/PipeWire backend remains available and unchanged.
 
-The ALSA/apulse backend (the bundled shim in `alsa-lib/`, see the main
-`README.md`) works, but has an outstanding bug: tracks can stop advancing
-near their natural end (position reporting can race ahead of real ALSA
-output through that shim's own playback buffer). `Bin/soloist-bridge.sh`
-currently works around this with a buffer-size clamp
-(`APULSE_MAX_TLENGTH_MS`) plus a watchdog in `Plugin.pm` that force-skips
-a track if its reported position freezes -- see `CHANGELOG.md` for the
-full history. Neither is a confirmed root-cause fix.
+The direct PCM path has been validated on DietPi/LMS with Soloist
+1.3.8.36: Soloist loads the shim, writes PCM to the per-player FIFO, and LMS
+plays the WAV stream without ffmpeg.
 
-This shim takes a different approach: it paces playback on a real
-monotonic clock inside its own writer thread and reports
-`pa_stream_get_time()` / `pa_stream_get_timing_info()` based on bytes
-**actually drained from its internal ring buffer**, not bytes the
-application merely handed to `pa_stream_write()`. Real-hardware testing
-against Soloist confirms that this path produces audio through LMS and
-can transition automatically between tracks.
+## Build
 
-It also writes raw PCM straight to a FIFO/socket/file instead of going
-through a PipeWire/Pulse null sink or an ALSA loopback card
-(`snd-aloop`), which would let a future bridge read audio directly off
-that FIFO -- removing the `arecord`/`hw:`/`plughw:` device-string
-plumbing in `Bin/soloist-bridge.sh` entirely. That is a materially
-different audio path from both existing backends, which is why
-integrating it is a separate, larger change from just swapping a shim
-binary.
+Build on the LMS host:
 
-## What's in this directory
-
-- `pulse_shim.c` -- the shim source, as proposed (with a handful of
-  build fixes applied here: const-qualifier mismatches against the real
-  headers, and a `sun_path` null-termination fix). Implements both
-  `pa_mainloop` and `pa_threaded_mainloop`, sample conversion from
-  U8/S16LE/S24LE/S24_32LE/S32LE/FLOAT32LE to a fixed output format,
-  real-time pacing, FIFO/unix-socket/file output, and the handful of
-  `pa_context_*`/`pa_stream_*` calls a simple playback-only client needs.
-  It does **not** implement the raw `pa_mainloop_api` event sources
-  (`io_new`/`time_new`/`defer_new`) -- a client that drives the mainloop
-  through those directly (rather than through
-  `pa_threaded_mainloop_{lock,wait,signal}`) will not work with it. It
-  also does not support recording (playback-only, one stream type).
-- `test_client.c` -- a minimal client (threaded mainloop, async API) that
-  plays a 440Hz tone through the real PulseAudio client API, linked
-  against the real pulse headers for compile-time correctness checking.
-  Lets you validate the shim's playback path end-to-end **without**
-  needing the real (closed-source) Soloist binary at all. Confirmed
-  working: exact byte count/duration, correct pitch and level.
-- `Makefile` -- builds `libpulse.so.0` from `pulse_shim.c`, plus a
-  `make test` target that builds `test_client` and plays a 2s tone
-  through the shim into `/tmp/shim-test.raw`. Needs `gcc` and the
-  PulseAudio headers (`libpulse-dev`) at build time only; nothing from
-  the real libpulse is linked at run time. Cross-compile for a Pi with
-  `CC=aarch64-linux-gnu-gcc` (64-bit) or `CC=arm-linux-gnueabihf-gcc`
-  (32-bit) plus the matching headers.
-- `check-symbols.sh` -- compares the `pa_*` symbols a binary (e.g. the
-  real `soloist` binary) needs against the ones this shim exports, so
-  you can tell whether it's a safe drop-in **before** trying it for
-  real. Handles both a normally dynamically-linked binary (`nm`) and one
-  that `dlopen()`s `libpulse.so.0` at runtime (falls back to scanning
-  the binary's strings table for `pa_*` names) -- Soloist likely does
-  the latter, since it needs to probe for PipeWire vs. Pulse at runtime.
-
-## How to evaluate this on your own device
-
-```sh
-cd contrib/experimental-pcm-shim
-make                                   # -> ./libpulse.so.0
-make test                              # self-contained smoke test (no Soloist needed)
-./check-symbols.sh /usr/local/bin/soloist ./libpulse.so.0
+```bash
+sudo apt install -y build-essential libpulse-dev
+make
 ```
 
-**Confirmed here:** `make` builds cleanly against real `libpulse-dev`
-headers, and `make test` plays a correct-length, correct-pitch tone
-through the shim. **Not yet confirmed:** behavior with the real Soloist
-binary.
+The output is:
 
-If `check-symbols.sh` reports missing symbols, Soloist will fail to
-start (or crash on first use of one of them) under this shim -- those
-calls would need to be added before it's usable at all.
-
-Once symbols check out, smoke-test real playback manually with Soloist
-itself, independent of the plugin, before considering integration:
-
-```sh
-mkfifo /tmp/soloist-pcm.fifo
-SOLOIST_SHIM_OUT=/tmp/soloist-pcm.fifo \
-SOLOIST_SHIM_FORMAT=s16 \
-SOLOIST_SHIM_RATE=44100 \
-SOLOIST_SHIM_LOG=1 \
-LD_LIBRARY_PATH=/path/to/contrib/experimental-pcm-shim \
-  /usr/local/bin/soloist -n "test" -k "$SOLOIST_API_KEY" &
-
-# In another shell, once a reader is attached the shim will start
-# writing to it:
-aplay -t raw -f S16_LE -r 44100 -c 2 /tmp/soloist-pcm.fifo
+```text
+libpulse.so.0
 ```
 
-Watch specifically for: does Soloist start and log in normally; does
-audio play at the correct pitch/speed; and -- the actual bug this is
-meant to fix -- **do multiple tracks transition automatically without
-stalling near the end of a track.** Also check `SOLOIST_SHIM_LOG=1`
-output for repeated `ring overflow: dropped N bytes` (means Soloist is
-writing faster than real-time and this shim's buffer is too small for
-the `SOLOIST_SHIM_RATE`/format chosen) or crashes.
+Point the plugin's **Experimental PCM shim directory** setting at the directory
+containing that file.
 
-## Environment variables (as implemented in `pulse_shim.c`)
+The LMS service account must be able to traverse the directory and read the
+library. A directory below `/root` is normally unsuitable.
 
-| Variable | Meaning | Default |
-|---|---|---|
-| `SOLOIST_SHIM_OUT` | Output path: FIFO, unix socket, or plain file. | `/tmp/soloist-pcm.fifo` |
-| `SOLOIST_SHIM_FORMAT` | Output sample width: `s16`, `s24` (packed 3-byte), or `s32`. | `s24` |
-| `SOLOIST_SHIM_RATE` | Output rate in Hz, `0` passes the stream's own rate through unchanged. | `44100` |
-| `SOLOIST_SHIM_LOG` | `0` quiet, `1` info (connects/disconnects, overflows), `2` also traces API calls. | `0` |
-| `SOLOIST_SHIM_MAX_TLENGTH_MS` | Clamp requested PulseAudio `tlength`/`prebuf`/`minreq` to this many milliseconds to keep Soloist's virtual playback clock close to real drained audio. | `0` (off) |
+## Runtime interface
 
-(The plugin's `pcm-shim` backend now sets `SOLOIST_SHIM_MAX_TLENGTH_MS=300`
-by default because real Soloist builds can otherwise over-buffer and then
-mis-handle immediate pause and track-end timing through a shimmed sink.)
+The bridge starts Soloist with this directory prepended to `LD_LIBRARY_PATH`
+and sets:
 
-With `SOLOIST_SHIM_LOG=1`, a current build logs an unmistakable load marker
-before Soloist calls any PulseAudio API:
+- `SOLOIST_SHIM_OUT` - FIFO path or Unix socket path
+- `SOLOIST_SHIM_FORMAT` - `s16` for the plugin integration
+- `SOLOIST_SHIM_RATE` - `44100` for the plugin integration
+- `SOLOIST_SHIM_LOG` - diagnostic level (`0`, `1`, or `2`)
+- `SOLOIST_SHIM_MAX_TLENGTH_MS` - playback buffer clamp; the bridge defaults
+  this to `300`
+
+The plugin creates one FIFO per player and configures the shim independently
+for each Soloist process.
+
+## Plugin audio path
+
+```text
+Soloist
+  -> this libpulse.so.0
+  -> player_<slot>/pcm-shim.fifo
+  -> direct byte forwarding for PCM/WAV
+     or ffmpeg encoding for MP3/FLAC
+  -> player_<slot>/audio.fifo
+  -> audio-relay.py
+  -> LMS/player
+```
+
+For PCM/WAV, the relay adds a streaming WAV header per HTTP client; it does not
+encode or alter the PCM payload.
+
+## Diagnostics
+
+Set `SOLOIST_PCM_SHIM_LOG=1` or `2` in the LMS service environment, restart LMS,
+and inspect the player's `bridge.log`. The bridge maps this setting to
+`SOLOIST_SHIM_LOG`.
+
+A successfully loaded build logs:
 
 ```text
 [soloist-shim] loaded build 2026-10-25.2: ...
 ```
 
-If the bridge confirms that it passed `SOLOIST_SHIM_LOG=1` but this marker
-never appears, Soloist did not load this `libpulse.so.0` (or an older shim
-binary is still deployed). Check the live process directly with
-`grep libpulse.so.0 /proc/<soloist-pid>/maps`.
+Level `2` also logs Pulse API activity. A constructor/load marker without
+subsequent API calls can mean Soloist rejected the library during its initial
+symbol probe.
 
-(An earlier reference document attached alongside this source used a
-different variable naming scheme, `SOLOIST_PCM_*`, for what appears to
-be a related but not identical project. The table above matches what
-`pulse_shim.c` in this directory actually reads -- use these names.)
+Soloist currently requires compatibility exports including:
 
-## Known limitations (from reading the source)
+- `pa_context_get_sink_input_info`
+- `pa_gettimeofday`
+- `pa_timeval_diff`
 
-- Playback only; no recording support, no `pa_stream_peek`/`pa_stream_drop`.
-- One stream plays after another in creation order (no mixing).
-- Raw (non-threaded) `pa_mainloop_api` event-source registration
-  (`io_new`/`time_new`/`defer_new`) is not implemented -- a client using
-  those directly instead of a threaded mainloop's lock/wait/signal
-  pattern will not function correctly.
-- Little-endian PCM output only.
-- Volume/mute calls are accepted but ignored (volume is expected to be
-  handled by LMS/the player, same assumption the apulse backend makes).
-- If the FIFO has no reader, audio is silently discarded at the pacing
-  rate rather than buffered indefinitely -- a reader must be attached
-  before (or very soon after) playback starts to avoid losing the start
-  of a track.
-- Soloist reportedly prefers PipeWire and only falls back to PulseAudio
-  if PipeWire is unavailable to it; exactly how it probes for PipeWire
-  is untested, so PipeWire must genuinely be absent/unreachable for this
-  shim to be used at all (same constraint the apulse backend already
-  has).
+## Limitations
 
-## What integrating this into the plugin would require (not done here)
+- This is a focused compatibility implementation, not a complete PulseAudio
+  client library.
+- A future Soloist release may require additional Pulse symbols or semantics.
+- The plugin integration currently assumes stereo, 44.1 kHz, signed 16-bit
+  little-endian PCM.
+- Build and deploy the library separately on each target architecture; no
+  prebuilt binary is bundled with the plugin.
+- MP3 and FLAC bridge output still require ffmpeg. PCM/WAV does not.
 
-This is intentionally **not** wired into `Plugin.pm` or
-`Bin/soloist-bridge.sh`. Doing so safely would need, at minimum:
+## Clean
 
-1. Symbol-coverage and real-playback validation per above, on real
-   hardware, against the actual `soloist` binary.
-2. A new, distinct bridge capture path: reading raw PCM directly from
-   `SOLOIST_SHIM_OUT`'s FIFO (format/rate from `SOLOIST_SHIM_FORMAT` /
-   `SOLOIST_SHIM_RATE`) instead of running `arecord` against an ALSA
-   loopback device -- this is a different code path from both the
-   existing Pulse and ALSA/apulse backends, not a drop-in shim swap.
-3. A new `SOLOIST_AUDIO_BACKEND` value (e.g. `shim`) in `Plugin.pm` /
-   `Bin/soloist-bridge.sh`, kept opt-in and off by default, with the
-   existing Pulse and ALSA/apulse backends left untouched.
-4. Prebuilt binaries for the architectures the plugin bundles shims for
-   today (`alsa-lib/amd64`, `arm64`, `armhf`), with a reproducible build
-   process, if this is to be bundled rather than built by the user.
-
-## Licensing note
-
-Per the source header, this is intended as original code, compiled
-against the PulseAudio public headers (LGPL-2.1+) but not linking
-anything from the real libpulse at run time. The Soloist binary itself
-is not part of this and must be downloaded separately by each user per
-Spotify's developer terms, same as for the existing bundled shim --
-check those terms before distributing a built shim alongside the
-plugin.
+```bash
+make clean
+```

@@ -8,7 +8,7 @@ PLUGIN_SPOTIFYSOLOIST_SOLOISTBIN
 	EN	Path to soloist binary
 
 PLUGIN_SPOTIFYSOLOIST_SOLOISTBIN_DESC
-	EN	Full path to the soloist executable (or a wrapper script, e.g. for a glibc-compatibility container). On the ALSA backend, this plugin can use its bundled x86_64 pulse shim automatically; other architectures may still need a custom wrapper/launcher.
+	EN	Full path to the soloist executable (or a wrapper script, e.g. for a glibc-compatibility container).
 
 PLUGIN_SPOTIFYSOLOIST_FFMPEGBIN
 	EN	Path to ffmpeg binary
@@ -26,7 +26,7 @@ PLUGIN_SPOTIFYSOLOIST_AUDIOBACKEND
 	EN	Audio backend
 
 PLUGIN_SPOTIFYSOLOIST_AUDIOBACKEND_DESC
-	EN	PipeWire/PulseAudio keeps the current null-sink bridge. ALSA/apulse is opt-in for hosts without a running Pulse/PipeWire stack; on x86_64 this plugin ships a bundled pulse shim for Soloist, and on other architectures you may still need your own wrapper/launcher. Each selected player slot is mapped to ALSA loopback devices instead of Pulse sinks. The experimental direct-PCM shim is a separate, newer opt-in option: it needs no ALSA loopback card at all, but you must build it yourself first (see contrib/experimental-pcm-shim/README.md) and point "Experimental PCM shim directory" at the result.
+	EN	PipeWire/PulseAudio uses the established null-sink bridge. The experimental direct-PCM shim is the no-Pulse option: build it on this host (see contrib/experimental-pcm-shim/README.md) and point "Experimental PCM shim directory" at the result.
 
 PLUGIN_SPOTIFYSOLOIST_SINK
 	EN	PipeWire/PulseAudio sink name prefix
@@ -34,17 +34,11 @@ PLUGIN_SPOTIFYSOLOIST_SINK
 PLUGIN_SPOTIFYSOLOIST_SINK_DESC
 	EN	Only used by the PipeWire/PulseAudio backend. Each selected player gets its own null-sink named "&lt;prefix&gt;_&lt;slot&gt;", created automatically. Soloist is launched against that sink and the bridge keeps routing/capture isolated per player.
 
-PLUGIN_SPOTIFYSOLOIST_ALSADEVICEPREFIX
-	EN	ALSA loopback device prefix
-
-PLUGIN_SPOTIFYSOLOIST_ALSADEVICEPREFIX_DESC
-	EN	Only used by the ALSA/apulse backend. For slot N, Soloist playback is routed to "&lt;prefix&gt;,0,N" and the bridge captures from "&lt;prefix&gt;,1,N". The default "hw:Loopback" matches the standard snd-aloop card naming.
-
 PLUGIN_SPOTIFYSOLOIST_PCMSHIMDIR
 	EN	Experimental PCM shim directory
 
 PLUGIN_SPOTIFYSOLOIST_PCMSHIMDIR_DESC
-	EN	Only used by the experimental direct-PCM shim backend. Directory containing that shim's built libpulse.so.0 (run "make" in contrib/experimental-pcm-shim on this host first -- no prebuilt binary ships with the plugin). Each player gets its own raw-PCM FIFO automatically; no ALSA loopback (snd-aloop) card is needed with this backend. Still experimental: not validated as extensively as the other two backends.
+	EN	Only used by the experimental direct-PCM shim backend. Directory containing that shim's built libpulse.so.0 (run "make" in contrib/experimental-pcm-shim on this host first -- no prebuilt binary ships with the plugin). Each player gets its own raw-PCM FIFO automatically. Still experimental: not validated as extensively as the Pulse/PipeWire backend.
 
 PLUGIN_SPOTIFYSOLOIST_WSPORTBASE
 	EN	Control port base

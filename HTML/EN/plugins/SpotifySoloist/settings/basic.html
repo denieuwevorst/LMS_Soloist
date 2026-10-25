@@ -74,18 +74,13 @@
 
 [% WRAPPER setting title="PLUGIN_SPOTIFYSOLOIST_AUDIOBACKEND" desc="PLUGIN_SPOTIFYSOLOIST_AUDIOBACKEND_DESC" %]
 	<select class="stdedit" name="pref_audioBackend" id="pref_audioBackend">
-		<option value="pulse" [% IF prefs.pref_audioBackend != 'alsa' && prefs.pref_audioBackend != 'pcm-shim' %]selected[% END %]>PipeWire/PulseAudio null-sinks</option>
-		<option value="alsa"  [% IF prefs.pref_audioBackend == 'alsa' %]selected[% END %]>ALSA/apulse loopback</option>
-		<option value="pcm-shim"  [% IF prefs.pref_audioBackend == 'pcm-shim' %]selected[% END %]>Experimental direct-PCM shim (no ALSA loopback card needed)</option>
+		<option value="pulse" [% IF prefs.pref_audioBackend != 'pcm-shim' %]selected[% END %]>PipeWire/PulseAudio null-sinks</option>
+		<option value="pcm-shim"  [% IF prefs.pref_audioBackend == 'pcm-shim' %]selected[% END %]>Experimental direct-PCM shim (no Pulse/PipeWire server needed)</option>
 	</select>
 [% END %]
 
 [% WRAPPER setting title="PLUGIN_SPOTIFYSOLOIST_SINK" desc="PLUGIN_SPOTIFYSOLOIST_SINK_DESC" %]
 	<input name="pref_pipewireSink" id="pref_pipewireSink" type="text" size="30" value="[% prefs.pref_pipewireSink %]">
-[% END %]
-
-[% WRAPPER setting title="PLUGIN_SPOTIFYSOLOIST_ALSADEVICEPREFIX" desc="PLUGIN_SPOTIFYSOLOIST_ALSADEVICEPREFIX_DESC" %]
-	<input name="pref_alsaDevicePrefix" id="pref_alsaDevicePrefix" type="text" size="30" value="[% prefs.pref_alsaDevicePrefix %]">
 [% END %]
 
 [% WRAPPER setting title="PLUGIN_SPOTIFYSOLOIST_PCMSHIMDIR" desc="PLUGIN_SPOTIFYSOLOIST_PCMSHIMDIR_DESC" %]

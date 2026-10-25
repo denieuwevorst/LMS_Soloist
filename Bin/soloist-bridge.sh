@@ -7,17 +7,13 @@
 # Audio path:
 #   - Pulse backend: PipeWire/PulseAudio null-sink -> ffmpeg capture of that
 #     sink's monitor -> named pipe -> audio-relay.py
-#   - ALSA backend: bundled apulse shim or wrapper -> ALSA playback device ->
-#     bridge capture from the matching ALSA loopback device -> named pipe
-#     -> audio-relay.py
 #   - pcm-shim backend: contrib/experimental-pcm-shim's libpulse.so.0
 #     replacement writes raw PCM straight to a FIFO this script creates ->
 #     ffmpeg reads that FIFO directly -> named pipe -> audio-relay.py. No
-#     Pulse/PipeWire server and no ALSA loopback (snd-aloop) card needed at
-#     all for this backend -- only the shim's own build-time dependency on
+#     Pulse/PipeWire server needed -- only the shim's own build-time dependency on
 #     libpulse-dev headers (see contrib/experimental-pcm-shim/README.md).
-#     Opt-in and still less validated than the other two backends.
-# The relay role is identical in all three cases and replaces Icecast; see
+#     Opt-in and still less validated than the Pulse/PipeWire backend.
+# The relay role is identical in both cases and replaces Icecast; see
 # Bin/audio-relay.py for why the relay reads from a FIFO.
 #
 # Metadata is NOT handled here -- Plugin.pm consumes Soloist's pushed
@@ -28,9 +24,8 @@
 # Optional (defaulted below): FORMAT BITRATE WS_PORT SOLOIST_DATA_DIR
 #                     SOLOIST_CACHE_DIR RELAY_PORT RELAY_BIND FIFO_PATH
 #                     PYTHON_BIN SOLOIST_AUDIO_BACKEND PIPEWIRE_SINK
-#                     ALSA_PLAYBACK_DEVICE ALSA_CAPTURE_DEVICE
 #                     RELAY_READY_FILE RELAY_FLUSH_FILE FFMPEG_BIN
-#                     SOLOIST_SHIM_DIR SOLOIST_PCM_SHIM_DIR
+#                     SOLOIST_PCM_SHIM_DIR
 #                     SOLOIST_PCM_SHIM_FIFO SOLOIST_PCM_SHIM_LOG
 
 set -u
@@ -44,8 +39,6 @@ FORMAT="${FORMAT:-mp3}"
 BITRATE="${BITRATE:-320k}"
 SOLOIST_AUDIO_BACKEND="${SOLOIST_AUDIO_BACKEND:-pulse}"
 PIPEWIRE_SINK="${PIPEWIRE_SINK:-}"
-ALSA_PLAYBACK_DEVICE="${ALSA_PLAYBACK_DEVICE:-}"
-ALSA_CAPTURE_DEVICE="${ALSA_CAPTURE_DEVICE:-}"
 SOLOIST_INITIAL_VOLUME="${SOLOIST_INITIAL_VOLUME:-100}"
 WS_PORT="${WS_PORT:-9091}"
 SOLOIST_DATA_DIR="${SOLOIST_DATA_DIR:-$HOME/.local/share/soloist-lyrion}"
@@ -56,7 +49,6 @@ FIFO_PATH="${FIFO_PATH:-/tmp/soloist-audio.fifo}"
 RELAY_READY_FILE="${RELAY_READY_FILE:-${SOLOIST_CACHE_DIR}/relay.ready}"
 RELAY_FLUSH_FILE="${RELAY_FLUSH_FILE:-${SOLOIST_CACHE_DIR}/relay.flush}"
 PYTHON_BIN="${PYTHON_BIN:-python3}"
-SOLOIST_SHIM_DIR="${SOLOIST_SHIM_DIR:-}"
 SOLOIST_PCM_SHIM_DIR="${SOLOIST_PCM_SHIM_DIR:-}"
 SOLOIST_PCM_SHIM_FIFO="${SOLOIST_PCM_SHIM_FIFO:-}"
 SOLOIST_PCM_SHIM_LOG="${SOLOIST_PCM_SHIM_LOG:-0}"
@@ -127,90 +119,6 @@ trap cleanup EXIT TERM INT
 
 log() { echo "[soloist-bridge] $*" >&2; }
 
-# Resolve a bare ALSA card *name* (e.g. "Loopback" in "hw:Loopback,0,0") to
-# its numeric card index from /proc/asound/cards. ALSA's own name-based
-# lookup (snd_config_get_card) fails -- silently, from apulse's point of
-# view -- when two or more cards share the same name ("Cannot get card
-# index for Loopback"), which can happen if snd-aloop was loaded more than
-# once without unique id= values. Resolving to the numeric index here makes
-# the device string unambiguous and avoids that silent playback/capture
-# failure. Already-numeric prefixes (e.g. "hw:1,0,0") pass through unchanged.
-_alsa_resolve_card_name() {
-	local dev="$1"
-	local prefix="${dev%%:*}"
-	local rest="${dev#*:}"
-	local card="${rest%%,*}"
-	local remainder=""
-	if [ "$rest" != "$card" ]; then
-		remainder="${rest#*,}"
-	fi
-
-	case "$card" in
-		''|*[!0-9]*) ;;
-		*) printf '%s\n' "$dev"; return 0 ;;
-	esac
-
-	if [ ! -r /proc/asound/cards ]; then
-		printf '%s\n' "$dev"
-		return 0
-	fi
-
-	local all_ids=() all_idxs=() matches=() line idx id
-	while IFS= read -r line; do
-		if [[ "$line" =~ ^[[:space:]]*([0-9]+)[[:space:]]\[([^]]*)\]: ]]; then
-			idx="${BASH_REMATCH[1]}"
-			id="${BASH_REMATCH[2]}"
-			id="${id%"${id##*[![:space:]]}"}"
-			id="${id#"${id%%[![:space:]]*}"}"
-			all_idxs+=("$idx")
-			all_ids+=("$id")
-			if [ "$id" = "$card" ]; then
-				matches+=("$idx")
-			fi
-		fi
-	done < /proc/asound/cards
-
-	# No exact match -- fall back to a case-insensitive substring match
-	# (e.g. the card is really named "Loopback 1" or "snd_aloop") before
-	# giving up, since the exact driver-assigned id can vary by kernel/host.
-	local fuzzy=0
-	if [ "${#matches[@]}" -eq 0 ] && [ "${#all_ids[@]}" -gt 0 ]; then
-		local lower_card i
-		lower_card="${card,,}"
-		for i in "${!all_ids[@]}"; do
-			if [[ "${all_ids[$i],,}" == *"${lower_card}"* ]]; then
-				matches+=("${all_idxs[$i]}")
-				fuzzy=1
-			fi
-		done
-	fi
-
-	if [ "${#matches[@]}" -eq 0 ]; then
-		local known="(none)"
-		if [ "${#all_ids[@]}" -gt 0 ]; then
-			known=""
-			for i in "${!all_ids[@]}"; do
-				known="${known}${known:+, }${all_idxs[$i]}='${all_ids[$i]}'"
-			done
-		fi
-		log "WARNING: no ALSA card named '${card}' found in /proc/asound/cards (known cards: ${known}) -- leaving '${dev}' as-is; arecord/apulse may fail to open it"
-		printf '%s\n' "$dev"
-		return 0
-	fi
-
-	if [ "$fuzzy" -eq 1 ]; then
-		log "WARNING: no ALSA card exactly named '${card}'; using substring match (indices: ${matches[*]}) instead -- check 'cat /proc/asound/cards' if this picks the wrong device"
-	elif [ "${#matches[@]}" -gt 1 ]; then
-		log "WARNING: ${#matches[@]} ALSA cards are named '${card}' (indices: ${matches[*]}) -- ALSA's name lookup is ambiguous for duplicate card names and can silently fail to open devices (e.g. 'Cannot get card index for ${card}'). Using the first match (index ${matches[0]}); rename the extra loopback instances (e.g. modprobe snd-aloop id=...) or configure a numeric device prefix to remove this ambiguity."
-	fi
-
-	if [ -n "$remainder" ]; then
-		printf '%s:%s,%s\n' "$prefix" "${matches[0]}" "$remainder"
-	else
-		printf '%s:%s\n' "$prefix" "${matches[0]}"
-	fi
-}
-
 if ! command -v "$PYTHON_BIN" >/dev/null 2>&1; then
 	log "ERROR: $PYTHON_BIN not found -- the relay needs Python 3"
 	exit 1
@@ -219,10 +127,6 @@ fi
 case "$SOLOIST_AUDIO_BACKEND" in
 	pulse)
 		: "${PIPEWIRE_SINK:?PIPEWIRE_SINK is required when SOLOIST_AUDIO_BACKEND=pulse}"
-		;;
-	alsa)
-		: "${ALSA_PLAYBACK_DEVICE:?ALSA_PLAYBACK_DEVICE is required when SOLOIST_AUDIO_BACKEND=alsa}"
-		: "${ALSA_CAPTURE_DEVICE:?ALSA_CAPTURE_DEVICE is required when SOLOIST_AUDIO_BACKEND=alsa}"
 		;;
 	pcm-shim)
 		: "${SOLOIST_PCM_SHIM_DIR:?SOLOIST_PCM_SHIM_DIR is required when SOLOIST_AUDIO_BACKEND=pcm-shim (directory containing the built libpulse.so.0 from contrib/experimental-pcm-shim)}"
@@ -249,7 +153,7 @@ case "$SOLOIST_AUDIO_BACKEND" in
 		fi
 		;;
 	*)
-		log "ERROR: unsupported SOLOIST_AUDIO_BACKEND '$SOLOIST_AUDIO_BACKEND' (expected pulse, alsa, or pcm-shim)"
+		log "ERROR: unsupported SOLOIST_AUDIO_BACKEND '$SOLOIST_AUDIO_BACKEND' (expected pulse or pcm-shim)"
 		exit 1
 		;;
 esac
@@ -260,7 +164,6 @@ esac
 CAPTURE_INPUT_ARGS=()
 SOLOIST_AUDIO_TARGET_DESC=""
 PCM_CAPTURE_ARGS=()
-ARECORD_INPUT_ARGS=()
 CAPTURE_MODE="ffmpeg"
 RELAY_EXTRA_ARGS=()
 
@@ -305,14 +208,13 @@ if [ "$SOLOIST_AUDIO_BACKEND" = "pulse" ]; then
 	CAPTURE_INPUT_ARGS=(-f pulse -i "${PIPEWIRE_SINK}.monitor")
 	SOLOIST_AUDIO_TARGET_DESC="Pulse/PipeWire sink ${PIPEWIRE_SINK}"
 elif [ "$SOLOIST_AUDIO_BACKEND" = "pcm-shim" ]; then
-	# This backend needs none of the ALSA-loopback/arecord/plughw plumbing
-	# the "alsa" backend requires: the shim writes raw PCM straight to a
-	# FIFO we create below, and ffmpeg reads that FIFO directly. See
+	# The shim writes raw PCM straight to a FIFO we create below, and
+	# ffmpeg reads that FIFO directly. See
 	# contrib/experimental-pcm-shim/README.md for the shim's status.
 	#
 	# SOLOIST_LD_LIBRARY_PATH is intentionally NOT `export`ed here, for the
-	# same reason as the "alsa" backend above: it must only affect
-	# Soloist's own process (below), not every later command in this
+	# same reason as the Pulse setup above: it must only affect Soloist's
+	# own process (below), not every later command in this
 	# script (ffmpeg doesn't need or want this shim's libpulse.so.0 ahead
 	# of the real one on its library path).
 	SOLOIST_LD_LIBRARY_PATH="${SOLOIST_PCM_SHIM_DIR}${LD_LIBRARY_PATH:+:${LD_LIBRARY_PATH}}"
@@ -322,101 +224,6 @@ elif [ "$SOLOIST_AUDIO_BACKEND" = "pcm-shim" ]; then
 	SOLOIST_AUDIO_TARGET_DESC="experimental pcm-shim FIFO ${SOLOIST_PCM_SHIM_FIFO}"
 	log "using experimental pcm-shim backend from '${SOLOIST_PCM_SHIM_DIR}', raw PCM FIFO=${SOLOIST_PCM_SHIM_FIFO}"
 	log "pcm-shim settings: SOLOIST_PCM_SHIM_LOG=${SOLOIST_PCM_SHIM_LOG} (passed to Soloist as SOLOIST_SHIM_LOG), SOLOIST_SHIM_MAX_TLENGTH_MS=${SOLOIST_SHIM_MAX_TLENGTH_MS:-300}"
-else
-	# The ALSA path is intentionally opt-in: Soloist still has no native ALSA
-	# flag, so this mode uses either the bundled x86_64 libpulse shim or a
-	# caller-provided wrapper/equivalent launcher that honors
-	# APULSE_PLAYBACK_DEVICE.
-	#
-	# SOLOIST_LD_LIBRARY_PATH is intentionally NOT `export`ed here: it must
-	# only affect Soloist's own process (below), not every later command in
-	# this script. An `export` would leak into arecord/ffmpeg too, and the
-	# shim's bundled libpulse.so.0 stub can shadow the *system* libpulse via
-	# the dynamic linker for any later command, breaking unrelated ALSA
-	# config hooks that dlopen the real libpulse (symptom: arecord failing
-	# with "undefined symbol: pa_mainloop_new" and "Unknown PCM ...").
-	SOLOIST_LD_LIBRARY_PATH=""
-	SOLOIST_SHIM_ACTIVE=0
-	if [ -n "$SOLOIST_SHIM_DIR" ] && [ -f "${SOLOIST_SHIM_DIR}/libpulse.so.0" ]; then
-		SOLOIST_LD_LIBRARY_PATH="${SOLOIST_SHIM_DIR}${LD_LIBRARY_PATH:+:${LD_LIBRARY_PATH}}"
-		SOLOIST_SHIM_ACTIVE=1
-		log "using bundled Soloist pulse shim from '${SOLOIST_SHIM_DIR}'"
-	else
-		log "no bundled Soloist pulse shim active; ALSA backend expects the configured soloist path to handle Pulse->ALSA itself"
-	fi
-	ALSA_PLAYBACK_DEVICE="$(_alsa_resolve_card_name "$ALSA_PLAYBACK_DEVICE")"
-	ALSA_CAPTURE_DEVICE="$(_alsa_resolve_card_name "$ALSA_CAPTURE_DEVICE")"
-	export APULSE_PLAYBACK_DEVICE="$(_alsa_resolve_card_name "${APULSE_PLAYBACK_DEVICE:-$ALSA_PLAYBACK_DEVICE}")"
-	if ! command -v arecord >/dev/null 2>&1; then
-		log "ERROR: arecord not found -- ALSA backend capture needs alsa-utils"
-		exit 1
-	fi
-	if [ "$SOLOIST_SHIM_ACTIVE" = "1" ]; then
-		# The bundled shim calls snd_pcm_open() directly on whatever string
-		# is in APULSE_PLAYBACK_DEVICE (confirmed via its own APULSE_DIAG
-		# log: "pcm open hw:1,0,0 failed: No such file or directory"), so
-		# there is no "volumio" fallback name to work around -- it genuinely
-		# opens our configured device string as-is. The capture side of this
-		# very same loopback card already opens fine via "plughw:1,1,0", but
-		# the raw "hw:1,0,0" (no plug layer) fails outright for playback on
-		# at least some hosts/kernel versions of snd-aloop. Upgrade the
-		# shim's playback device to plughw to match, which adds ALSA's plug
-		# conversion/negotiation layer instead of requiring an exact direct
-		# hardware open.
-		case "$APULSE_PLAYBACK_DEVICE" in
-			hw:*)
-				SHIM_PLAYBACK_DEVICE="plughw:${APULSE_PLAYBACK_DEVICE#hw:}"
-				log "bundled shim: upgrading playback device '${APULSE_PLAYBACK_DEVICE}' -> '${SHIM_PLAYBACK_DEVICE}' (raw ALSA 'hw:' open fails for this shim on some hosts; 'plughw:' adds the plug layer it needs)"
-				export APULSE_PLAYBACK_DEVICE="$SHIM_PLAYBACK_DEVICE"
-				;;
-		esac
-
-		# Diagnostic-only: the bundled shim supports APULSE_DIAG (verbose
-		# pcm-open/connect logging to its own stderr, logged on EVERY
-		# single Pulse API call, which lands in this player's bridge.log
-		# since Soloist is a child of this script) and APULSE_YIELD_PATH
-		# (dumps the raw audio frames it receives from Soloist to a file).
-		# This was enabled unconditionally while chasing the original
-		# silent-playback bug (now fixed above, confirmed by real audio
-		# finally reaching the relay) and is now opt-in only
-		# (SOLOIST_SHIM_DIAG=1 in the bridge's environment), off by
-		# default: logging on every single API call is real per-callback
-		# overhead on a real-time audio thread, which is exactly the kind
-		# of thing that can cause audible glitches/dropouts on constrained
-		# hardware (e.g. a Pi or low-power x86 box) -- leaving it on
-		# unconditionally risked *causing* playback problems rather than
-		# just diagnosing them.
-		if [ "${SOLOIST_SHIM_DIAG:-0}" = "1" ]; then
-			SOLOIST_SHIM_YIELD_PATH="${SOLOIST_CACHE_DIR}/shim-alsa-yield.raw"
-			log "SOLOIST_SHIM_DIAG=1: enabling shim diagnostics; raw yield dump -> ${SOLOIST_SHIM_YIELD_PATH} (delete manually when done; adds per-call logging overhead -- leave off for normal use)"
-		fi
-
-		# The shim normally negotiates a ~4 second playback buffer
-		# (observed via its own connect log: "tlength=705600" bytes at
-		# 44.1kHz/16-bit/stereo = 705600 / (44100*4) = 4.0s exactly).
-		# Soloist tracks playback *position* by how much audio it has
-		# handed to this stream, not by what has actually reached the
-		# speaker -- so with a 4s buffer its own clock finishes a track
-		# up to 4s before the real, still-queued audio has drained. When
-		# it then corks/flushes the stream for the track transition, that
-		# last ~4s of real audio gets dropped instead of played out,
-		# which is exactly the "cuts off a few seconds before the end and
-		# doesn't advance" symptom seen on this backend (confirmed absent
-		# on the Pulse/PipeWire backend, where a real server drains
-		# streams correctly on cork/flush). The bundled shim supports an
-		# undocumented APULSE_MAX_TLENGTH_MS clamp (found via binary
-		# string inspection, alongside APULSE_PLAYBACK_DEVICE/APULSE_DIAG/
-		# APULSE_YIELD_PATH); set it to the same 300ms buffer-time already
-		# used for ALSA capture above, so Soloist's own virtual clock can
-		# only race a few hundred ms ahead of real output instead of
-		# several seconds.
-		SOLOIST_SHIM_MAX_TLENGTH_MS="${SOLOIST_SHIM_MAX_TLENGTH_MS:-300}"
-		log "bundled shim: clamping playback buffer via APULSE_MAX_TLENGTH_MS=${SOLOIST_SHIM_MAX_TLENGTH_MS} (reduces how far Soloist's own position tracking can race ahead of real ALSA output; override with SOLOIST_SHIM_MAX_TLENGTH_MS if you see underruns/glitches)"
-	fi
-	ARECORD_INPUT_ARGS=(arecord -c2 -f S16_LE -r 44100 -t raw --buffer-time=300000 --period-time=50000 -D "${ALSA_CAPTURE_DEVICE}")
-	CAPTURE_INPUT_ARGS=(-f s16le -ar 44100 -ac 2 -i pipe:0)
-	SOLOIST_AUDIO_TARGET_DESC="ALSA playback ${APULSE_PLAYBACK_DEVICE} / capture ${ALSA_CAPTURE_DEVICE}"
-	log "using ALSA/apulse backend with APULSE_PLAYBACK_DEVICE='${APULSE_PLAYBACK_DEVICE}' and capture='${ALSA_CAPTURE_DEVICE}'"
 fi
 
 # ---------------------------------------------------------------------------
@@ -439,18 +246,11 @@ SOLOIST_ENV_PREFIX=()
 if [ -n "${SOLOIST_LD_LIBRARY_PATH:-}" ]; then
 	SOLOIST_ENV_PREFIX+=(LD_LIBRARY_PATH="$SOLOIST_LD_LIBRARY_PATH")
 fi
-if [ "${SOLOIST_SHIM_ACTIVE:-0}" = "1" ]; then
-	SOLOIST_ENV_PREFIX+=(APULSE_MAX_TLENGTH_MS="${SOLOIST_SHIM_MAX_TLENGTH_MS}")
-fi
-if [ "${SOLOIST_SHIM_ACTIVE:-0}" = "1" ] && [ "${SOLOIST_SHIM_DIAG:-0}" = "1" ]; then
-	SOLOIST_ENV_PREFIX+=(APULSE_DIAG=1 APULSE_YIELD_PATH="${SOLOIST_SHIM_YIELD_PATH}")
-fi
 if [ "$SOLOIST_AUDIO_BACKEND" = "pcm-shim" ]; then
 	SOLOIST_SHIM_MAX_TLENGTH_MS="${SOLOIST_SHIM_MAX_TLENGTH_MS:-300}"
 	# The shim defaults to s24 (packed) output if SOLOIST_SHIM_FORMAT is
-	# unset, but the capture side below is hardcoded to s16le/44100 (same
-	# fixed assumption the "alsa" backend's arecord capture makes) -- so
-	# this must force s16 explicitly, or audio would be garbled/wrong-speed.
+	# unset, but the capture side below assumes s16le/44100 -- so this
+	# must force s16 explicitly, or audio would be garbled/wrong-speed.
 	SOLOIST_ENV_PREFIX+=(SOLOIST_SHIM_OUT="$SOLOIST_PCM_SHIM_FIFO" SOLOIST_SHIM_FORMAT=s16 SOLOIST_SHIM_RATE=44100 SOLOIST_SHIM_LOG="$SOLOIST_PCM_SHIM_LOG" SOLOIST_SHIM_MAX_TLENGTH_MS="$SOLOIST_SHIM_MAX_TLENGTH_MS")
 fi
 if [ "${#SOLOIST_ENV_PREFIX[@]}" -gt 0 ]; then
@@ -592,17 +392,11 @@ case "$FORMAT" in
 				exit 1
 			fi
 			PCM_CAPTURE_ARGS=(parec --raw --rate=44100 --channels=2 --format=s16le --latency-msec=300 --process-time-msec=50 -d "${PIPEWIRE_SINK}.monitor")
-		elif [ "$SOLOIST_AUDIO_BACKEND" = "pcm-shim" ]; then
+		else
 			# The shim already writes raw s16le/44100/stereo PCM straight to
 			# its own FIFO -- just forward those bytes on, no capture tool
 			# needed.
 			PCM_CAPTURE_ARGS=(cat "$SOLOIST_PCM_SHIM_FIFO")
-		else
-			if ! command -v arecord >/dev/null 2>&1; then
-				log "ERROR: arecord not found -- PCM direct mode on the ALSA backend needs alsa-utils"
-				exit 1
-			fi
-			PCM_CAPTURE_ARGS=(arecord -c2 -f S16_LE -r 44100 -t raw --buffer-time=300000 --period-time=50000 -D "${ALSA_CAPTURE_DEVICE}")
 		fi
 		;;
 	*)
@@ -678,16 +472,6 @@ capture_supervisor() {
 		if [ "$CAPTURE_MODE" = "pcm-direct" ]; then
 			log "starting PCM capture: ${PCM_CAPTURE_ARGS[*]} > ${FIFO_PATH}"
 			"${PCM_CAPTURE_ARGS[@]}" > "$FIFO_PATH" &
-		elif [ "$SOLOIST_AUDIO_BACKEND" = "alsa" ]; then
-			log "starting ALSA capture: ${ARECORD_INPUT_ARGS[*]} | ${FFMPEG_BIN} ... -f ${MUX_FORMAT} ${FIFO_PATH}"
-			"${ARECORD_INPUT_ARGS[@]}" | \
-				"$FFMPEG_BIN" -nostdin -hide_banner -loglevel warning -y \
-					-fflags +genpts \
-					"${CAPTURE_INPUT_ARGS[@]}" \
-					"${ENCODE_ARGS[@]}" \
-					"${MUX_ARGS[@]}" \
-					-f "$MUX_FORMAT" \
-					"$FIFO_PATH" &
 		else
 			log "starting ${CAPTURE_MODE} capture: ${FFMPEG_BIN} ... -f ${MUX_FORMAT} ${FIFO_PATH}"
 			"$FFMPEG_BIN" -nostdin -hide_banner -loglevel warning -y \
