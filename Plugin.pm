@@ -15,13 +15,13 @@ package Plugins::SpotifySoloist::Plugin;
 # Real Now Playing metadata (including cover art) works the same way as
 # before: a custom `soloist://` scheme routed through our own protocol
 # handler (ProtocolHandler.pm), same pattern as ShairTunes2's
-# `airplay://` + AIRPLAY.pm. No Icecast: Bin/audio-relay.py is a small
+# `airplay://` + AIRPLAY.pm. No Icecast: the bundled C audio relay is a small
 # embedded multi-client HTTP server per instance, fed by ffmpeg through a
 # FIFO (so ffmpeg restarts don't disturb the relay or connected clients).
 #
 # Division of labour:
 #   - Bin/soloist-bridge.sh: backend-specific audio setup, launches one
-#     Soloist instance, captures + feeds its own audio-relay.py via a
+#     Soloist instance, captures + feeds its own bundled audio relay via a
 #     dedicated FIFO. Fully parameterized by env vars -- one script,
 #     launched once per selected player with different env each time.
 #   - This module: allocates a stable port/backend-target/data-dir "slot" per
@@ -80,7 +80,6 @@ use constant SOLOIST_DOWNLOADS_URL          => 'https://developer.spotify.com/do
 $prefs->init({
 	soloistBin      => '/usr/local/bin/soloist',
 	ffmpegBin       => '/usr/bin/ffmpeg',
-	pythonBin       => 'python3',
 	audioBackend    => 'pcm-shim',        # pcm-shim | pulse
 	pipewireSink    => 'soloist_sink',    # base name; each player gets _<slot> appended
 	pcmShimDir      => '',                # optional override; supported bundled architectures are selected automatically
@@ -187,14 +186,7 @@ sub _soloistElfMachine {
 	return unpack( $machineTemplate, substr( $header, 18, 2 ) );
 }
 
-sub _bundledPcmShimArch {
-	my $machine = _soloistElfMachine();
-	return 'X86_64'      if defined $machine && $machine == 62;
-	return 'ARMv7'       if defined $machine && $machine == 40;
-	return 'ARMv8_Arch64' if defined $machine && $machine == 183;
-
-	# A configured wrapper script has no ELF header. Fall back to the host
-	# architecture, which is correct for normal native Soloist installs.
+sub _hostBundledArch {
 	my @uname = eval { POSIX::uname() };
 	my $arch = lc( $uname[4] || '' );
 	return 'X86_64'       if $arch eq 'x86_64' || $arch eq 'amd64';
@@ -203,11 +195,33 @@ sub _bundledPcmShimArch {
 	return;
 }
 
-sub bundledPcmShimDir {
-	my $shimArch = _bundledPcmShimArch() or return;
+sub _bundledPcmShimArch {
+	my $machine = _soloistElfMachine();
+	return 'X86_64'       if defined $machine && $machine == 62;
+	return 'ARMv7'        if defined $machine && $machine == 40;
+	return 'ARMv8_Arch64' if defined $machine && $machine == 183;
 
-	my $dir = catdir( dirname(__FILE__), 'Bin', $shimArch );
+	# A configured wrapper script has no ELF header. Fall back to the host
+	# architecture, which is correct for normal native Soloist installs.
+	return _hostBundledArch();
+}
+
+sub _bundledArchitectureDir {
+	my ($arch) = @_;
+	return unless $arch;
+	my $dir = catdir( dirname(__FILE__), 'Bin', $arch );
+	return -d $dir ? $dir : undef;
+}
+
+sub bundledPcmShimDir {
+	my $dir = _bundledArchitectureDir( _bundledPcmShimArch() ) or return;
 	return -f catfile( $dir, 'libpulse.so.0' ) ? $dir : undef;
+}
+
+sub bundledRelayBin {
+	my $dir = _bundledArchitectureDir( _hostBundledArch() ) or return;
+	my $relay = catfile( $dir, 'audio-relay' );
+	return -f $relay ? $relay : undef;
 }
 
 sub _applySoloistExecEnv {
@@ -471,6 +485,7 @@ sub _configFor {
 		relayFlushFile => catfile( $baseCacheDir, "player_$slot", 'relay.flush' ),
 		pcmShimDir => $prefs->get('pcmShimDir') || bundledPcmShimDir(),
 		pcmShimFifo => catfile( $baseCacheDir, "player_$slot", 'pcm-shim.fifo' ),
+		relayBin => bundledRelayBin(),
 		deviceName => $playerName . $prefs->get('deviceNameSuffix'),
 	};
 }
@@ -606,7 +621,7 @@ sub _startBridge {
 
 	local $ENV{SOLOIST_BIN}       = $prefs->get('soloistBin');
 	local $ENV{FFMPEG_BIN}        = $prefs->get('ffmpegBin');
-	local $ENV{PYTHON_BIN}        = $prefs->get('pythonBin');
+	local $ENV{RELAY_BIN}         = $cfg->{relayBin};
 	local $ENV{SOLOIST_AUDIO_BACKEND} = $cfg->{backend};
 	local $ENV{PIPEWIRE_SINK}     = $cfg->{sink};
 	local $ENV{FORMAT}            = $cfg->{format};

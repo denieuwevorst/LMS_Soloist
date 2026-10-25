@@ -16,12 +16,6 @@ PLUGIN_SPOTIFYSOLOIST_FFMPEGBIN
 PLUGIN_SPOTIFYSOLOIST_FFMPEGBIN_DESC
 	EN	Used to capture each player's backend-specific audio source and feed its relay.
 
-PLUGIN_SPOTIFYSOLOIST_PYTHONBIN
-	EN	Path to python3
-
-PLUGIN_SPOTIFYSOLOIST_PYTHONBIN_DESC
-	EN	Runs the built-in HTTP relay that replaces Icecast (Bin/audio-relay.py), one instance per player. Plain "python3" works if it's on PATH.
-
 PLUGIN_SPOTIFYSOLOIST_AUDIOBACKEND
 	EN	Audio backend
 

@@ -6,15 +6,15 @@
 #
 # Audio path:
 #   - Pulse backend: PipeWire/PulseAudio null-sink -> ffmpeg capture of that
-#     sink's monitor -> named pipe -> audio-relay.py
+#     sink's monitor -> named pipe -> bundled C audio relay
 #   - pcm-shim backend: contrib/experimental-pcm-shim's libpulse.so.0
 #     replacement writes raw PCM straight to a FIFO this script creates ->
-#     ffmpeg reads that FIFO directly -> named pipe -> audio-relay.py. No
+#     ffmpeg reads that FIFO directly -> named pipe -> bundled C audio relay. No
 #     Pulse/PipeWire server needed -- only the shim's own build-time dependency on
 #     libpulse-dev headers (see contrib/experimental-pcm-shim/README.md).
 #     Opt-in and still less validated than the Pulse/PipeWire backend.
-# The relay role is identical in both cases and replaces Icecast; see
-# Bin/audio-relay.py for why the relay reads from a FIFO.
+# The relay role is identical in both cases and replaces Icecast. It reads
+# from a FIFO so capture can restart without dropping clients.
 #
 # Metadata is NOT handled here -- Plugin.pm consumes Soloist's pushed
 # `ctl trace` event stream (with an occasional snapshot resync fallback)
@@ -23,7 +23,7 @@
 # Required env vars: SOLOIST_BIN DEVICE_NAME SOLOIST_API_KEY
 # Optional (defaulted below): FORMAT BITRATE WS_PORT SOLOIST_DATA_DIR
 #                     SOLOIST_CACHE_DIR RELAY_PORT RELAY_BIND FIFO_PATH
-#                     PYTHON_BIN SOLOIST_AUDIO_BACKEND PIPEWIRE_SINK
+#                     RELAY_BIN SOLOIST_AUDIO_BACKEND PIPEWIRE_SINK
 #                     RELAY_READY_FILE RELAY_FLUSH_FILE FFMPEG_BIN
 #                     SOLOIST_PCM_SHIM_DIR
 #                     SOLOIST_PCM_SHIM_FIFO SOLOIST_PCM_SHIM_LOG
@@ -48,14 +48,11 @@ RELAY_BIND="${RELAY_BIND:-0.0.0.0}"
 FIFO_PATH="${FIFO_PATH:-/tmp/soloist-audio.fifo}"
 RELAY_READY_FILE="${RELAY_READY_FILE:-${SOLOIST_CACHE_DIR}/relay.ready}"
 RELAY_FLUSH_FILE="${RELAY_FLUSH_FILE:-${SOLOIST_CACHE_DIR}/relay.flush}"
-PYTHON_BIN="${PYTHON_BIN:-python3}"
+RELAY_BIN="${RELAY_BIN:-}"
 SOLOIST_PCM_SHIM_DIR="${SOLOIST_PCM_SHIM_DIR:-}"
 SOLOIST_PCM_SHIM_FIFO="${SOLOIST_PCM_SHIM_FIFO:-}"
 SOLOIST_PCM_SHIM_LOG="${SOLOIST_PCM_SHIM_LOG:-0}"
 WS_ENDPOINT="127.0.0.1:${WS_PORT}"
-
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-RELAY_SCRIPT="${SCRIPT_DIR}/audio-relay.py"
 
 mkdir -p "$SOLOIST_DATA_DIR" "$SOLOIST_CACHE_DIR"
 
@@ -119,8 +116,12 @@ trap cleanup EXIT TERM INT
 
 log() { echo "[soloist-bridge] $*" >&2; }
 
-if ! command -v "$PYTHON_BIN" >/dev/null 2>&1; then
-	log "ERROR: $PYTHON_BIN not found -- the relay needs Python 3"
+if [ -z "$RELAY_BIN" ] || [ ! -f "$RELAY_BIN" ]; then
+	log "ERROR: bundled relay executable not found at '${RELAY_BIN:-<unset>}'"
+	exit 1
+fi
+if [ ! -x "$RELAY_BIN" ]; then
+	log "ERROR: bundled relay '$RELAY_BIN' is not executable"
 	exit 1
 fi
 
@@ -411,7 +412,7 @@ case "$FORMAT" in
 esac
 
 log "starting relay on ${RELAY_BIND}:${RELAY_PORT} (content-type ${CONTENT_TYPE})"
-"$PYTHON_BIN" "$RELAY_SCRIPT" \
+"$RELAY_BIN" \
 	--fifo "$FIFO_PATH" \
 	--port "$RELAY_PORT" \
 	--bind "$RELAY_BIND" \
@@ -447,7 +448,7 @@ for _try in $(seq 1 10); do
 done
 
 if [ "$RELAY_READY" != "1" ]; then
-	log "ERROR: relay failed to start -- check python3 is available and the port isn't in use"
+	log "ERROR: relay failed to start -- check the bundled relay binary matches this architecture and the port isn't in use"
 	exit 1
 fi
 

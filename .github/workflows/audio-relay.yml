@@ -1,0 +1,20 @@
+name: Audio relay
+
+on:
+  pull_request:
+    paths:
+      - "contrib/audio-relay/**"
+      - ".github/workflows/audio-relay.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build-and-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build and test relay
+        working-directory: contrib/audio-relay
+        run: make test

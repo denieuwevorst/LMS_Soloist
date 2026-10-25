@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Replace the Python HTTP audio relay with dependency-free static C relay
+  binaries for x86_64, ARMv7, and ARMv8/AArch64. Preserve FIFO reopen,
+  multi-client fan-out, bounded slow-client buffering, PCM/WAV headers,
+  readiness signaling, and queue flushing without requiring Python at
+  runtime.
 - React directly to Soloist's pushed Spotify transport events: pause/resume
   LMS immediately for stable Spotify pause/play changes, and flush plus
   reconnect the PCM/WAV stream at `track_changed` boundaries so next,

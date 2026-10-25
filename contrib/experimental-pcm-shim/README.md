@@ -62,7 +62,7 @@ Soloist
   -> direct byte forwarding for PCM/WAV
      or ffmpeg encoding for MP3/FLAC
   -> player_<slot>/audio.fifo
-  -> audio-relay.py
+  -> bundled C audio relay
   -> LMS/player
 ```
 

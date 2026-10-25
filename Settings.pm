@@ -22,7 +22,7 @@ sub page {
 
 sub prefs {
 	return ( $prefs, qw(
-		soloistBin ffmpegBin pythonBin audioBackend pipewireSink pcmShimDir wsPortBase relayPortBase
+		soloistBin ffmpegBin audioBackend pipewireSink pcmShimDir wsPortBase relayPortBase
 		format bitrate initialVolume deviceNameSuffix apiKey relayBind autostart
 		idleDisconnectSeconds
 	) );

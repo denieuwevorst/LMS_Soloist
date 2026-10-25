@@ -6,6 +6,7 @@ into LMS and publishes track metadata and cover art through LMS's native
 interfaces.
 
 No Icecast server is required.
+The bundled HTTP relay is written in C; Python is not required at runtime.
 
 ## Audio backends
 
@@ -30,7 +31,7 @@ Spotify
   -> per-player Pulse/PipeWire null sink
   -> parec (PCM/WAV) or ffmpeg (MP3/FLAC)
   -> per-player FIFO
-  -> audio-relay.py
+  -> bundled C audio relay
   -> LMS/player
 ```
 
@@ -42,7 +43,7 @@ Spotify
   -> custom libpulse.so.0
   -> per-player raw-PCM FIFO
   -> direct forwarding (PCM/WAV) or ffmpeg (MP3/FLAC)
-  -> audio-relay.py
+  -> bundled C audio relay
   -> LMS/player
 ```
 
@@ -56,7 +57,6 @@ Common requirements:
 
 - Lyrion Music Server 8.0 or newer
 - Spotify Soloist and a valid Soloist API key
-- Python 3
 - ffmpeg for MP3 or FLAC bridge output
 
 Pulse backend requirements:
@@ -94,7 +94,7 @@ Install the Debian prerequisites:
 
 ```bash
 sudo apt update
-sudo apt install -y pulseaudio pulseaudio-utils ffmpeg python3
+sudo apt install -y pulseaudio pulseaudio-utils ffmpeg
 ```
 
 The plugin creates one null sink per enabled player and keeps it active while

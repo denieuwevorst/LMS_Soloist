@@ -68,10 +68,6 @@
 	<input name="pref_ffmpegBin" id="pref_ffmpegBin" type="text" size="50" value="[% prefs.pref_ffmpegBin %]">
 [% END %]
 
-[% WRAPPER setting title="PLUGIN_SPOTIFYSOLOIST_PYTHONBIN" desc="PLUGIN_SPOTIFYSOLOIST_PYTHONBIN_DESC" %]
-	<input name="pref_pythonBin" id="pref_pythonBin" type="text" size="20" value="[% prefs.pref_pythonBin %]">
-[% END %]
-
 [% WRAPPER setting title="PLUGIN_SPOTIFYSOLOIST_AUDIOBACKEND" desc="PLUGIN_SPOTIFYSOLOIST_AUDIOBACKEND_DESC" %]
 	<select class="stdedit" name="pref_audioBackend" id="pref_audioBackend">
 		<option value="pcm-shim" [% IF prefs.pref_audioBackend != 'pulse' %]selected[% END %]>Direct-PCM shim (default; no Pulse/PipeWire server needed)</option>
