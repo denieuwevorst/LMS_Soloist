@@ -265,7 +265,9 @@ This is a newer, simpler alternative to the ALSA/apulse backend above. It
 uses a different, purpose-built `libpulse.so.0` replacement -- shipped
 unbuilt under `contrib/experimental-pcm-shim/` -- that writes Soloist's
 raw PCM straight to a FIFO instead of trying to open a real ALSA device.
-The bridge's ffmpeg capture then reads that FIFO directly. That means:
+The bridge reads that FIFO directly: WAV/PCM mode forwards it without
+ffmpeg, while FLAC/MP3 mode still uses ffmpeg only for encoding. That
+means:
 
 - No PulseAudio/PipeWire server.
 - No ALSA loopback (`snd-aloop`) card, so no `modprobe`/persistence step
@@ -277,12 +279,12 @@ The bridge's ffmpeg capture then reads that FIFO directly. That means:
   the real `soloist` binary on real hardware played a full track to the
   end and auto-advanced to the next one without stalling.
 
-It is still **experimental**: unlike the Pulse and ALSA/apulse backends,
-it has only been smoke-tested manually outside the plugin (a direct
-`LD_LIBRARY_PATH=... soloist ...` invocation), not yet run through this
-plugin's own bridge for extended or varied real-world use. The shim is
-also not prebuilt or bundled -- you build it yourself, once, on the
-target device.
+It is still **experimental**, but the full plugin path is now confirmed
+on real DietPi/LMS hardware: Soloist loads the custom shim, PCM reaches
+the per-player FIFO, and LMS plays the bridge's WAV stream without
+ffmpeg. Extended and multi-player use remain less tested than the Pulse
+backend. The shim is not prebuilt or bundled -- you build it yourself,
+once, on the target device.
 
 Setup:
 
@@ -492,6 +494,11 @@ unless your loopback card is named differently.
 
 ## Format: mp3, flac, or PCM/WAV
 
+The settings page offers a default format plus an override for each
+player. Existing installations continue to use the default until an
+override is selected. Changing one override restarts only that player's
+bridge.
+
 The `flac` option sends a native, continuous FLAC stream (`audio/flac`),
 not Ogg-FLAC. It uses fast, low-buffer encoder settings for live playback;
 select it only for players with FLAC decoding support.
@@ -500,10 +507,12 @@ The `pcm` option sends uncompressed 44.1 kHz, stereo, signed 16-bit PCM
 inside a continuous WAV stream (`audio/wav`). It avoids encoder latency and
 is intended for diagnosing or minimizing startup delay on players with
 WAV/PCM support. It uses approximately 1.4 Mbit/s, so use MP3 or FLAC when
-bandwidth matters. On this branch, PCM/WAV now also skips ffmpeg entirely:
-the bridge captures raw PCM directly (`parec` on the Pulse backend or
-`arecord` on the ALSA backend) and the built-in relay serves it as a
-streaming WAV response. To add headroom without starving LMS when the relay
+bandwidth matters. PCM/WAV skips ffmpeg entirely: the bridge captures raw
+PCM directly (`parec` on the Pulse backend, `arecord` on the ALSA backend,
+or the custom FIFO on the direct-PCM shim backend) and the built-in relay
+serves it as a streaming WAV response. LMS can apply its normal conversion
+pipeline if the selected player cannot accept WAV directly; it otherwise
+sends WAV unchanged. To add headroom without starving LMS when the relay
 queue runs dry, the PCM path now uses a real **300 ms capture buffer** on
 the input side instead (`parec --latency-msec=300` on Pulse/PipeWire or an
 equivalent `arecord` buffer on ALSA). On this branch, PCM/WAV also
@@ -517,9 +526,11 @@ stalling.
 | `flac` | Players with FLAC support | Lossless bridge encoding |
 | `pcm` | Players with WAV/PCM support | Lowest encoder latency; highest bandwidth |
 
-The **Stream format** setting applies to all selected players. Saving a
-format change restarts all selected player bridges so the new relay format
-takes effect immediately.
+The **Default stream format** applies to players whose table entry is
+**Default**. Each player can override it independently; saving restarts
+only enabled bridges whose effective format changed. MP3 and FLAC are
+encoded in the bridge with ffmpeg. PCM/WAV avoids bridge encoding and lets
+LMS decide whether that player needs its normal server-side transcoding.
 
 ## Known limitations
 

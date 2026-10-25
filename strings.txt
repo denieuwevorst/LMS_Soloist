@@ -59,10 +59,10 @@ PLUGIN_SPOTIFYSOLOIST_RELAYPORTBASE_DESC
 	EN	Each player's audio relay listens on this base plus its slot number. No separate Icecast install needed.
 
 PLUGIN_SPOTIFYSOLOIST_FORMAT
-	EN	Stream format
+	EN	Default stream format
 
 PLUGIN_SPOTIFYSOLOIST_FORMAT_DESC
-	EN	Global format used for all players. mp3 works on every Squeezebox generation, including classic fixed-firmware hardware (Boom, Classic, Receiver). flac sends a native FLAC stream and requires a player with FLAC decoding support. pcm sends uncompressed 44.1 kHz stereo 16-bit PCM in a WAV stream to minimize encoder latency; it requires WAV/PCM support and uses about 1.4 Mbit/s.
+	EN	Default format for players without an individual override in the player table above. MP3 and FLAC are encoded by ffmpeg in the bridge. PCM sends uncompressed 44.1 kHz stereo 16-bit audio in a WAV stream; with the direct-PCM shim backend it avoids ffmpeg entirely, and LMS may apply its normal per-player transcoding when a player cannot accept WAV directly.
 
 PLUGIN_SPOTIFYSOLOIST_BITRATE
 	EN	MP3 bitrate
@@ -125,7 +125,7 @@ PLUGIN_SPOTIFYSOLOIST_STOPPED
 	EN	stopped
 
 PLUGIN_SPOTIFYSOLOIST_RESTART_NOTE
-	EN	Toggling a player's checkbox takes effect immediately (starts/stops just that instance). Saving a global stream-format or MP3 bitrate change restarts all selected player instances immediately. Changes to binary paths, backend settings, port bases, the sink/device prefix, or initial Soloist volume only apply the next time an instance is (re)started.
+	EN	Toggling a player's checkbox takes effect immediately (starts/stops just that instance). Saving a player's format override restarts only that selected player. Changing the default format restarts selected players that use the default; changing MP3 bitrate restarts selected players currently using MP3. Changes to binary paths, backend settings, port bases, the sink/device prefix, or initial Soloist volume only apply the next time an instance is (re)started.
 
 PLUGIN_SPOTIFYSOLOIST_BINARY_STALE
 	EN	Soloist binary nearing expiry.
