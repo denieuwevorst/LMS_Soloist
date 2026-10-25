@@ -139,7 +139,7 @@ With `SOLOIST_SHIM_LOG=1`, a current build logs an unmistakable load marker
 before Soloist calls any PulseAudio API:
 
 ```text
-[soloist-shim] loaded build 2026-10-25.1: ...
+[soloist-shim] loaded build 2026-10-25.2: ...
 ```
 
 If the bridge confirms that it passed `SOLOIST_SHIM_LOG=1` but this marker

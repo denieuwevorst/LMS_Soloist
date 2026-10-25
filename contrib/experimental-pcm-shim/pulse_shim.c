@@ -35,6 +35,7 @@
 #include <string.h>
 #include <sys/socket.h>
 #include <sys/stat.h>
+#include <sys/time.h>
 #include <sys/un.h>
 #include <time.h>
 #include <unistd.h>
@@ -66,7 +67,7 @@ static void cfg_init(void)
 __attribute__((constructor))
 static void shim_loaded(void)
 {
-    LOG(1, "loaded build 2026-10-25.1: out=%s format=%dB rate=%d max_tlength_ms=%d",
+    LOG(1, "loaded build 2026-10-25.2: out=%s format=%dB rate=%d max_tlength_ms=%d",
         cfg.out, cfg.bytes, cfg.rate, cfg.max_tlength_ms);
 }
 
@@ -377,6 +378,17 @@ void pa_xfree(void *p) { free(p); }
 
 const char *pa_get_library_version(void) { return "16.1-soloist-lms-shim"; }
 pa_usec_t pa_rtclock_now(void) { return now_ns() / 1000; }
+struct timeval *pa_gettimeofday(struct timeval *tv)
+{
+    gettimeofday(tv, NULL);
+    return tv;
+}
+pa_usec_t pa_timeval_diff(const struct timeval *a, const struct timeval *b)
+{
+    int64_t usec = ((int64_t) a->tv_sec - (int64_t) b->tv_sec) * 1000000ll
+                 + ((int64_t) a->tv_usec - (int64_t) b->tv_usec);
+    return usec > 0 ? (pa_usec_t) usec : 0;
+}
 
 const char *pa_strerror(int error)
 {
@@ -521,7 +533,7 @@ struct pa_context {
     int err;
 };
 
-enum { OP_STREAM_OK, OP_CTX_OK, OP_SERVER_INFO, OP_SINK_INFO };
+enum { OP_STREAM_OK, OP_CTX_OK, OP_SERVER_INFO, OP_SINK_INFO, OP_SINK_INPUT_INFO };
 
 struct pa_operation {
     int refcnt;
@@ -649,6 +661,27 @@ static void op_fire(void *a)
                 ((pa_sink_info_cb_t) o->cb)(o->c, NULL, 1, o->ud);
             }
             break;
+        case OP_SINK_INPUT_INFO:
+            if (o->cb) {
+                pa_sink_input_info k;
+                memset(&k, 0, sizeof k);
+                k.index = 1;
+                k.name = "Soloist";
+                k.owner_module = PA_INVALID_INDEX;
+                k.client = 1;
+                k.sink = 0;
+                k.sample_spec.format = PA_SAMPLE_S16LE;
+                k.sample_spec.rate = 44100;
+                k.sample_spec.channels = 2;
+                pa_channel_map_init_stereo(&k.channel_map);
+                pa_cvolume_set(&k.volume, 2, PA_VOLUME_NORM);
+                k.driver = "soloist-lms-shim";
+                k.has_volume = 1;
+                k.volume_writable = 1;
+                ((pa_sink_input_info_cb_t) o->cb)(o->c, &k, 0, o->ud);
+                ((pa_sink_input_info_cb_t) o->cb)(o->c, NULL, 1, o->ud);
+            }
+            break;
         }
     }
     pa_operation_unref(o);
@@ -679,6 +712,7 @@ pa_operation *pa_context_get_server_info(pa_context *c, pa_server_info_cb_t cb, 
 pa_operation *pa_context_get_sink_info_by_name(pa_context *c, const char *n, pa_sink_info_cb_t cb, void *ud) { (void) n; return op_post(c, NULL, OP_SINK_INFO, cb, ud); }
 pa_operation *pa_context_get_sink_info_by_index(pa_context *c, uint32_t i, pa_sink_info_cb_t cb, void *ud) { (void) i; return op_post(c, NULL, OP_SINK_INFO, cb, ud); }
 pa_operation *pa_context_get_sink_info_list(pa_context *c, pa_sink_info_cb_t cb, void *ud) { return op_post(c, NULL, OP_SINK_INFO, cb, ud); }
+pa_operation *pa_context_get_sink_input_info(pa_context *c, uint32_t i, pa_sink_input_info_cb_t cb, void *ud) { (void) i; return op_post(c, NULL, OP_SINK_INPUT_INFO, cb, ud); }
 pa_operation *pa_context_subscribe(pa_context *c, pa_subscription_mask_t m, pa_context_success_cb_t cb, void *ud) { (void) m; return op_post(c, NULL, OP_CTX_OK, cb, ud); }
 pa_operation *pa_context_set_sink_input_volume(pa_context *c, uint32_t i, const pa_cvolume *v, pa_context_success_cb_t cb, void *ud)
 {
