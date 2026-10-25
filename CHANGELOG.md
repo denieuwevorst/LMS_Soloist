@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- React directly to Soloist's pushed Spotify transport events: pause/resume
+  LMS immediately for stable Spotify pause/play changes, and flush plus
+  reconnect the PCM/WAV stream at `track_changed` boundaries so next,
+  previous, and natural track transitions do not play stale buffered audio.
+
 ## 0.3.53
 
 - Make the direct-PCM shim the default audio backend for new installations

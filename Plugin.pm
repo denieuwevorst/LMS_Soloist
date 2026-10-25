@@ -943,10 +943,28 @@ sub _mergeTraceEventIntoState {
 	}
 	elsif ( $type eq 'track_changed' ) {
 		$state->{item} = $event->{item};
+		if ( ( $b->{format} || '' ) eq 'pcm' ) {
+			my $item = ref $event->{item} eq 'HASH' ? $event->{item} : {};
+			my $decorations = ref $item->{decorations} eq 'HASH' ? $item->{decorations} : {};
+			my $identity = ref $decorations->{identity} eq 'HASH' ? $decorations->{identity} : {};
+			$b->{pendingSpotifyTrackChange} = 1;
+			$b->{lastTraceFlushedTitle} = $identity->{name} // '';
+			_requestRelayFlush( $b, 'Spotify track changed' );
+		}
 		return 1;
 	}
 	elsif ( $type eq 'playback_changed' ) {
-		$state->{status} = $event->{status} if exists $event->{status};
+		if ( exists $event->{status} ) {
+			$state->{status} = $event->{status};
+			if ( $event->{status} eq 'paused' ) {
+				$b->{pendingSpotifyPause} = 1;
+				$b->{pendingSpotifyResume} = 0;
+			}
+			elsif ( $event->{status} eq 'playing' ) {
+				$b->{pendingSpotifyResume} = $b->{spotifyPauseApplied} ? 1 : 0;
+				$b->{pendingSpotifyPause} = 0;
+			}
+		}
 		return 1;
 	}
 	elsif ( $type eq 'volume_changed' ) {
@@ -1094,6 +1112,45 @@ sub _maybeApplyConfiguredVolumeOnConnect {
 	$b->{wasActiveDevice} = $playback->{isActiveDevice} ? 1 : 0;
 }
 
+sub _applySpotifyTransportEvents {
+	my ( $b, $client, $url, $playback ) = @_;
+	my $onOwnStream = _clientIsOnOwnSoloistStream( $client, $url );
+
+	if ( $b->{pendingSpotifyPause} ) {
+		$b->{pendingSpotifyPause} = 0;
+		if ( $playback->{effectiveState} eq 'paused' && $onOwnStream ) {
+			$log->info( 'pausing ' . $client->name . ' immediately after Spotify paused playback' );
+			$b->{suppressLyrionTransportUntil} = time() + 1;
+			$client->execute( [ 'pause', 1 ] );
+			$b->{spotifyPauseApplied} = 1;
+		}
+	}
+
+	if ( $b->{pendingSpotifyResume} ) {
+		$b->{pendingSpotifyResume} = 0;
+		if ( $playback->{reallyPlayingHere} && $onOwnStream ) {
+			$log->info( 'resuming ' . $client->name . ' immediately after Spotify resumed playback' );
+			$b->{suppressLyrionTransportUntil} = time() + 1;
+			$client->execute( [ 'play' ] );
+			$b->{spotifyPauseApplied} = 0;
+		}
+	}
+
+	return unless $b->{pendingSpotifyTrackChange};
+	return unless $playback->{reallyPlayingHere};
+
+	$b->{pendingSpotifyTrackChange} = 0;
+	$b->{spotifyPauseApplied} = 0;
+	return unless $onOwnStream;
+
+	# Reopen the continuous HTTP stream at the new track boundary. The relay
+	# queue was flushed as soon as track_changed arrived; reconnecting here
+	# also discards bytes already buffered by LMS/the player.
+	$log->info( 'restarting ' . $client->name . ' stream immediately after Spotify changed track' );
+	$b->{suppressLyrionTransportUntil} = time() + 1;
+	$client->execute( [ 'playlist', 'play', $url ] );
+}
+
 sub _applyPlaybackTransition {
 	my ( $playerId, $b, $client, $url, $playback ) = @_;
 
@@ -1114,6 +1171,7 @@ sub _applyPlaybackTransition {
 		$b->{idleDisconnectArmed} = 1;
 		$b->{pendingAutoplaySince} = undef;
 		$b->{wasPlayingHere} = 1;
+		$b->{spotifyPauseApplied} = 0;
 		return;
 	}
 
@@ -1257,7 +1315,12 @@ sub _publishMetadataForPlayer {
 	Slim::Control::Request::notifyFromArray( $master, ['newmetadata'] );
 
 	if ( ( $meta->{title} // '' ) ne '' && ( $meta->{title} // '' ) ne $title ) {
-		_requestRelayFlush( $b, $title );
+		if ( ( $b->{lastTraceFlushedTitle} // '' ) eq $title ) {
+			delete $b->{lastTraceFlushedTitle};
+		}
+		else {
+			_requestRelayFlush( $b, $title );
+		}
 	}
 
 	$log->debug( 'metadata updated for ' . $client->name . ": $artist - $title" );
@@ -1308,6 +1371,7 @@ sub pollMetadata {
 		# still stops immediately when the active device is lost.
 		_maybeApplyConfiguredVolumeOnConnect( $b, $playback );
 		next if _maybeDisconnectBridgeForExternalSource( $playerId, $b, $client, $url, $playback );
+		_applySpotifyTransportEvents( $b, $client, $url, $playback );
 		_applyPlaybackTransition( $playerId, $b, $client, $url, $playback );
 		_updateIdleDisconnectState( $b, $playback );
 		next if _maybeRestartIdleBridge( $playerId, $b, $client, $playback );
