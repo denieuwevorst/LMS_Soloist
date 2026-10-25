@@ -119,6 +119,7 @@ def main():
             with open(flush, "ab"):
                 pass
             os.utime(flush, None)
+            time.sleep(0.3)
             producer.join(timeout=10)
             assert not producer.is_alive()
 
