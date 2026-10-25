@@ -321,6 +321,7 @@ elif [ "$SOLOIST_AUDIO_BACKEND" = "pcm-shim" ]; then
 	CAPTURE_INPUT_ARGS=(-f s16le -ar 44100 -ac 2 -i "$SOLOIST_PCM_SHIM_FIFO")
 	SOLOIST_AUDIO_TARGET_DESC="experimental pcm-shim FIFO ${SOLOIST_PCM_SHIM_FIFO}"
 	log "using experimental pcm-shim backend from '${SOLOIST_PCM_SHIM_DIR}', raw PCM FIFO=${SOLOIST_PCM_SHIM_FIFO}"
+	log "pcm-shim settings: SOLOIST_PCM_SHIM_LOG=${SOLOIST_PCM_SHIM_LOG} (passed to Soloist as SOLOIST_SHIM_LOG), SOLOIST_SHIM_MAX_TLENGTH_MS=${SOLOIST_SHIM_MAX_TLENGTH_MS:-300}"
 else
 	# The ALSA path is intentionally opt-in: Soloist still has no native ALSA
 	# flag, so this mode uses either the bundled x86_64 libpulse shim or a
