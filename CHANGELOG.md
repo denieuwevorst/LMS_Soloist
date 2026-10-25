@@ -7,6 +7,9 @@
 - Make the direct-PCM shim the default audio backend for new installations
   and for migration from unsupported legacy backend values. Pulse/PipeWire
   remains selectable in the plugin settings.
+- Bundle the hardware-validated x86_64 `libpulse.so.0` at
+  `Bin/Shim/X86_64/` and select it automatically when no custom shim
+  directory is configured.
 
 ## 0.3.52
 

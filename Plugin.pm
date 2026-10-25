@@ -45,7 +45,7 @@ use JSON::XS qw(decode_json);
 use Proc::Background;
 use Time::HiRes ();
 use Time::Local qw(timegm);
-use POSIX qw(dup2 WNOHANG);
+use POSIX qw(dup2 WNOHANG uname);
 
 use Slim::Utils::Log;
 use Slim::Utils::Prefs;
@@ -83,7 +83,7 @@ $prefs->init({
 	pythonBin       => 'python3',
 	audioBackend    => 'pcm-shim',        # pcm-shim | pulse
 	pipewireSink    => 'soloist_sink',    # base name; each player gets _<slot> appended
-	pcmShimDir      => '',                # pcm-shim backend: directory with contrib/experimental-pcm-shim's built libpulse.so.0 (not bundled -- build it on-device first)
+	pcmShimDir      => '',                # optional override; x86_64 uses Bin/Shim/X86_64 by default
 	wsPortBase      => 9091,              # each player gets +<slot>
 	relayPortBase   => 9077,              # each player gets +<slot>
 	format          => 'mp3',             # mp3 | flac | pcm
@@ -171,13 +171,22 @@ sub currentFormatSpecForUrl {
 	return currentFormatSpec('mp3');
 }
 
+sub bundledPcmShimDir {
+	my @uname = eval { POSIX::uname() };
+	my $arch = lc( $uname[4] || '' );
+	return unless $arch eq 'x86_64' || $arch eq 'amd64';
+
+	my $dir = catdir( dirname(__FILE__), 'Bin', 'Shim', 'X86_64' );
+	return -f catfile( $dir, 'libpulse.so.0' ) ? $dir : undef;
+}
+
 sub _applySoloistExecEnv {
 	my ($b) = @_;
 	my $backend = $prefs->get('audioBackend') || 'pcm-shim';
 
 	return unless $backend eq 'pcm-shim';
 
-	my $shimDir = $b ? $b->{pcmShimDir} : $prefs->get('pcmShimDir');
+	my $shimDir = $b ? $b->{pcmShimDir} : ( $prefs->get('pcmShimDir') || bundledPcmShimDir() );
 	if ( $shimDir && length $shimDir ) {
 		$ENV{LD_LIBRARY_PATH} = length( $ENV{LD_LIBRARY_PATH} || '' )
 			? $shimDir . ':' . $ENV{LD_LIBRARY_PATH}
@@ -290,6 +299,9 @@ sub initPlugin {
 	my $backend = $prefs->get('audioBackend') || 'pcm-shim';
 	$prefs->set( 'audioBackend', 'pcm-shim' )
 		unless $backend eq 'pulse' || $backend eq 'pcm-shim';
+	my $bundledShimDir = bundledPcmShimDir();
+	$prefs->set( 'pcmShimDir', $bundledShimDir )
+		if !$prefs->get('pcmShimDir') && $bundledShimDir;
 
 	# Preserve the plugin cache tree across LMS restarts. The earlier
 	# cache-wipe logic was added to suppress stale-player state, but that
@@ -417,7 +429,7 @@ sub _configFor {
 		fifoPath   => catfile( $baseCacheDir, "player_$slot", 'audio.fifo' ),
 		relayReadyFile => catfile( $baseCacheDir, "player_$slot", 'relay.ready' ),
 		relayFlushFile => catfile( $baseCacheDir, "player_$slot", 'relay.flush' ),
-		pcmShimDir => $prefs->get('pcmShimDir'),
+		pcmShimDir => $prefs->get('pcmShimDir') || bundledPcmShimDir(),
 		pcmShimFifo => catfile( $baseCacheDir, "player_$slot", 'pcm-shim.fifo' ),
 		deviceName => $playerName . $prefs->get('deviceNameSuffix'),
 	};

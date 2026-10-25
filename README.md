@@ -66,8 +66,10 @@ Pulse backend requirements:
 
 Direct PCM shim requirements:
 
-- a C compiler, `make`, and PulseAudio development headers to build the shim
 - a Soloist build compatible with the shim's exported Pulse API subset
+- x86_64 uses the bundled `Bin/Shim/X86_64/libpulse.so.0`
+- other architectures need a C compiler, `make`, and PulseAudio development
+  headers to build the shim locally
 
 ## Installation
 
@@ -104,23 +106,31 @@ not required by the direct PCM shim backend.
 
 ## Direct PCM shim backend
 
-The source is in `contrib/experimental-pcm-shim/`. Build it on the LMS host so
-the resulting shared library matches that host:
+On x86_64, the plugin automatically uses the validated shim bundled at:
+
+```text
+Bin/Shim/X86_64/libpulse.so.0
+```
+
+No shim-directory configuration is required for the bundled binary. To
+override it, or on another architecture, build the source in
+`contrib/experimental-pcm-shim/` on the LMS host:
 
 ```bash
 cd contrib/experimental-pcm-shim
 make
 ```
 
-Move or copy that directory to a path readable and searchable by the LMS
-service account. Do not place it below `/root`; the `squeezeboxserver` user
-normally cannot traverse that directory.
+For a custom build, move or copy its directory to a path readable and
+searchable by the LMS service account. Do not place it below `/root`; the
+`squeezeboxserver` user normally cannot traverse that directory.
 
 In the plugin settings:
 
 1. Select **Experimental direct-PCM shim**.
-2. Set **Experimental PCM shim directory** to the directory containing the
-   built `libpulse.so.0`.
+2. On x86_64, keep the automatically populated bundled shim directory. For a
+   custom build, set **Experimental PCM shim directory** to the directory
+   containing the built `libpulse.so.0`.
 3. Select **PCM/WAV** for the most direct path, or MP3/FLAC if the bridge
    should encode before LMS receives the stream.
 4. Save and restart the affected bridges.
