@@ -67,9 +67,8 @@ Pulse backend requirements:
 Direct PCM shim requirements:
 
 - a Soloist build compatible with the shim's exported Pulse API subset
-- x86_64 uses the bundled `Bin/Shim/X86_64/libpulse.so.0`
-- other architectures need a C compiler, `make`, and PulseAudio development
-  headers to build the shim locally
+- a bundled shim matching the Soloist executable: x86_64, ARMv7 hard-float,
+  or ARMv8/AArch64
 
 ## Installation
 
@@ -106,14 +105,19 @@ not required by the direct PCM shim backend.
 
 ## Direct PCM shim backend
 
-On x86_64, the plugin automatically uses the validated shim bundled at:
+The plugin reads the configured Soloist executable's ELF architecture and
+automatically selects one of:
 
 ```text
-Bin/Shim/X86_64/libpulse.so.0
+Bin/X86_64/libpulse.so.0
+Bin/ARMv7/libpulse.so.0
+Bin/ARMv8_Arch64/libpulse.so.0
 ```
 
-No shim-directory configuration is required for the bundled binary. To
-override it, or on another architecture, build the source in
+If the configured Soloist path is a wrapper script, the plugin falls back to
+the host architecture reported by `uname`. No shim-directory configuration is
+required for these bundled architectures. To override the selected binary or
+support another architecture, build the source in
 `contrib/experimental-pcm-shim/` on the LMS host:
 
 ```bash
@@ -128,8 +132,8 @@ searchable by the LMS service account. Do not place it below `/root`; the
 In the plugin settings:
 
 1. Select **Experimental direct-PCM shim**.
-2. On x86_64, keep the automatically populated bundled shim directory. For a
-   custom build, set **Experimental PCM shim directory** to the directory
+2. Keep the automatically populated architecture-specific shim directory. For
+   a custom build, set **Experimental PCM shim directory** to the directory
    containing the built `libpulse.so.0`.
 3. Select **PCM/WAV** for the most direct path, or MP3/FLAC if the bridge
    should encode before LMS receives the stream.

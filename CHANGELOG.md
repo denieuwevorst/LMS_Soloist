@@ -6,6 +6,9 @@
   LMS immediately for stable Spotify pause/play changes, and flush plus
   reconnect the PCM/WAV stream at `track_changed` boundaries so next,
   previous, and natural track transitions do not play stale buffered audio.
+- Bundle the supplied ARMv7 and ARMv8/AArch64 shims alongside x86_64 and
+  select the matching directory from the Soloist ELF machine type, falling
+  back to the host architecture for wrapper-script installations.
 
 ## 0.3.53
 

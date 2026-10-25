@@ -83,7 +83,7 @@ $prefs->init({
 	pythonBin       => 'python3',
 	audioBackend    => 'pcm-shim',        # pcm-shim | pulse
 	pipewireSink    => 'soloist_sink',    # base name; each player gets _<slot> appended
-	pcmShimDir      => '',                # optional override; x86_64 uses Bin/Shim/X86_64 by default
+	pcmShimDir      => '',                # optional override; supported bundled architectures are selected automatically
 	wsPortBase      => 9091,              # each player gets +<slot>
 	relayPortBase   => 9077,              # each player gets +<slot>
 	format          => 'mp3',             # mp3 | flac | pcm
@@ -171,12 +171,42 @@ sub currentFormatSpecForUrl {
 	return currentFormatSpec('mp3');
 }
 
-sub bundledPcmShimDir {
+sub _soloistElfMachine {
+	my $path = $prefs->get('soloistBin') || '';
+	return unless -f $path;
+
+	open my $fh, '<:raw', $path or return;
+	my $header = '';
+	my $read = read $fh, $header, 20;
+	close $fh;
+	return unless defined $read && $read == 20 && substr( $header, 0, 4 ) eq "\x7fELF";
+
+	my $byteOrder = unpack( 'C', substr( $header, 5, 1 ) );
+	return unless $byteOrder == 1 || $byteOrder == 2;
+	my $machineTemplate = $byteOrder == 2 ? 'n' : 'v';
+	return unpack( $machineTemplate, substr( $header, 18, 2 ) );
+}
+
+sub _bundledPcmShimArch {
+	my $machine = _soloistElfMachine();
+	return 'X86_64'      if defined $machine && $machine == 62;
+	return 'ARMv7'       if defined $machine && $machine == 40;
+	return 'ARMv8_Arch64' if defined $machine && $machine == 183;
+
+	# A configured wrapper script has no ELF header. Fall back to the host
+	# architecture, which is correct for normal native Soloist installs.
 	my @uname = eval { POSIX::uname() };
 	my $arch = lc( $uname[4] || '' );
-	return unless $arch eq 'x86_64' || $arch eq 'amd64';
+	return 'X86_64'       if $arch eq 'x86_64' || $arch eq 'amd64';
+	return 'ARMv7'        if $arch eq 'armv7l' || $arch eq 'armv7' || $arch eq 'armhf';
+	return 'ARMv8_Arch64' if $arch eq 'aarch64' || $arch eq 'arm64';
+	return;
+}
 
-	my $dir = catdir( dirname(__FILE__), 'Bin', 'Shim', 'X86_64' );
+sub bundledPcmShimDir {
+	my $shimArch = _bundledPcmShimArch() or return;
+
+	my $dir = catdir( dirname(__FILE__), 'Bin', $shimArch );
 	return -f catfile( $dir, 'libpulse.so.0' ) ? $dir : undef;
 }
 
@@ -300,8 +330,18 @@ sub initPlugin {
 	$prefs->set( 'audioBackend', 'pcm-shim' )
 		unless $backend eq 'pulse' || $backend eq 'pcm-shim';
 	my $bundledShimDir = bundledPcmShimDir();
+	my $configuredShimDir = $prefs->get('pcmShimDir') || '';
 	$prefs->set( 'pcmShimDir', $bundledShimDir )
-		if !$prefs->get('pcmShimDir') && $bundledShimDir;
+		if $bundledShimDir
+			&& (
+				!length $configuredShimDir
+				|| $configuredShimDir =~ m{
+					(?:^|[\\/])Bin[\\/]
+					(?:Shim[\\/])?
+					(?:X86_64|ARMv7|ARMv8_Arch64)
+					[\\/]?$
+				}x
+			);
 
 	# Preserve the plugin cache tree across LMS restarts. The earlier
 	# cache-wipe logic was added to suppress stale-player state, but that

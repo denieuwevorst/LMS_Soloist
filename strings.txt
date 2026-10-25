@@ -26,7 +26,7 @@ PLUGIN_SPOTIFYSOLOIST_AUDIOBACKEND
 	EN	Audio backend
 
 PLUGIN_SPOTIFYSOLOIST_AUDIOBACKEND_DESC
-	EN	The direct-PCM shim is the default and needs no Pulse/PipeWire server. A validated x86_64 shim is bundled; other architectures can build one from contrib/experimental-pcm-shim. PipeWire/PulseAudio remains available through the established null-sink bridge.
+	EN	The direct-PCM shim is the default and needs no Pulse/PipeWire server. Validated x86_64, ARMv7, and ARMv8/AArch64 shims are bundled and selected from the Soloist executable architecture. PipeWire/PulseAudio remains available through the established null-sink bridge.
 
 PLUGIN_SPOTIFYSOLOIST_SINK
 	EN	PipeWire/PulseAudio sink name prefix
@@ -38,7 +38,7 @@ PLUGIN_SPOTIFYSOLOIST_PCMSHIMDIR
 	EN	Experimental PCM shim directory
 
 PLUGIN_SPOTIFYSOLOIST_PCMSHIMDIR_DESC
-	EN	Only used by the direct-PCM shim backend. Leave this at the bundled Bin/Shim/X86_64 directory on x86_64, or point it at a locally built libpulse.so.0 on another architecture. Each player gets its own raw-PCM FIFO automatically.
+	EN	Only used by the direct-PCM shim backend. The plugin automatically selects Bin/X86_64, Bin/ARMv7, or Bin/ARMv8_Arch64 to match the Soloist executable. Set a custom directory only to override the bundled libpulse.so.0. Each player gets its own raw-PCM FIFO automatically.
 
 PLUGIN_SPOTIFYSOLOIST_WSPORTBASE
 	EN	Control port base
