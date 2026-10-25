@@ -1,18 +1,18 @@
 # Experimental direct-PCM pulse shim (now wired in as the `pcm-shim` backend)
 
-> **Status: experimental, smoke-tested against the real Soloist binary,
-> but not yet exercised through this plugin's full bridge for extended
-> use.** This directory holds an alternative `libpulse.so.0` replacement
+> **Status: experimental, now confirmed through this plugin's complete
+> bridge on real DietPi/LMS hardware.** This directory holds an
+> alternative `libpulse.so.0` replacement
 > (`pulse_shim.c`) that is now wired in as an opt-in third audio backend
 > (`audioBackend = pcm-shim`) alongside the existing Pulse and ALSA/apulse
 > backends -- see the main `README.md`'s "Backend choices" section for how
 > to enable it. It **builds, plays audio via the included `test_client`,
 > and has been confirmed against the real `soloist` binary on real
 > hardware**, including a full automatic track-to-track transition that
-> stalls under the ALSA/apulse backend. What remains unverified is
-> extended/varied real-world use *through the plugin's own bridge*
-> (`Bin/soloist-bridge.sh`'s `pcm-shim` branch) rather than a manual
-> standalone invocation.
+> stalls under the ALSA/apulse backend. The complete plugin path is also
+> confirmed: Soloist loads this shim, raw PCM reaches the bridge FIFO,
+> and LMS plays the resulting WAV stream without ffmpeg. Extended and
+> multi-player use remain less tested than the default Pulse backend.
 
 ## Why this exists
 
@@ -29,10 +29,9 @@ This shim takes a different approach: it paces playback on a real
 monotonic clock inside its own writer thread and reports
 `pa_stream_get_time()` / `pa_stream_get_timing_info()` based on bytes
 **actually drained from its internal ring buffer**, not bytes the
-application merely handed to `pa_stream_write()`. If Soloist relies on
-either call for its own "now playing" position, that architecture should
-by construction avoid the position-races-ahead-of-output class of bug --
-but this has not been confirmed against the real binary.
+application merely handed to `pa_stream_write()`. Real-hardware testing
+against Soloist confirms that this path produces audio through LMS and
+can transition automatically between tracks.
 
 It also writes raw PCM straight to a FIFO/socket/file instead of going
 through a PipeWire/Pulse null sink or an ALSA loopback card

@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+- Direct-PCM shim: complete real-hardware validation through the plugin's
+  LMS bridge. Soloist now loads the custom shim after adding the three
+  Pulse compatibility symbols required by its up-front capability probe
+  (`pa_context_get_sink_input_info`, `pa_gettimeofday`, and
+  `pa_timeval_diff`); raw PCM reaches the per-player FIFO and WAV/PCM mode
+  plays in LMS without ffmpeg. Add load/API diagnostics, tighter startup
+  refill behavior, a 300ms playback-buffer clamp, clearer shim-path
+  permission errors, and safe rejection of overlong Unix-socket paths.
+
 ## 0.3.50
 
 - Add a third, fully wired-in **experimental direct-PCM shim** audio
@@ -9,8 +18,9 @@
   ALSA/apulse backends. Uses the `libpulse.so.0` replacement in
   `contrib/experimental-pcm-shim/` (added as an unintegrated experiment
   in a previous unreleased entry below): Soloist writes raw PCM straight
-  to a per-player FIFO this plugin creates, and the bridge's ffmpeg
-  capture reads that FIFO directly. This needs **no** Pulse/PipeWire
+  to a per-player FIFO this plugin creates. WAV/PCM mode forwards it
+  directly without ffmpeg; FLAC/MP3 mode uses ffmpeg only for encoding.
+  This needs **no** Pulse/PipeWire
   server and **no** ALSA loopback (`snd-aloop`) card at all -- the
   simplest audio path of the three. Confirmed on real hardware (DietPi,
   real `soloist` binary, not just the shim's own test client): playback

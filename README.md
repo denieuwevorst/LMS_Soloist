@@ -265,7 +265,9 @@ This is a newer, simpler alternative to the ALSA/apulse backend above. It
 uses a different, purpose-built `libpulse.so.0` replacement -- shipped
 unbuilt under `contrib/experimental-pcm-shim/` -- that writes Soloist's
 raw PCM straight to a FIFO instead of trying to open a real ALSA device.
-The bridge's ffmpeg capture then reads that FIFO directly. That means:
+The bridge reads that FIFO directly: WAV/PCM mode forwards it without
+ffmpeg, while FLAC/MP3 mode still uses ffmpeg only for encoding. That
+means:
 
 - No PulseAudio/PipeWire server.
 - No ALSA loopback (`snd-aloop`) card, so no `modprobe`/persistence step
@@ -277,12 +279,12 @@ The bridge's ffmpeg capture then reads that FIFO directly. That means:
   the real `soloist` binary on real hardware played a full track to the
   end and auto-advanced to the next one without stalling.
 
-It is still **experimental**: unlike the Pulse and ALSA/apulse backends,
-it has only been smoke-tested manually outside the plugin (a direct
-`LD_LIBRARY_PATH=... soloist ...` invocation), not yet run through this
-plugin's own bridge for extended or varied real-world use. The shim is
-also not prebuilt or bundled -- you build it yourself, once, on the
-target device.
+It is still **experimental**, but the full plugin path is now confirmed
+on real DietPi/LMS hardware: Soloist loads the custom shim, PCM reaches
+the per-player FIFO, and LMS plays the bridge's WAV stream without
+ffmpeg. Extended and multi-player use remain less tested than the Pulse
+backend. The shim is not prebuilt or bundled -- you build it yourself,
+once, on the target device.
 
 Setup:
 
