@@ -18,8 +18,12 @@ def wait_for(predicate, timeout=5):
     raise AssertionError("timed out waiting for condition")
 
 
-def connect_client(port):
-    sock = socket.create_connection(("127.0.0.1", port), timeout=5)
+def connect_client(port, receive_buffer=None):
+    sock = socket.socket()
+    if receive_buffer is not None:
+        sock.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, receive_buffer)
+    sock.settimeout(5)
+    sock.connect(("127.0.0.1", port))
     sock.sendall(b"GET /soloist.wav HTTP/1.1\r\nHost: localhost\r\n\r\n")
     received = b""
     while b"\r\n\r\n" not in received:
@@ -105,7 +109,7 @@ def main():
             assert read_exact(first, b"", 4096) == b"B" * 4096
             assert read_exact(second, b"", 4096) == b"B" * 4096
 
-            slow, _ = connect_client(port)
+            slow, _ = connect_client(port, receive_buffer=4096)
 
             def fill_slow_client():
                 with open(fifo, "wb", buffering=0) as writer:
