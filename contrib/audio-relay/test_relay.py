@@ -135,7 +135,6 @@ def main():
 
         assert process.returncode in (0, -15), (
             f"relay exited with {process.returncode}\n"
-            f"stdout:\n{stdout}\n"
             f"stderr:\n{stderr}"
         )
         assert "fifo writer went away, reopening" in stderr
