@@ -104,10 +104,14 @@ static int out_open_locked(void)
     }
     if (S_ISSOCK(st.st_mode)) {
         struct sockaddr_un a;
+        size_t path_len = strlen(cfg.out);
+        if (path_len >= sizeof a.sun_path) {
+            errno = ENAMETOOLONG;
+            return -1;
+        }
         memset(&a, 0, sizeof a);
         a.sun_family = AF_UNIX;
-        strncpy(a.sun_path, cfg.out, sizeof a.sun_path - 1);
-        a.sun_path[sizeof a.sun_path - 1] = 0;
+        memcpy(a.sun_path, cfg.out, path_len + 1);
         fd = socket(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC | SOCK_NONBLOCK, 0);
         if (fd < 0) return -1;
         if (connect(fd, (struct sockaddr *) &a, sizeof a) < 0) { close(fd); return -1; }
