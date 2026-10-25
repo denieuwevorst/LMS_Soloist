@@ -133,7 +133,11 @@ def main():
                 process.kill()
                 _, stderr = process.communicate(timeout=5)
 
-        assert process.returncode in (0, -15)
+        assert process.returncode in (0, -15), (
+            f"relay exited with {process.returncode}\n"
+            f"stdout:\n{stdout}\n"
+            f"stderr:\n{stderr}"
+        )
         assert "fifo writer went away, reopening" in stderr
         assert "flushed " in stderr
         print("audio relay behavior OK")
