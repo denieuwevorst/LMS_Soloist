@@ -362,10 +362,8 @@ static void check_flush_file(
 			clients[i].audio_len = 0;
 		}
 	}
-	if (flushed > 0) {
-		fprintf(stderr, "[relay] flushed %zu queued chunk(s)\n", flushed);
-		fflush(stderr);
-	}
+	fprintf(stderr, "[relay] flushed %zu queued chunk(s)\n", flushed);
+	fflush(stderr);
 }
 
 static void mark_ready(const config_t *cfg, int64_t *last_ready_ms)
