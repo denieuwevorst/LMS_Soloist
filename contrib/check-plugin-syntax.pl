@@ -103,4 +103,26 @@ die "Unix build epoch was not parsed\n"
 		&& $build->{epoch} == 1792994471
 		&& $build->{timestamp} eq '2026-10-26T06:01:11Z';
 
+my $probeDir = 'contrib/.version-probe-test';
+mkdir $probeDir or die "Could not create $probeDir: $!\n";
+my $probe = "$probeDir/soloist";
+open my $probeFh, '>', $probe or die "Could not create $probe: $!\n";
+print {$probeFh} <<'PROBE';
+#!/bin/sh
+echo 'soloist 1.3.10.15 build 1792994471 (20261026) (g19412df6ea) (linux/x86_64)'
+PROBE
+close $probeFh;
+chmod 0755, $probe or die "Could not make $probe executable: $!\n";
+{
+	local $SIG{CHLD} = 'IGNORE';
+	my $probeOutput =
+		Plugins::SpotifySoloist::Plugin::_captureSoloistVersionOutput($probe);
+	my $probeBuild =
+		Plugins::SpotifySoloist::Plugin::_buildInfoFromVersionOutput($probeOutput);
+	die "Version probe failed when SIGCHLD auto-reaped the child\n"
+		unless $probeBuild && $probeBuild->{epoch} == 1792994471;
+}
+unlink $probe;
+rmdir $probeDir;
+
 print "Plugin.pm and Settings.pm syntax OK\n";
