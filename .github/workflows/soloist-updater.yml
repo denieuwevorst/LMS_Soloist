@@ -38,22 +38,5 @@ jobs:
             echo "invalid archive was accepted" >&2
             exit 1
           fi
-      - uses: actions/checkout@v5
-        with:
-          repository: LMS-Community/slimserver
-          path: lms
-      - name: Check plugin Perl syntax against LMS
-        run: |
-          perl_version=$(perl -MConfig -e '$Config{version} =~ /^(\d+\.\d+)/; print $1')
-          check='BEGIN {
-            sub main::SCANNER () { 0 }
-            sub main::PERFMON () { 0 }
-            sub main::DEBUGLOG () { 0 }
-            sub main::INFOLOG () { 0 }
-            sub main::WEBUI () { 0 }
-            sub main::ISWINDOWS () { 0 }
-          } require shift'
-          arch_dir="lms/CPAN/arch/$perl_version"
-          native_dir="$arch_dir/x86_64-linux-thread-multi"
-          perl -I lms -I lms/CPAN -I "$arch_dir" -I "$native_dir" -e "$check" ./Plugin.pm
-          perl -I lms -I lms/CPAN -I "$arch_dir" -I "$native_dir" -e "$check" ./Settings.pm
+      - name: Check plugin Perl syntax
+        run: perl contrib/check-plugin-syntax.pl
