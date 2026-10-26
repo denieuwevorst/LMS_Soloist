@@ -103,6 +103,16 @@ die "Unix build epoch was not parsed\n"
 		&& $build->{epoch} == 1792994471
 		&& $build->{timestamp} eq '2026-10-26T06:01:11Z';
 
+my @plainCommand =
+	Plugins::SpotifySoloist::Plugin::_soloistCommand(
+		'contrib/check-plugin-syntax.pl',
+		'ctl',
+		'now',
+	);
+die "Non-ELF Soloist command was rewritten unexpectedly\n"
+	unless join( "\0", @plainCommand )
+		eq join( "\0", 'contrib/check-plugin-syntax.pl', 'ctl', 'now' );
+
 my $probeDir = 'contrib/.version-probe-test';
 mkdir $probeDir or die "Could not create $probeDir: $!\n";
 my $probe = "$probeDir/soloist";
