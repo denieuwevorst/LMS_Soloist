@@ -53,6 +53,7 @@ use Slim::Utils::Timers;
 use Slim::Utils::Network;
 use Slim::Utils::PluginManager;
 use Slim::Utils::Strings qw(cstring);
+use Slim::Networking::SimpleAsyncHTTP;
 use Slim::Music::Info;
 use Slim::Player::Client;
 use Slim::Player::Playlist;
@@ -75,10 +76,16 @@ use constant PLAYER_OFFLINE_STOP_DELAY => 10;   # seconds
 use constant PLAYBACK_TRANSITION_GRACE => 1.5; # seconds
 use constant RELAY_AUTOPLAY_READY_TIMEOUT => 1.0; # seconds
 use constant RELAY_AUTOPLAY_READY_MAX_AGE => 1.0; # seconds
+use constant SOLOIST_BINARY_REFRESH_AFTER_DAYS => 75;
 use constant SOLOIST_BINARY_WARN_AFTER_DAYS => 80;
+use constant SOLOIST_UPDATE_CHECK_INTERVAL => 86400;
+use constant SOLOIST_UPDATE_MAX_ARCHIVE_SIZE => 64 * 1024 * 1024;
 use constant SOLOIST_DOWNLOADS_URL          => 'https://developer.spotify.com/documentation/soloist/reference/downloads-and-updates';
+use constant SOLOIST_DOWNLOAD_BASE_URL      => 'https://soloist-builds.spotifycdn.com';
 $prefs->init({
 	soloistBin      => '/usr/local/bin/soloist',
+	managedSoloistUpdates => 0,
+	managedSoloistArch => 'auto',
 	ffmpegBin       => '/usr/bin/ffmpeg',
 	audioBackend    => 'pcm-shim',        # pcm-shim | pulse
 	pipewireSink    => 'soloist_sink',    # base name; each player gets _<slot> appended
@@ -103,6 +110,9 @@ my $baseDataDir;
 my $baseCacheDir;
 my %originalTransportCommand;    # command name -> original dispatch coderef
 my $soloistBinaryAgeWarningLogged = 0;
+my $soloistUpdatePid;
+my $soloistUpdateContext;
+my %soloistUpdateRuntime = ( state => 'idle' );
 my %pendingBridgeStartRetries;
 my %FORMAT_SPECS = (
 	mp3 => {
@@ -170,8 +180,27 @@ sub currentFormatSpecForUrl {
 	return currentFormatSpec('mp3');
 }
 
+sub _managedSoloistDir {
+	return $baseDataDir ? catdir( $baseDataDir, 'managed' ) : undef;
+}
+
+sub managedSoloistBin {
+	my $dir = _managedSoloistDir() or return;
+	return catfile( $dir, 'soloist' );
+}
+
+sub soloistBin {
+	my $configured = $prefs->get('soloistBin') || '';
+	return $configured unless $prefs->get('managedSoloistUpdates');
+
+	my $managed = managedSoloistBin();
+	return $managed if $managed && -x $managed;
+	return $configured;
+}
+
 sub _soloistElfMachine {
-	my $path = $prefs->get('soloistBin') || '';
+	my ($path) = @_;
+	$path ||= soloistBin();
 	return unless -f $path;
 
 	open my $fh, '<:raw', $path or return;
@@ -196,7 +225,8 @@ sub _hostBundledArch {
 }
 
 sub _bundledPcmShimArch {
-	my $machine = _soloistElfMachine();
+	my ($path) = @_;
+	my $machine = _soloistElfMachine($path);
 	return 'X86_64'       if defined $machine && $machine == 62;
 	return 'ARMv7'        if defined $machine && $machine == 40;
 	return 'ARMv8_Arch64' if defined $machine && $machine == 183;
@@ -214,7 +244,8 @@ sub _bundledArchitectureDir {
 }
 
 sub bundledPcmShimDir {
-	my $dir = _bundledArchitectureDir( _bundledPcmShimArch() ) or return;
+	my ($path) = @_;
+	my $dir = _bundledArchitectureDir( _bundledPcmShimArch($path) ) or return;
 	return -f catfile( $dir, 'libpulse.so.0' ) ? $dir : undef;
 }
 
@@ -225,12 +256,18 @@ sub bundledRelayBin {
 }
 
 sub _applySoloistExecEnv {
-	my ($b) = @_;
+	my ( $b, $path, $preferBundledShim ) = @_;
 	my $backend = $prefs->get('audioBackend') || 'pcm-shim';
 
 	return unless $backend eq 'pcm-shim';
 
-	my $shimDir = $b ? $b->{pcmShimDir} : ( $prefs->get('pcmShimDir') || bundledPcmShimDir() );
+	my $shimDir = $b
+		? $b->{pcmShimDir}
+		: (
+			$preferBundledShim
+				? bundledPcmShimDir($path)
+				: ( $prefs->get('pcmShimDir') || bundledPcmShimDir($path) )
+		);
 	if ( $shimDir && length $shimDir ) {
 		$ENV{LD_LIBRARY_PATH} = length( $ENV{LD_LIBRARY_PATH} || '' )
 			? $shimDir . ':' . $ENV{LD_LIBRARY_PATH}
@@ -239,7 +276,8 @@ sub _applySoloistExecEnv {
 }
 
 sub _captureSoloistVersionOutput {
-	my $path = $prefs->get('soloistBin') || '';
+	my ($path) = @_;
+	$path ||= soloistBin();
 	return unless length $path && -f $path;
 
 	my @cmd = ( $path, '--version' );
@@ -253,7 +291,7 @@ sub _captureSoloistVersionOutput {
 		if ( open( my $devnull, '>', '/dev/null' ) ) {
 			POSIX::dup2( fileno($devnull), fileno(STDERR) );
 		}
-		_applySoloistExecEnv();
+		_applySoloistExecEnv( undef, $path, 1 );
 		exec(@cmd) or exit(1);
 	}
 
@@ -280,8 +318,22 @@ sub _epochFromIso8601Utc {
 }
 
 sub soloistBinaryStatus {
-	my $path = $prefs->get('soloistBin') || '';
+	my $path = soloistBin();
+	my $configuredPath = $prefs->get('soloistBin') || '';
+	my $managedPath = managedSoloistBin() || '';
+	my %managed = (
+		managedEnabled => $prefs->get('managedSoloistUpdates') ? 1 : 0,
+		managedArch    => $prefs->get('managedSoloistArch') || 'auto',
+		managedPath    => $managedPath,
+		configuredPath => $configuredPath,
+		updateState    => $soloistUpdateRuntime{state} || 'idle',
+		updateMessage  => $soloistUpdateRuntime{message} || '',
+		lastUpdateAt   => $prefs->get('managedSoloistLastUpdateAt') || 0,
+		lastCheckAt    => $prefs->get('managedSoloistLastCheckAt') || 0,
+		lastError      => $prefs->get('managedSoloistLastError') || '',
+	);
 	return {
+		%managed,
 		path             => $path,
 		warnAfterDays    => SOLOIST_BINARY_WARN_AFTER_DAYS,
 		downloadsUrl     => SOLOIST_DOWNLOADS_URL,
@@ -289,10 +341,11 @@ sub soloistBinaryStatus {
 		stale            => 0,
 	} unless length $path && -f $path;
 
-	my $versionOutput = _captureSoloistVersionOutput();
+	my $versionOutput = _captureSoloistVersionOutput($path);
 	my ($buildTimestamp) = ( $versionOutput || '' ) =~ /(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z)/;
 	my $buildEpoch = _epochFromIso8601Utc($buildTimestamp);
 	return {
+		%managed,
 		path             => $path,
 		warnAfterDays    => SOLOIST_BINARY_WARN_AFTER_DAYS,
 		downloadsUrl     => SOLOIST_DOWNLOADS_URL,
@@ -306,6 +359,7 @@ sub soloistBinaryStatus {
 	my $stale = $ageSeconds >= SOLOIST_BINARY_WARN_AFTER_DAYS * 86400 ? 1 : 0;
 
 	return {
+		%managed,
 		path             => $path,
 		ageSeconds       => $ageSeconds,
 		ageDays          => $ageDays,
@@ -315,6 +369,270 @@ sub soloistBinaryStatus {
 		ageCheckPossible => 1,
 		stale            => $stale,
 	};
+}
+
+sub _managedSoloistArchInfo {
+	my $arch = $prefs->get('managedSoloistArch') || 'auto';
+	if ( $arch eq 'auto' ) {
+		my $host = _hostBundledArch();
+		$arch = $host eq 'X86_64'       ? 'x86_64'
+			: $host eq 'ARMv7'        ? 'arm32'
+			: $host eq 'ARMv8_Arch64' ? 'arm64'
+			: '';
+	}
+
+	my %architectures = (
+		x86_64 => { machine => 62,  archive => 'soloist_release_x86_64.tar.gz' },
+		arm32  => { machine => 40,  archive => 'soloist_release_arm32.tar.gz' },
+		arm64  => { machine => 183, archive => 'soloist_release_arm64.tar.gz' },
+	);
+	my $info = $architectures{$arch} or return;
+
+	return {
+		%$info,
+		arch => $arch,
+		url  => SOLOIST_DOWNLOAD_BASE_URL . '/' . $info->{archive},
+	};
+}
+
+sub _setSoloistUpdateState {
+	my ( $state, $message, $error ) = @_;
+	$soloistUpdateRuntime{state} = $state;
+	$soloistUpdateRuntime{message} = $message || '';
+	if ( defined $error ) {
+		$prefs->set( 'managedSoloistLastError', $error );
+	}
+}
+
+sub _cleanupSoloistUpdateFiles {
+	my $dir = _managedSoloistDir() or return;
+	unlink catfile( $dir, 'soloist-update.tar.gz' );
+	unlink catfile( $dir, 'soloist.candidate' );
+}
+
+sub _failSoloistUpdate {
+	my ($message) = @_;
+	$message ||= 'unknown update error';
+	$log->error("Soloist managed update failed: $message");
+	_setSoloistUpdateState( 'error', $message, $message );
+	_cleanupSoloistUpdateFiles();
+	$soloistUpdatePid = undef;
+	$soloistUpdateContext = undef;
+}
+
+sub _candidateBuildInfo {
+	my ($path) = @_;
+	my $output = _captureSoloistVersionOutput($path);
+	my ($timestamp) = ( $output || '' ) =~ /(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z)/;
+	my $epoch = _epochFromIso8601Utc($timestamp);
+	return unless defined $epoch;
+	return {
+		output    => $output,
+		timestamp => $timestamp,
+		epoch     => $epoch,
+	};
+}
+
+sub _installManagedSoloistCandidate {
+	my ($context) = @_;
+	my $candidate = $context->{candidate};
+	my $managed = managedSoloistBin() or return _failSoloistUpdate('managed binary path is unavailable');
+
+	return _failSoloistUpdate('the extracted candidate is missing or empty')
+		unless -f $candidate && -s $candidate > 1024 * 1024;
+	return _failSoloistUpdate('the extracted candidate exceeds the 64 MiB safety limit')
+		if -s $candidate > SOLOIST_UPDATE_MAX_ARCHIVE_SIZE;
+	return _failSoloistUpdate('the downloaded binary has the wrong ELF architecture')
+		unless ( _soloistElfMachine($candidate) || 0 ) == $context->{machine};
+
+	my $candidateBuild = _candidateBuildInfo($candidate)
+		or return _failSoloistUpdate('the downloaded binary did not pass soloist --version validation');
+	my $candidateAge = time() - $candidateBuild->{epoch};
+	return _failSoloistUpdate('the downloaded binary is already expired')
+		if $candidateAge >= 90 * 86400;
+
+	if ( -f $managed ) {
+		my $installedBuild = _candidateBuildInfo($managed);
+		if ( $installedBuild && $candidateBuild->{epoch} <= $installedBuild->{epoch} ) {
+			unlink $candidate;
+			unlink $context->{archive};
+			$prefs->set( 'managedSoloistLastCheckAt', time() );
+			$prefs->set( 'managedSoloistLastError', '' );
+			_setSoloistUpdateState( 'current', 'The managed Soloist binary is already current.' );
+			$soloistUpdatePid = undef;
+			$soloistUpdateContext = undef;
+			return;
+		}
+	}
+
+	chmod 0755, $candidate
+		or return _failSoloistUpdate("could not make the candidate executable: $!");
+
+	my $backup = "$managed.previous";
+	unlink $backup if -e $backup;
+	if ( -e $managed && !rename( $managed, $backup ) ) {
+		return _failSoloistUpdate("could not preserve the previous managed binary: $!");
+	}
+	if ( !rename( $candidate, $managed ) ) {
+		my $error = $!;
+		rename $backup, $managed if -e $backup;
+		return _failSoloistUpdate("could not install the managed binary atomically: $error");
+	}
+
+	unlink $context->{archive};
+	$prefs->set( 'managedSoloistLastCheckAt', time() );
+	$prefs->set( 'managedSoloistLastUpdateAt', time() );
+	$prefs->set( 'managedSoloistLastError', '' );
+	$soloistBinaryAgeWarningLogged = 0;
+	_setSoloistUpdateState(
+		'updated',
+		"Installed Spotify Soloist build $candidateBuild->{timestamp}."
+	);
+	$soloistUpdatePid = undef;
+	$soloistUpdateContext = undef;
+
+	my $configuredShimDir = $prefs->get('pcmShimDir') || '';
+	if ( !$configuredShimDir || $configuredShimDir =~ m{(?:^|[\\/])Bin[\\/](?:Shim[\\/])?(?:X86_64|ARMv7|ARMv8_Arch64)[\\/]?$} ) {
+		my $bundledShimDir = bundledPcmShimDir($managed);
+		$prefs->set( 'pcmShimDir', $bundledShimDir ) if $bundledShimDir;
+	}
+
+	if ( $prefs->get('managedSoloistUpdates') ) {
+		$log->info("installed managed Soloist build $candidateBuild->{timestamp}; restarting selected bridges");
+		restartBridgeForPlayer($_) for selectedPlayerIds();
+	}
+	else {
+		$log->info("installed managed Soloist build $candidateBuild->{timestamp}; managed mode is disabled");
+	}
+}
+
+sub _pollSoloistUpdateExtraction {
+	return unless $soloistUpdatePid && $soloistUpdateContext;
+
+	my $result = waitpid( $soloistUpdatePid, WNOHANG );
+	if ( $result == 0 ) {
+		Slim::Utils::Timers::setTimer( undef, time() + 0.25, \&_pollSoloistUpdateExtraction );
+		return;
+	}
+	if ( $result < 0 ) {
+		return _failSoloistUpdate("could not wait for the archive extractor: $!");
+	}
+
+	my $exitStatus = $? >> 8;
+	return _failSoloistUpdate("archive extraction exited with status $exitStatus")
+		if $exitStatus != 0;
+
+	_installManagedSoloistCandidate($soloistUpdateContext);
+}
+
+sub _managedSoloistDownloadError {
+	my ( $http, $error ) = @_;
+	_failSoloistUpdate( 'download failed: ' . ( $error || $http->error || 'unknown HTTP error' ) );
+}
+
+sub _managedSoloistDownloadComplete {
+	my ($http) = @_;
+	my $context = $http->params('updateContext') || {};
+	my $archive = $context->{archive} || '';
+
+	return _failSoloistUpdate( 'Spotify CDN returned HTTP ' . ( $http->code || 'unknown' ) )
+		unless ( $http->code || '' ) =~ /^2\d\d$/;
+	return _failSoloistUpdate('the downloaded archive is missing or empty')
+		unless -f $archive && -s $archive;
+	return _failSoloistUpdate('the downloaded archive exceeds the 64 MiB safety limit')
+		if -s $archive > SOLOIST_UPDATE_MAX_ARCHIVE_SIZE;
+
+	my $contentLength = eval { $http->headers->content_length() };
+	return _failSoloistUpdate("download size mismatch: expected $contentLength bytes")
+		if $contentLength && -s $archive != $contentLength;
+
+	my $extractor = catfile( dirname(__FILE__), 'Bin', 'extract-soloist-update.sh' );
+	return _failSoloistUpdate("archive extractor not found at $extractor") unless -f $extractor;
+
+	_setSoloistUpdateState( 'installing', 'Validating the downloaded Soloist binary.' );
+	my $pid = fork();
+	return _failSoloistUpdate("could not start archive extraction: $!") unless defined $pid;
+	if ( $pid == 0 ) {
+		exec( '/bin/bash', $extractor, $archive, $context->{candidate} ) or exit(127);
+	}
+
+	$soloistUpdatePid = $pid;
+	$soloistUpdateContext = $context;
+	Slim::Utils::Timers::setTimer( undef, time() + 0.25, \&_pollSoloistUpdateExtraction );
+}
+
+sub requestManagedSoloistUpdate {
+	return 0 unless $prefs->get('managedSoloistUpdates');
+	return 0 if $soloistUpdatePid || ( $soloistUpdateRuntime{state} || '' ) =~ /^(?:downloading|installing)$/;
+
+	my $arch = _managedSoloistArchInfo();
+	unless ($arch) {
+		_failSoloistUpdate('could not determine a supported Soloist download architecture');
+		return 0;
+	}
+
+	my $dir = _managedSoloistDir();
+	eval { make_path($dir) };
+	if ($@) {
+		_failSoloistUpdate("could not create the managed binary directory: $@");
+		return 0;
+	}
+	my $archive = catfile( $dir, 'soloist-update.tar.gz' );
+	my $candidate = catfile( $dir, 'soloist.candidate' );
+	unlink $archive;
+	unlink $candidate;
+
+	$prefs->set( 'managedSoloistLastCheckAt', time() );
+	$prefs->set( 'managedSoloistLastError', '' );
+	_setSoloistUpdateState( 'downloading', "Downloading Spotify Soloist for $arch->{arch}." );
+	my $http = Slim::Networking::SimpleAsyncHTTP->new(
+		\&_managedSoloistDownloadComplete,
+		\&_managedSoloistDownloadError,
+		{
+			saveAs       => $archive,
+			maxRedirect  => 3,
+			updateContext => {
+				archive   => $archive,
+				candidate => $candidate,
+				machine   => $arch->{machine},
+				arch      => $arch->{arch},
+			},
+		}
+	);
+	$http->get( $arch->{url} );
+	return 1;
+}
+
+sub checkManagedSoloistUpdate {
+	Slim::Utils::Timers::killTimers( undef, \&checkManagedSoloistUpdate );
+	Slim::Utils::Timers::setTimer(
+		undef,
+		time() + SOLOIST_UPDATE_CHECK_INTERVAL,
+		\&checkManagedSoloistUpdate
+	);
+	return unless $prefs->get('managedSoloistUpdates');
+	return if $soloistUpdatePid || ( $soloistUpdateRuntime{state} || '' ) =~ /^(?:downloading|installing)$/;
+
+	my $lastCheck = $prefs->get('managedSoloistLastCheckAt') || 0;
+	if ( $lastCheck && time() - $lastCheck < SOLOIST_UPDATE_CHECK_INTERVAL ) {
+		Slim::Utils::Timers::killTimers( undef, \&checkManagedSoloistUpdate );
+		Slim::Utils::Timers::setTimer(
+			undef,
+			$lastCheck + SOLOIST_UPDATE_CHECK_INTERVAL + 1,
+			\&checkManagedSoloistUpdate
+		);
+		return;
+	}
+
+	my $managed = managedSoloistBin();
+	return requestManagedSoloistUpdate() unless $managed && -x $managed;
+
+	my $status = soloistBinaryStatus();
+	return
+		if $status->{ageCheckPossible}
+			&& $status->{ageSeconds} < SOLOIST_BINARY_REFRESH_AFTER_DAYS * 86400;
+
+	requestManagedSoloistUpdate();
 }
 
 sub _maybeWarnAboutSoloistBinaryAge {
@@ -423,10 +741,19 @@ sub initPlugin {
 		Slim::Utils::Timers::setTimer( undef, time() + 2, \&reconcileBridges );
 	}
 
+	Slim::Utils::Timers::setTimer( undef, time() + 10, \&checkManagedSoloistUpdate );
 	Slim::Utils::Timers::setTimer( undef, time() + 5, \&pollMetadata );
 }
 
 sub shutdownPlugin {
+	Slim::Utils::Timers::killTimers( undef, \&checkManagedSoloistUpdate );
+	Slim::Utils::Timers::killTimers( undef, \&_pollSoloistUpdateExtraction );
+	if ($soloistUpdatePid) {
+		kill 'TERM', $soloistUpdatePid;
+		waitpid( $soloistUpdatePid, 0 );
+		$soloistUpdatePid = undef;
+		$soloistUpdateContext = undef;
+	}
 	stopBridgeForPlayer($_) for keys %bridges;
 }
 
@@ -619,7 +946,7 @@ sub _startBridge {
 	# post-restart recovery of an already-playing device less reliable.
 	make_path( $cfg->{dataDir}, $cfg->{cacheDir} );
 
-	local $ENV{SOLOIST_BIN}       = $prefs->get('soloistBin');
+	local $ENV{SOLOIST_BIN}       = soloistBin();
 	local $ENV{FFMPEG_BIN}        = $prefs->get('ffmpegBin');
 	local $ENV{RELAY_BIN}         = $cfg->{relayBin};
 	local $ENV{SOLOIST_AUDIO_BACKEND} = $cfg->{backend};
@@ -756,7 +1083,7 @@ sub _bridgeForSoloistStream {
 
 sub _runSoloistCtl {
 	my ($b, @args) = @_;
-	my @cmd = ( $prefs->get('soloistBin'), 'ctl', '-w', "127.0.0.1:$b->{wsPort}", @args );
+	my @cmd = ( soloistBin(), 'ctl', '-w', "127.0.0.1:$b->{wsPort}", @args );
 
 	my $pid = open( my $fh, '-|' );
 	if ( !defined $pid ) {
@@ -894,7 +1221,7 @@ sub selectedPlayerIds {
 sub _fetchNowPlaying {
 	my ($wsPort) = @_;
 	my $ws = "127.0.0.1:$wsPort";
-	my @cmd = ( $prefs->get('soloistBin'), 'ctl', '-w', $ws, 'now', '--json' );
+	my @cmd = ( soloistBin(), 'ctl', '-w', $ws, 'now', '--json' );
 
 	my $pid = open( my $fh, '-|' );
 	if ( !defined $pid ) {
@@ -949,7 +1276,7 @@ sub _startTraceObserver {
 	return if time() - ( $b->{lastTraceStartAttempt} || 0 ) < TRACE_RESTART_DELAY;
 
 	$b->{lastTraceStartAttempt} = time();
-	my @cmd = ( $prefs->get('soloistBin'), 'ctl', '-w', "127.0.0.1:$b->{wsPort}", 'trace' );
+	my @cmd = ( soloistBin(), 'ctl', '-w', "127.0.0.1:$b->{wsPort}", 'trace' );
 
 	my $pid = open( my $fh, '-|' );
 	if ( !defined $pid ) {

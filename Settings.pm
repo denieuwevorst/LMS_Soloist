@@ -22,7 +22,8 @@ sub page {
 
 sub prefs {
 	return ( $prefs, qw(
-		soloistBin ffmpegBin audioBackend pipewireSink pcmShimDir wsPortBase relayPortBase
+		soloistBin managedSoloistUpdates managedSoloistArch
+		ffmpegBin audioBackend pipewireSink pcmShimDir wsPortBase relayPortBase
 		format bitrate initialVolume deviceNameSuffix apiKey relayBind autostart
 		idleDisconnectSeconds
 	) );
@@ -37,6 +38,7 @@ sub handler {
 
 	if ( $params->{saveSettings} ) {
 		$params->{pref_autostart} ||= 0;
+		$params->{pref_managedSoloistUpdates} ||= 0;
 
 		# Diff old vs new selection and start/stop exactly the players that
 		# changed -- same pattern ShairTunes2's Settings.pm uses (their
@@ -56,6 +58,11 @@ sub handler {
 		my $newBackend      = $params->{pref_audioBackend} || $oldBackend;
 		my $oldPcmShimDir   = $prefs->get('pcmShimDir') || '';
 		my $newPcmShimDir   = $params->{pref_pcmShimDir} || '';
+		my $oldManagedUpdates = $prefs->get('managedSoloistUpdates') ? 1 : 0;
+		my $newManagedUpdates = $params->{pref_managedSoloistUpdates} ? 1 : 0;
+		my $oldManagedArch = $prefs->get('managedSoloistArch') || 'auto';
+		my $newManagedArch = $params->{pref_managedSoloistArch} || 'auto';
+		$newManagedArch = 'auto' unless $newManagedArch =~ /^(?:auto|x86_64|arm32|arm64)$/;
 		my @toStart;
 		my @toStop;
 		my @toRestart;
@@ -94,6 +101,7 @@ sub handler {
 					$oldFormat ne $newFormat ||
 					$oldBackend ne $newBackend ||
 					$oldPcmShimDir ne $newPcmShimDir ||
+					( $oldManagedUpdates && !$newManagedUpdates ) ||
 					(
 						$newFormat eq 'mp3' &&
 						$oldBitrate ne $newBitrate
@@ -108,13 +116,28 @@ sub handler {
 		$prefs->set( 'playerFormatOverrides', $newPlayerFormats );
 		$prefs->set( 'format',  $newGlobalFormat );
 		$prefs->set( 'bitrate', $newBitrate );
+		$prefs->set( 'managedSoloistUpdates', $newManagedUpdates );
+		$prefs->set( 'managedSoloistArch', $newManagedArch );
 
 		Plugins::SpotifySoloist::Plugin::stopBridgeForPlayer($_)    for @toStop;
 		Plugins::SpotifySoloist::Plugin::startBridgeForPlayer($_)   for @toStart;
 		Plugins::SpotifySoloist::Plugin::restartBridgeForPlayer($_) for @toRestart;
+
+		if (
+			$newManagedUpdates &&
+			(
+				!$oldManagedUpdates ||
+				$oldManagedArch ne $newManagedArch
+			)
+		) {
+			Plugins::SpotifySoloist::Plugin::requestManagedSoloistUpdate();
+		}
 	}
 
-	if ( $params->{startAll} ) {
+	if ( $params->{updateSoloistNow} ) {
+		Plugins::SpotifySoloist::Plugin::requestManagedSoloistUpdate();
+	}
+	elsif ( $params->{startAll} ) {
 		Plugins::SpotifySoloist::Plugin::reconcileBridges();
 	}
 	elsif ( $params->{stopAll} ) {

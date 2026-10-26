@@ -79,7 +79,8 @@ to LMS's plugin directory. Restart LMS, then open:
 
 Configure:
 
-- **Soloist binary path**
+- **Managed Soloist updates** (recommended), or a manually installed
+  **Soloist binary path**
 - **Soloist API key**
 - **Audio backend**
 - the players that should receive a Spotify Connect device
@@ -87,6 +88,25 @@ Configure:
 
 Each selected player receives stable control and relay ports based on its saved
 slot.
+
+### Managed Soloist updates
+
+Spotify Soloist builds expire 90 days after their build timestamp. Managed
+updates are opt-in. When enabled, the plugin:
+
+- downloads the selected Linux architecture directly from Spotify's official
+  CDN (the binary is never redistributed with this plugin)
+- keeps the configured manual binary path unchanged as a fallback
+- installs the managed executable under the plugin's persistent data directory
+- validates the archive entry, ELF architecture, executable mode, and
+  `soloist --version` build timestamp before an atomic replacement
+- retains the previous managed executable for rollback
+- checks daily and refreshes builds after 75 days, then restarts selected
+  bridges only after a successful update
+
+Use the architecture override only when a 64-bit ARM host intentionally runs
+the 32-bit ARM Soloist build. Failed downloads or validation leave the current
+binary running and are reported on the plugin settings page.
 
 ## PulseAudio/PipeWire backend
 
