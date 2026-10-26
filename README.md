@@ -101,6 +101,12 @@ updates are opt-in. When enabled, the plugin:
 - validates the archive entry, ELF architecture, executable mode, and
   `soloist --version` build timestamp before an atomic replacement
 - retains the previous managed executable for rollback
+
+Current Spotify builds require glibc 2.38 or newer. The plugin includes a
+private architecture-matched glibc runtime for Soloist so older hosts such as
+piCorePlayer can run it without replacing their system libraries. LMS, the
+audio relay, and all other processes continue using the host runtime. Runtime
+provenance and license information is documented in `Bin/GLIBC-RUNTIME.md`.
 - checks daily and refreshes builds after 75 days, then restarts selected
   bridges only after a successful update
 

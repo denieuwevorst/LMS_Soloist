@@ -27,6 +27,7 @@
 #                     RELAY_READY_FILE RELAY_FLUSH_FILE FFMPEG_BIN
 #                     SOLOIST_PCM_SHIM_DIR
 #                     SOLOIST_PCM_SHIM_FIFO SOLOIST_PCM_SHIM_LOG
+#                     SOLOIST_RUNTIME_LIB_DIR SOLOIST_RUNTIME_LOADER
 
 set -u
 
@@ -51,6 +52,8 @@ RELAY_BIN="${RELAY_BIN:-}"
 SOLOIST_PCM_SHIM_DIR="${SOLOIST_PCM_SHIM_DIR:-}"
 SOLOIST_PCM_SHIM_FIFO="${SOLOIST_PCM_SHIM_FIFO:-}"
 SOLOIST_PCM_SHIM_LOG="${SOLOIST_PCM_SHIM_LOG:-0}"
+SOLOIST_RUNTIME_LIB_DIR="${SOLOIST_RUNTIME_LIB_DIR:-}"
+SOLOIST_RUNTIME_LOADER="${SOLOIST_RUNTIME_LOADER:-}"
 WS_ENDPOINT="127.0.0.1:${WS_PORT}"
 
 mkdir -p "$SOLOIST_DATA_DIR" "$SOLOIST_CACHE_DIR"
@@ -225,6 +228,25 @@ fi
 # 2. Launch Soloist
 # ---------------------------------------------------------------------------
 log "starting soloist: device='${DEVICE_NAME}' backend=${SOLOIST_AUDIO_BACKEND} target='${SOLOIST_AUDIO_TARGET_DESC}' ws=${WS_ENDPOINT} data-dir=${SOLOIST_DATA_DIR}"
+if [ -n "$SOLOIST_RUNTIME_LOADER" ]; then
+	if [ ! -f "$SOLOIST_RUNTIME_LOADER" ] || [ ! -x "$SOLOIST_RUNTIME_LOADER" ]; then
+		log "ERROR: bundled Soloist runtime loader is unavailable at '$SOLOIST_RUNTIME_LOADER'"
+		exit 1
+	fi
+	if [ ! -d "$SOLOIST_RUNTIME_LIB_DIR" ]; then
+		log "ERROR: bundled Soloist runtime directory is unavailable at '$SOLOIST_RUNTIME_LIB_DIR'"
+		exit 1
+	fi
+	if [ "$SOLOIST_AUDIO_BACKEND" = "pcm-shim" ]; then
+		SOLOIST_LIBRARY_PATH="${SOLOIST_PCM_SHIM_DIR}:${SOLOIST_RUNTIME_LIB_DIR}"
+	else
+		SOLOIST_LIBRARY_PATH="$SOLOIST_RUNTIME_LIB_DIR"
+	fi
+	set -- "$SOLOIST_RUNTIME_LOADER" --library-path "$SOLOIST_LIBRARY_PATH" "$SOLOIST_BIN"
+else
+	set -- "$SOLOIST_BIN"
+fi
+
 if [ "$SOLOIST_AUDIO_BACKEND" = "pcm-shim" ]; then
 	SOLOIST_SHIM_MAX_TLENGTH_MS="${SOLOIST_SHIM_MAX_TLENGTH_MS:-300}"
 	# The shim defaults to s24 (packed) output if SOLOIST_SHIM_FORMAT is
@@ -237,14 +259,14 @@ if [ "$SOLOIST_AUDIO_BACKEND" = "pcm-shim" ]; then
 		SOLOIST_SHIM_RATE=44100 \
 		SOLOIST_SHIM_LOG="$SOLOIST_PCM_SHIM_LOG" \
 		SOLOIST_SHIM_MAX_TLENGTH_MS="$SOLOIST_SHIM_MAX_TLENGTH_MS" \
-		"$SOLOIST_BIN" \
+		"$@" \
 		--device-name "$DEVICE_NAME" \
 		--api-key "$SOLOIST_API_KEY" \
 		--data-dir "$SOLOIST_DATA_DIR" \
 		--cache-dir "$SOLOIST_CACHE_DIR" \
 		--ws "$WS_ENDPOINT" &
 else
-	"$SOLOIST_BIN" \
+	"$@" \
 		--device-name "$DEVICE_NAME" \
 		--api-key "$SOLOIST_API_KEY" \
 		--data-dir "$SOLOIST_DATA_DIR" \
@@ -280,7 +302,7 @@ fi
 # Set the Connect session's baseline at startup. Plugin.pm also reapplies
 # that configured level whenever this Soloist device later becomes active
 # again, so reconnects don't inherit an old Spotify-side session volume.
-if "$SOLOIST_BIN" ctl -w "$WS_ENDPOINT" volume "$SOLOIST_INITIAL_VOLUME" >/dev/null 2>&1; then
+if "$@" ctl -w "$WS_ENDPOINT" volume "$SOLOIST_INITIAL_VOLUME" >/dev/null 2>&1; then
 	log "set Soloist session volume to ${SOLOIST_INITIAL_VOLUME}%"
 else
 	log "WARNING: couldn't set initial Soloist session volume on ${WS_ENDPOINT}"

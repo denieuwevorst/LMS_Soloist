@@ -251,6 +251,29 @@ sub bundledPcmShimDir {
 	return -f catfile( $dir, 'libpulse.so.0' ) ? $dir : undef;
 }
 
+sub bundledSoloistRuntime {
+	my ($path) = @_;
+	my $machine = _soloistElfMachine($path);
+	my $arch =
+		defined $machine && $machine == 62  ? 'X86_64' :
+		defined $machine && $machine == 40  ? 'ARMv7' :
+		defined $machine && $machine == 183 ? 'ARMv8_Arch64' :
+		undef;
+	return unless $arch;
+	my %loaders = (
+		X86_64       => 'ld-linux-x86-64.so.2',
+		ARMv7        => 'ld-linux-armhf.so.3',
+		ARMv8_Arch64 => 'ld-linux-aarch64.so.1',
+	);
+	my $runtimeDir = catdir( dirname(__FILE__), 'Bin', $arch, 'glibc' );
+	my $loader = catfile( $runtimeDir, $loaders{$arch} || '' );
+	return unless -f $loader && -f catfile( $runtimeDir, 'libc.so.6');
+	return {
+		dir    => $runtimeDir,
+		loader => $loader,
+	};
+}
+
 sub bundledRelayBin {
 	my $dir = _bundledArchitectureDir( _hostBundledArch() ) or return;
 	my $relay = catfile( $dir, 'audio-relay' );
@@ -286,7 +309,21 @@ sub _captureSoloistVersionOutput {
 		return;
 	}
 
-	my @cmd = ( $path, '--version' );
+	my $runtime = bundledSoloistRuntime($path);
+	my $shimDir = bundledPcmShimDir($path);
+	my @libraryDirs = grep { defined $_ && length $_ } (
+		$shimDir,
+		$runtime ? $runtime->{dir} : undef,
+	);
+	my @cmd = $runtime
+		? (
+			$runtime->{loader},
+			'--library-path',
+			join( ':', @libraryDirs ),
+			$path,
+			'--version',
+		)
+		: ( $path, '--version' );
 	my $pid = open( my $fh, '-|' );
 	if ( !defined $pid ) {
 		$soloistVersionProbeError = "could not start the version probe: $!";
@@ -857,6 +894,7 @@ sub _configFor {
 	my $slot = _slotFor($playerId);
 	my $backend = $prefs->get('audioBackend') || 'pcm-shim';
 	$backend = 'pcm-shim' unless $backend eq 'pulse' || $backend eq 'pcm-shim';
+	my $runtime = bundledSoloistRuntime( soloistBin() );
 
 	return {
 		slot       => $slot,
@@ -872,6 +910,8 @@ sub _configFor {
 		relayFlushFile => catfile( $baseCacheDir, "player_$slot", 'relay.flush' ),
 		pcmShimDir => $prefs->get('pcmShimDir') || bundledPcmShimDir(),
 		pcmShimFifo => catfile( $baseCacheDir, "player_$slot", 'pcm-shim.fifo' ),
+		runtimeDir => $runtime ? $runtime->{dir} : '',
+		runtimeLoader => $runtime ? $runtime->{loader} : '',
 		relayBin => bundledRelayBin(),
 		deviceName => $playerName . $prefs->get('deviceNameSuffix'),
 	};
@@ -1026,6 +1066,8 @@ sub _startBridge {
 	local $ENV{RELAY_FLUSH_FILE}  = $cfg->{relayFlushFile};
 	local $ENV{SOLOIST_PCM_SHIM_DIR}  = $cfg->{pcmShimDir};
 	local $ENV{SOLOIST_PCM_SHIM_FIFO} = $cfg->{pcmShimFifo};
+	local $ENV{SOLOIST_RUNTIME_LIB_DIR} = $cfg->{runtimeDir};
+	local $ENV{SOLOIST_RUNTIME_LOADER}  = $cfg->{runtimeLoader};
 
 	$log->info( "starting soloist bridge for player '" . $client->name . "' (device='$cfg->{deviceName}', slot=$cfg->{slot})" );
 
