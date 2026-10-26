@@ -299,15 +299,6 @@ else
 	log "soloist exited immediately or wasn't ready within 2s -- check API key / binary path / glibc compatibility"
 fi
 
-# Set the Connect session's baseline at startup. Plugin.pm also reapplies
-# that configured level whenever this Soloist device later becomes active
-# again, so reconnects don't inherit an old Spotify-side session volume.
-if "$@" ctl -w "$WS_ENDPOINT" volume "$SOLOIST_INITIAL_VOLUME" >/dev/null 2>&1; then
-	log "set Soloist session volume to ${SOLOIST_INITIAL_VOLUME}%"
-else
-	log "WARNING: couldn't set initial Soloist session volume on ${WS_ENDPOINT}"
-fi
-
 # Explicitly route Soloist's PulseAudio stream to our sink, safe under
 # concurrent per-player instances (unlike relying on "default sink" -- see
 # comment above). Real PipeWire with --pipewire-device already routes
@@ -441,6 +432,14 @@ for _try in $(seq 1 10); do
 		break
 	fi
 	if [ -f "$RELAY_READY_FILE" ]; then
+		RELAY_READY=1
+		break
+	fi
+	# The relay's readiness marker intentionally means that the first audio
+	# bytes have arrived. Capture starts below, so waiting only for that marker
+	# here would deadlock. Surviving two poll intervals confirms the listener
+	# did not fail immediately on bind or architecture startup.
+	if [ "$_try" -ge 2 ]; then
 		RELAY_READY=1
 		break
 	fi

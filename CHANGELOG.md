@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.3.62
+
+- Route every LMS-side Soloist control, metadata, and trace invocation through
+  the private architecture-matched runtime instead of using it only for the
+  main process and version validation.
+- Remove the redundant bridge-side startup volume command and avoid waiting
+  for the relay's first-audio marker before the capture pipeline has started.
+
 ## 0.3.61
 
 - Avoid Perl's misleading "Statement unlikely to be reached" startup warning

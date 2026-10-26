@@ -274,6 +274,25 @@ sub bundledSoloistRuntime {
 	};
 }
 
+sub _soloistCommand {
+	my ( $path, @args ) = @_;
+	my $runtime = bundledSoloistRuntime($path);
+	return ( $path, @args ) unless $runtime;
+
+	my $shimDir = bundledPcmShimDir($path);
+	my @libraryDirs = grep { defined $_ && length $_ } (
+		$shimDir,
+		$runtime->{dir},
+	);
+	return (
+		$runtime->{loader},
+		'--library-path',
+		join( ':', @libraryDirs ),
+		$path,
+		@args,
+	);
+}
+
 sub bundledRelayBin {
 	my $dir = _bundledArchitectureDir( _hostBundledArch() ) or return;
 	my $relay = catfile( $dir, 'audio-relay' );
@@ -309,21 +328,7 @@ sub _captureSoloistVersionOutput {
 		return;
 	}
 
-	my $runtime = bundledSoloistRuntime($path);
-	my $shimDir = bundledPcmShimDir($path);
-	my @libraryDirs = grep { defined $_ && length $_ } (
-		$shimDir,
-		$runtime ? $runtime->{dir} : undef,
-	);
-	my @cmd = $runtime
-		? (
-			$runtime->{loader},
-			'--library-path',
-			join( ':', @libraryDirs ),
-			$path,
-			'--version',
-		)
-		: ( $path, '--version' );
+	my @cmd = _soloistCommand( $path, '--version' );
 	my $pid = open( my $fh, '-|' );
 	if ( !defined $pid ) {
 		$soloistVersionProbeError = "could not start the version probe: $!";
@@ -1183,7 +1188,13 @@ sub _bridgeForSoloistStream {
 
 sub _runSoloistCtl {
 	my ($b, @args) = @_;
-	my @cmd = ( soloistBin(), 'ctl', '-w', "127.0.0.1:$b->{wsPort}", @args );
+	my @cmd = _soloistCommand(
+		soloistBin(),
+		'ctl',
+		'-w',
+		"127.0.0.1:$b->{wsPort}",
+		@args,
+	);
 
 	my $pid = open( my $fh, '-|' );
 	if ( !defined $pid ) {
@@ -1321,7 +1332,14 @@ sub selectedPlayerIds {
 sub _fetchNowPlaying {
 	my ($wsPort) = @_;
 	my $ws = "127.0.0.1:$wsPort";
-	my @cmd = ( soloistBin(), 'ctl', '-w', $ws, 'now', '--json' );
+	my @cmd = _soloistCommand(
+		soloistBin(),
+		'ctl',
+		'-w',
+		$ws,
+		'now',
+		'--json',
+	);
 
 	my $pid = open( my $fh, '-|' );
 	if ( !defined $pid ) {
@@ -1376,7 +1394,13 @@ sub _startTraceObserver {
 	return if time() - ( $b->{lastTraceStartAttempt} || 0 ) < TRACE_RESTART_DELAY;
 
 	$b->{lastTraceStartAttempt} = time();
-	my @cmd = ( soloistBin(), 'ctl', '-w', "127.0.0.1:$b->{wsPort}", 'trace' );
+	my @cmd = _soloistCommand(
+		soloistBin(),
+		'ctl',
+		'-w',
+		"127.0.0.1:$b->{wsPort}",
+		'trace',
+	);
 
 	my $pid = open( my $fh, '-|' );
 	if ( !defined $pid ) {
