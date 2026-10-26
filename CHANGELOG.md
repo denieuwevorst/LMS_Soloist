@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+- Capture both stdout and stderr from `soloist --version` when validating a
+  managed download. Current Spotify builds emit version information on stderr,
+  which caused an otherwise valid binary to be rejected.
+
 ## 0.3.56
 
 - Accept a fully published managed-update candidate when LMS has already

@@ -288,9 +288,7 @@ sub _captureSoloistVersionOutput {
 	}
 
 	if ( $pid == 0 ) {
-		if ( open( my $devnull, '>', '/dev/null' ) ) {
-			POSIX::dup2( fileno($devnull), fileno(STDERR) );
-		}
+		POSIX::dup2( fileno(STDOUT), fileno(STDERR) );
 		_applySoloistExecEnv( undef, $path, 1 );
 		exec(@cmd) or exit(1);
 	}
