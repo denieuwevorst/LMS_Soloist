@@ -70,17 +70,17 @@ jobs:
           - archive: arm32
             directory: ARMv7
             loader: ld-linux-armhf.so.3
-            emulator: qemu-arm-static
+            emulator: qemu-arm
           - archive: arm64
             directory: ARMv8_Arch64
             loader: ld-linux-aarch64.so.1
-            emulator: qemu-aarch64-static
+            emulator: qemu-aarch64
     steps:
       - uses: actions/checkout@v5
       - name: Install user-mode ARM emulation
         run: |
           sudo apt-get update -qq
-          sudo apt-get install -y -qq qemu-user-static
+          sudo apt-get install -y -qq qemu-user
       - name: Validate official Soloist with private runtime
         run: |
           set -eu
