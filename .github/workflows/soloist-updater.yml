@@ -45,5 +45,12 @@ jobs:
       - name: Check plugin Perl syntax against LMS
         run: |
           perl_version=$(perl -MConfig -e '$Config{version} =~ /^(\d+\.\d+)/; print $1')
-          perl -I lms -I lms/CPAN -I "lms/CPAN/arch/$perl_version" -c Plugin.pm
-          perl -I lms -I lms/CPAN -I "lms/CPAN/arch/$perl_version" -c Settings.pm
+          check='BEGIN {
+            sub main::SCANNER () { 0 }
+            sub main::PERFMON () { 0 }
+            sub main::DEBUGLOG () { 0 }
+            sub main::INFOLOG () { 0 }
+            sub main::WEBUI () { 0 }
+          } require shift'
+          perl -I lms -I lms/CPAN -I "lms/CPAN/arch/$perl_version" -e "$check" ./Plugin.pm
+          perl -I lms -I lms/CPAN -I "lms/CPAN/arch/$perl_version" -e "$check" ./Settings.pm
