@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.3.55
 
 - Add opt-in managed Soloist updates. Download the selected Linux build
   directly from Spotify's official CDN, validate its archive entry, ELF
