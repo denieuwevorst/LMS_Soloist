@@ -53,5 +53,7 @@ jobs:
             sub main::WEBUI () { 0 }
             sub main::ISWINDOWS () { 0 }
           } require shift'
-          perl -I lms -I lms/CPAN -I "lms/CPAN/arch/$perl_version" -e "$check" ./Plugin.pm
-          perl -I lms -I lms/CPAN -I "lms/CPAN/arch/$perl_version" -e "$check" ./Settings.pm
+          arch_dir="lms/CPAN/arch/$perl_version"
+          native_dir="$arch_dir/x86_64-linux-thread-multi"
+          perl -I lms -I lms/CPAN -I "$arch_dir" -I "$native_dir" -e "$check" ./Plugin.pm
+          perl -I lms -I lms/CPAN -I "$arch_dir" -I "$native_dir" -e "$check" ./Settings.pm
