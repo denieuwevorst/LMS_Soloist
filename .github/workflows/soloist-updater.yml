@@ -9,6 +9,7 @@ on:
       - "Settings.pm"
       - "HTML/EN/plugins/SpotifySoloist/settings/basic.html"
       - "strings.txt"
+      - "repo.xml"
       - ".github/workflows/soloist-updater.yml"
   workflow_dispatch:
 
