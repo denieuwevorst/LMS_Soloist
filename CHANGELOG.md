@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.3.61
+
+- Avoid Perl's misleading "Statement unlikely to be reached" startup warning
+  by using the conventional `exec ... or die` error path for version probes.
+
 ## 0.3.60
 
 - Bundle a private Debian glibc 2.41 runtime for x86_64, ARMv7, and AArch64

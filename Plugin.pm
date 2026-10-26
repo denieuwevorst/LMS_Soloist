@@ -334,9 +334,7 @@ sub _captureSoloistVersionOutput {
 	if ( $pid == 0 ) {
 		POSIX::dup2( fileno(STDOUT), fileno(STDERR) );
 		_applySoloistExecEnv( undef, $path, 1 );
-		exec(@cmd);
-		print STDERR "could not execute $path: $!\n";
-		exit(127);
+		exec(@cmd) or die "could not execute $path: $!\n";
 	}
 
 	local $/;
