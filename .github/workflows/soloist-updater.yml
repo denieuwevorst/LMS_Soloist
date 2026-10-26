@@ -4,10 +4,12 @@ on:
   pull_request:
     paths:
       - "Bin/extract-soloist-update.sh"
+      - "Bin/soloist-bridge.sh"
       - "Plugin.pm"
       - "Settings.pm"
       - "HTML/EN/plugins/SpotifySoloist/settings/basic.html"
       - "strings.txt"
+      - "repo.xml"
       - ".github/workflows/soloist-updater.yml"
   workflow_dispatch:
 
@@ -19,22 +21,25 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
+      - name: Check POSIX shell syntax
+        run: |
+          dash -n Bin/extract-soloist-update.sh
+          dash -n Bin/soloist-bridge.sh
       - name: Test managed update extractor
         run: |
           set -eu
-          bash -n Bin/extract-soloist-update.sh
           work=$(mktemp -d)
           trap 'rm -rf "$work"' EXIT
 
           printf '\177ELFmanaged-soloist-test\n' > "$work/soloist"
           tar -C "$work" -czf "$work/valid.tar.gz" soloist
-          Bin/extract-soloist-update.sh "$work/valid.tar.gz" "$work/candidate"
+          dash Bin/extract-soloist-update.sh "$work/valid.tar.gz" "$work/candidate"
           cmp "$work/soloist" "$work/candidate"
           test "$(stat -c %a "$work/candidate")" = "700"
 
           printf 'not soloist\n' > "$work/README"
           tar -C "$work" -czf "$work/invalid.tar.gz" README
-          if Bin/extract-soloist-update.sh "$work/invalid.tar.gz" "$work/rejected"; then
+          if dash Bin/extract-soloist-update.sh "$work/invalid.tar.gz" "$work/rejected"; then
             echo "invalid archive was accepted" >&2
             exit 1
           fi
