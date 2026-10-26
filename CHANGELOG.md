@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.3.57
 
 - Capture both stdout and stderr from `soloist --version` and accept the Unix
   build epoch format used by current Spotify builds (`build 1792994471`) in
