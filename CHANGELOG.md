@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.3.56
 
 - Accept a fully published managed-update candidate when LMS has already
   reaped the short-lived archive extractor child through its global SIGCHLD
