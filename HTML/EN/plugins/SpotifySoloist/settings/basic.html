@@ -11,10 +11,33 @@
 	<br>
 	The configured executable <code>[% soloistBinaryStatus.path %]</code> reports
 	build timestamp <code>[% soloistBinaryStatus.buildTimestamp %]</code> and is
-	about <strong>[% soloistBinaryStatus.ageDays %] days</strong> old. Replace it
-	before Spotify Soloist playback stops working. If this path is only a wrapper
-	script, check the real Soloist binary behind it.
+	about <strong>[% soloistBinaryStatus.ageDays %] days</strong> old.
+	[% IF soloistBinaryStatus.managedEnabled %]
+		The managed updater will retry automatically. Use <em>Update now</em> below
+		to retry immediately.
+	[% ELSE %]
+		Replace it before Spotify Soloist playback stops working. If this path is
+		only a wrapper script, check the real Soloist binary behind it.
+	[% END %]
 	<a href="[% soloistBinaryStatus.downloadsUrl %]" target="_blank" rel="noopener noreferrer">[% "PLUGIN_SPOTIFYSOLOIST_BINARY_STALE_LINK" | string %]</a>
+</div>
+[% END %]
+
+[% IF soloistBinaryStatus && soloistBinaryStatus.managedEnabled %]
+<div class="prefDesc" style="margin:0.75em 0; padding:0.75em; border:1px solid #8aa6bf; background:#f3f8fc;">
+	<strong>[% "PLUGIN_SPOTIFYSOLOIST_MANAGED_STATUS" | string %]</strong>
+	[% IF soloistBinaryStatus.updateMessage %]
+		[% soloistBinaryStatus.updateMessage %]
+	[% ELSE %]
+		Using <code>[% soloistBinaryStatus.path %]</code>.
+	[% END %]
+	[% IF soloistBinaryStatus.buildTimestamp %]
+		Build <code>[% soloistBinaryStatus.buildTimestamp %]</code>
+		([% soloistBinaryStatus.ageDays %] days old).
+	[% END %]
+	[% IF soloistBinaryStatus.lastError %]
+		<br><span style="color:#a22">Last update error: [% soloistBinaryStatus.lastError %]</span>
+	[% END %]
 </div>
 [% END %]
 
@@ -58,6 +81,19 @@
 	[% IF players.size == 0 %]
 		<em>No players found -- connect a Squeezebox/squeezelite player to Lyrion first.</em>
 	[% END %]
+[% END %]
+
+[% WRAPPER setting title="PLUGIN_SPOTIFYSOLOIST_MANAGED_UPDATES" desc="PLUGIN_SPOTIFYSOLOIST_MANAGED_UPDATES_DESC" %]
+	<input name="pref_managedSoloistUpdates" id="pref_managedSoloistUpdates" type="checkbox"
+		[% IF prefs.pref_managedSoloistUpdates %]checked[% END %]>
+	<select class="stdedit" name="pref_managedSoloistArch" id="pref_managedSoloistArch">
+		<option value="auto" [% IF prefs.pref_managedSoloistArch == 'auto' %]selected[% END %]>Auto-detect host architecture</option>
+		<option value="x86_64" [% IF prefs.pref_managedSoloistArch == 'x86_64' %]selected[% END %]>Linux x86_64</option>
+		<option value="arm32" [% IF prefs.pref_managedSoloistArch == 'arm32' %]selected[% END %]>Linux ARMv7/ARM32</option>
+		<option value="arm64" [% IF prefs.pref_managedSoloistArch == 'arm64' %]selected[% END %]>Linux ARMv8/AArch64</option>
+	</select>
+	<input name="updateSoloistNow" type="submit" value="[% 'PLUGIN_SPOTIFYSOLOIST_UPDATE_NOW' | string %]"
+		[% IF !prefs.pref_managedSoloistUpdates %]disabled[% END %]>
 [% END %]
 
 [% WRAPPER setting title="PLUGIN_SPOTIFYSOLOIST_SOLOISTBIN" desc="PLUGIN_SPOTIFYSOLOIST_SOLOISTBIN_DESC" %]

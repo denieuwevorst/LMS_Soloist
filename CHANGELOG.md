@@ -1,5 +1,14 @@
 # Changelog
 
+## Unreleased
+
+- Add opt-in managed Soloist updates. Download the selected Linux build
+  directly from Spotify's official CDN, validate its archive entry, ELF
+  architecture and reported build timestamp, install it atomically under the
+  plugin's persistent data directory, retain the previous managed binary, and
+  refresh daily once a build reaches 75 days. Existing custom binary paths are
+  never overwritten and remain the fallback until a managed download succeeds.
+
 ## 0.3.54
 
 - Replace the Python HTTP audio relay with dependency-free static C relay

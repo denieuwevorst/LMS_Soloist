@@ -8,7 +8,19 @@ PLUGIN_SPOTIFYSOLOIST_SOLOISTBIN
 	EN	Path to soloist binary
 
 PLUGIN_SPOTIFYSOLOIST_SOLOISTBIN_DESC
-	EN	Full path to the soloist executable (or a wrapper script, e.g. for a glibc-compatibility container).
+	EN	Full path to a manually installed Soloist executable or wrapper script. Managed updates leave this path untouched and use it as a fallback until the first managed download succeeds.
+
+PLUGIN_SPOTIFYSOLOIST_MANAGED_UPDATES
+	EN	Managed Soloist updates
+
+PLUGIN_SPOTIFYSOLOIST_MANAGED_UPDATES_DESC
+	EN	Opt in to downloading Soloist directly from Spotify's official CDN. The plugin installs a private validated copy in its persistent data directory, checks daily, and refreshes builds after 75 days. Custom executable paths are never overwritten. Spotify prohibits redistributing Soloist, so the plugin downloads it only from Spotify.
+
+PLUGIN_SPOTIFYSOLOIST_UPDATE_NOW
+	EN	Update now
+
+PLUGIN_SPOTIFYSOLOIST_MANAGED_STATUS
+	EN	Managed Soloist:
 
 PLUGIN_SPOTIFYSOLOIST_FFMPEGBIN
 	EN	Path to ffmpeg binary
@@ -113,13 +125,13 @@ PLUGIN_SPOTIFYSOLOIST_STOPPED
 	EN	stopped
 
 PLUGIN_SPOTIFYSOLOIST_RESTART_NOTE
-	EN	Toggling a player's checkbox takes effect immediately (starts/stops just that instance). Saving a player's format override restarts only that selected player. Changing the default format restarts selected players that use the default; changing MP3 bitrate restarts selected players currently using MP3. Changes to binary paths, backend settings, port bases, the sink/device prefix, or initial Soloist volume only apply the next time an instance is (re)started.
+	EN	Toggling a player's checkbox takes effect immediately (starts/stops just that instance). Saving a player's format override restarts only that selected player. Changing the default format restarts selected players that use the default; changing MP3 bitrate restarts selected players currently using MP3. A successful managed Soloist update restarts selected players automatically. Other changes to binary paths, backend settings, port bases, the sink/device prefix, or initial Soloist volume only apply the next time an instance is (re)started.
 
 PLUGIN_SPOTIFYSOLOIST_BINARY_STALE
 	EN	Soloist binary nearing expiry.
 
 PLUGIN_SPOTIFYSOLOIST_BINARY_STALE_DESC
-	EN	Spotify Soloist builds expire after about 90 days; this plugin checks the build timestamp reported by `soloist --version`, warns at 80 days, and does not auto-update the executable for you.
+	EN	Spotify Soloist builds expire after about 90 days; this plugin checks the build timestamp reported by `soloist --version` and warns at 80 days.
 
 PLUGIN_SPOTIFYSOLOIST_BINARY_STALE_LINK
 	EN	Open Spotify's official Downloads and updates page.
