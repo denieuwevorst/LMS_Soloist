@@ -51,6 +51,7 @@ jobs:
             sub main::DEBUGLOG () { 0 }
             sub main::INFOLOG () { 0 }
             sub main::WEBUI () { 0 }
+            sub main::ISWINDOWS () { 0 }
           } require shift'
           perl -I lms -I lms/CPAN -I "lms/CPAN/arch/$perl_version" -e "$check" ./Plugin.pm
           perl -I lms -I lms/CPAN -I "lms/CPAN/arch/$perl_version" -e "$check" ./Settings.pm
