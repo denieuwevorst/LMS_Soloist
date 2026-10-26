@@ -515,6 +515,13 @@ sub _pollSoloistUpdateExtraction {
 		return;
 	}
 	if ( $result < 0 ) {
+		# LMS may reap short-lived children through its global SIGCHLD
+		# handling before this timer runs. The extractor publishes the
+		# candidate with an atomic rename only after successful completion,
+		# so its presence is the authoritative success signal in that case.
+		if ( -f $soloistUpdateContext->{candidate} ) {
+			return _installManagedSoloistCandidate($soloistUpdateContext);
+		}
 		return _failSoloistUpdate("could not wait for the archive extractor: $!");
 	}
 

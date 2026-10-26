@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.3.56
+
+- Accept a fully published managed-update candidate when LMS has already
+  reaped the short-lived archive extractor child through its global SIGCHLD
+  handler. This fixes `No child processes` failures after a successful
+  download and extraction.
+
 ## 0.3.55
 
 - Add opt-in managed Soloist updates. Download the selected Linux build
