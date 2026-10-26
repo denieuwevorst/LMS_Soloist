@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.3.59
+
+- Accept valid `soloist --version` output when LMS has already reaped the
+  short-lived probe process through its global SIGCHLD handler. Include the
+  probe's exit error or unexpected output in managed-update failures.
+
 ## 0.3.58
 
 - Run the bridge and managed-update extractor with the POSIX `/bin/sh`

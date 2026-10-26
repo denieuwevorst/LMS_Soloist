@@ -41,6 +41,7 @@ use File::Spec::Functions qw(catdir catfile);
 use File::Path qw(make_path);
 use File::Basename qw(dirname);
 use Fcntl qw(F_GETFL F_SETFL O_NONBLOCK);
+use Errno qw(ECHILD);
 use JSON::XS qw(decode_json);
 use Proc::Background;
 use Time::HiRes ();
@@ -113,6 +114,7 @@ my $soloistBinaryAgeWarningLogged = 0;
 my $soloistUpdatePid;
 my $soloistUpdateContext;
 my %soloistUpdateRuntime = ( state => 'idle' );
+my $soloistVersionProbeError = '';
 my %pendingBridgeStartRetries;
 my %FORMAT_SPECS = (
 	mp3 => {
@@ -278,11 +280,16 @@ sub _applySoloistExecEnv {
 sub _captureSoloistVersionOutput {
 	my ($path) = @_;
 	$path ||= soloistBin();
-	return unless length $path && -f $path;
+	$soloistVersionProbeError = '';
+	unless ( length $path && -f $path ) {
+		$soloistVersionProbeError = 'the executable path does not exist';
+		return;
+	}
 
 	my @cmd = ( $path, '--version' );
 	my $pid = open( my $fh, '-|' );
 	if ( !defined $pid ) {
+		$soloistVersionProbeError = "could not start the version probe: $!";
 		$log->warn("can't run soloist --version: $!");
 		return;
 	}
@@ -290,14 +297,36 @@ sub _captureSoloistVersionOutput {
 	if ( $pid == 0 ) {
 		POSIX::dup2( fileno(STDOUT), fileno(STDERR) );
 		_applySoloistExecEnv( undef, $path, 1 );
-		exec(@cmd) or exit(1);
+		exec(@cmd);
+		print STDERR "could not execute $path: $!\n";
+		exit(127);
 	}
 
 	local $/;
 	my $output = <$fh>;
-	close $fh;
+	$! = 0;
+	my $closed = close $fh;
+	my $closeError = 0 + $!;
+	my $status = $?;
 
-	return unless defined $output && $? == 0;
+	unless ( defined $output && length $output ) {
+		$soloistVersionProbeError = $closeError
+			? "the version probe produced no output: $!"
+			: 'the version probe produced no output';
+		return;
+	}
+	if ( !$closed && $closeError != ECHILD ) {
+		my $exitStatus = $status >= 0 ? $status >> 8 : 1;
+		$output =~ s/\s+/ /g;
+		$output = substr( $output, 0, 300 );
+		$soloistVersionProbeError =
+			"the version probe exited with status $exitStatus: $output";
+		return;
+	}
+
+	# LMS may reap this short-lived child through its global SIGCHLD handler.
+	# In that case close() reports ECHILD even though the pipe contains the
+	# complete version output. The strict parser remains authoritative.
 	return $output;
 }
 
@@ -445,7 +474,13 @@ sub _failSoloistUpdate {
 sub _candidateBuildInfo {
 	my ($path) = @_;
 	my $output = _captureSoloistVersionOutput($path);
-	return _buildInfoFromVersionOutput($output);
+	my $build = _buildInfoFromVersionOutput($output);
+	if ( !$build && !$soloistVersionProbeError && defined $output ) {
+		$output =~ s/\s+/ /g;
+		$output = substr( $output, 0, 300 );
+		$soloistVersionProbeError = "unexpected version output: $output";
+	}
+	return $build;
 }
 
 sub _installManagedSoloistCandidate {
@@ -460,8 +495,11 @@ sub _installManagedSoloistCandidate {
 	return _failSoloistUpdate('the downloaded binary has the wrong ELF architecture')
 		unless ( _soloistElfMachine($candidate) || 0 ) == $context->{machine};
 
-	my $candidateBuild = _candidateBuildInfo($candidate)
-		or return _failSoloistUpdate('the downloaded binary did not pass soloist --version validation');
+	my $candidateBuild = _candidateBuildInfo($candidate);
+	return _failSoloistUpdate(
+		'the downloaded binary did not pass soloist --version validation' .
+		( $soloistVersionProbeError ? ": $soloistVersionProbeError" : '' )
+	) unless $candidateBuild;
 	my $candidateAge = time() - $candidateBuild->{epoch};
 	return _failSoloistUpdate('the downloaded binary is already expired')
 		if $candidateAge >= 90 * 86400;
