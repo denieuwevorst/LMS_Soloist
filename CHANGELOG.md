@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.3.63
+
+- Retry selected bridges automatically after an unexpected process exit
+  instead of leaving them permanently stopped.
+- Copy the final meaningful bridge-log lines into the main LMS error log so
+  platform-specific startup failures are immediately visible.
+
 ## 0.3.62
 
 - Route every LMS-side Soloist control, metadata, and trace invocation through
