@@ -116,6 +116,8 @@ my $soloistUpdateContext;
 my %soloistUpdateRuntime = ( state => 'idle' );
 my $soloistVersionProbeError = '';
 my %pendingBridgeStartRetries;
+my %lastBridgeFailureLog;
+my %lastBridgeFailureAt;
 my %FORMAT_SPECS = (
 	mp3 => {
 		wireExt       => 'mp3',
@@ -974,7 +976,36 @@ sub _bridgeRunning {
 
 	_closeTraceObserver( $b, "bridge process exited for player $playerId" );
 	delete $bridges{$playerId};
+	_logBridgeFailure( $playerId, $b );
+	_scheduleBridgeStartRetry( $playerId, 'bridge process exited' );
 	return 0;
+}
+
+sub _logBridgeFailure {
+	my ( $playerId, $b ) = @_;
+	my $path = catfile( $b->{cacheDir} || '', 'bridge.log' );
+	my $summary = 'no bridge log was available';
+
+	if ( -f $path && open my $fh, '<', $path ) {
+		seek $fh, -8192, 2 if -s $path > 8192;
+		my @lines = <$fh>;
+		close $fh;
+		@lines = grep { /\S/ } @lines;
+		@lines = @lines[ -6 .. -1 ] if @lines > 6;
+		$summary = join( ' | ', @lines ) if @lines;
+		$summary =~ s/[\r\n]+/ /g;
+		$summary =~ s/\s+/ /g;
+		$summary = substr( $summary, 0, 1200 );
+	}
+
+	return
+		if ( $lastBridgeFailureLog{$playerId} || '' ) eq $summary
+		&& time() - ( $lastBridgeFailureAt{$playerId} || 0 ) < 60;
+	$lastBridgeFailureLog{$playerId} = $summary;
+	$lastBridgeFailureAt{$playerId} = time();
+	$log->error(
+		"Soloist bridge exited unexpectedly for player $playerId: $summary"
+	);
 }
 
 sub _bridgeExists {
@@ -1008,7 +1039,7 @@ sub _scheduleBridgeStartRetry {
 	$log->info(
 		"delaying Soloist bridge start for player $playerId"
 		. ( $reason ? " ($reason)" : '' )
-		. '; retrying when LMS finishes registering that player'
+		. '; retrying in ' . BRIDGE_START_RETRY_DELAY . ' seconds'
 	);
 	Slim::Utils::Timers::setTimer( undef, $when, sub {
 		_retryStartBridgeForPlayer( $playerId, $when );
