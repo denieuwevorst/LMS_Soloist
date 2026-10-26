@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.3.58
+
+- Run the bridge and managed-update extractor with the POSIX `/bin/sh`
+  available on a fresh piCorePlayer installation instead of requiring
+  `/bin/bash`. The bridge no longer uses Bash-only arrays or `/dev/tcp`.
+
 ## 0.3.57
 
 - Capture both stdout and stderr from `soloist --version` and accept the Unix

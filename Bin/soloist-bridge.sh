@@ -1,4 +1,4 @@
-#!/usr/bin/env bash
+#!/bin/sh
 #
 # soloist-bridge.sh -- pure audio pipeline, no Icecast. Launched (and
 # supervised) by Plugin.pm via Proc::Background, configured entirely
@@ -29,7 +29,6 @@
 #                     SOLOIST_PCM_SHIM_FIFO SOLOIST_PCM_SHIM_LOG
 
 set -u
-set -o pipefail
 
 : "${SOLOIST_BIN:?SOLOIST_BIN is required}"
 : "${DEVICE_NAME:?DEVICE_NAME is required}"
@@ -88,13 +87,13 @@ mkdir -p "${XDG_CONFIG_HOME}/pulse"
 # in between, so every log line lands immediately.
 LOG_FILE="${LOG_FILE:-${SOLOIST_CACHE_DIR}/bridge.log}"
 exec >> "$LOG_FILE" 2>&1
-echo "=== bridge starting $(date -Iseconds) (log: $LOG_FILE) ==="
+echo "=== bridge starting $(date '+%Y-%m-%dT%H:%M:%S%z') (log: $LOG_FILE) ==="
 echo "HOME=${HOME} XDG_CONFIG_HOME=${XDG_CONFIG_HOME}"
 # Self-identify the script actually being executed, so a pasted log can
 # always answer "is this really the file I think was deployed?" without a
 # separate SSH round-trip to grep/diff/sha1sum it by hand.
-_SELF_PATH="$(readlink -f "${BASH_SOURCE[0]}" 2>/dev/null || echo "${BASH_SOURCE[0]}")"
-echo "[soloist-bridge] running script: ${_SELF_PATH} (mtime=$(date -r "${_SELF_PATH}" -Iseconds 2>/dev/null || echo unknown), size=$(wc -c < "${_SELF_PATH}" 2>/dev/null || echo unknown) bytes, lines=$(wc -l < "${_SELF_PATH}" 2>/dev/null || echo unknown))"
+_SELF_PATH="$(readlink -f "$0" 2>/dev/null || echo "$0")"
+echo "[soloist-bridge] running script: ${_SELF_PATH} (size=$(wc -c < "${_SELF_PATH}" 2>/dev/null || echo unknown) bytes, lines=$(wc -l < "${_SELF_PATH}" 2>/dev/null || echo unknown))"
 
 SOLOIST_PID=""
 SILENCE_PID=""
@@ -162,11 +161,8 @@ esac
 # ---------------------------------------------------------------------------
 # 1. Backend-specific audio setup
 # ---------------------------------------------------------------------------
-CAPTURE_INPUT_ARGS=()
 SOLOIST_AUDIO_TARGET_DESC=""
-PCM_CAPTURE_ARGS=()
 CAPTURE_MODE="ffmpeg"
-RELAY_EXTRA_ARGS=()
 
 if [ "$SOLOIST_AUDIO_BACKEND" = "pulse" ]; then
 	if ! command -v pactl >/dev/null 2>&1; then
@@ -180,7 +176,7 @@ if [ "$SOLOIST_AUDIO_BACKEND" = "pulse" ]; then
 		exit 1
 	fi
 
-	if ! pactl list short sinks 2>/dev/null | grep -q "\b${PIPEWIRE_SINK}\b"; then
+	if ! pactl list short sinks 2>/dev/null | awk -v name="$PIPEWIRE_SINK" '$2 == name { found=1 } END { exit !found }'; then
 		log "creating null-sink '${PIPEWIRE_SINK}'"
 		pactl load-module module-null-sink \
 			sink_name="${PIPEWIRE_SINK}" \
@@ -206,7 +202,6 @@ if [ "$SOLOIST_AUDIO_BACKEND" = "pulse" ]; then
 		log "WARNING: pacat not found -- sink may suspend when idle"
 	fi
 
-	CAPTURE_INPUT_ARGS=(-f pulse -i "${PIPEWIRE_SINK}.monitor")
 	SOLOIST_AUDIO_TARGET_DESC="Pulse/PipeWire sink ${PIPEWIRE_SINK}"
 elif [ "$SOLOIST_AUDIO_BACKEND" = "pcm-shim" ]; then
 	# The shim writes raw PCM straight to a FIFO we create below, and
@@ -221,7 +216,6 @@ elif [ "$SOLOIST_AUDIO_BACKEND" = "pcm-shim" ]; then
 	SOLOIST_LD_LIBRARY_PATH="${SOLOIST_PCM_SHIM_DIR}${LD_LIBRARY_PATH:+:${LD_LIBRARY_PATH}}"
 	SOLOIST_PCM_SHIM_FIFO="${SOLOIST_PCM_SHIM_FIFO:-${SOLOIST_CACHE_DIR}/pcm-shim.fifo}"
 	[ -p "$SOLOIST_PCM_SHIM_FIFO" ] || { rm -f "$SOLOIST_PCM_SHIM_FIFO"; mkfifo "$SOLOIST_PCM_SHIM_FIFO"; }
-	CAPTURE_INPUT_ARGS=(-f s16le -ar 44100 -ac 2 -i "$SOLOIST_PCM_SHIM_FIFO")
 	SOLOIST_AUDIO_TARGET_DESC="experimental pcm-shim FIFO ${SOLOIST_PCM_SHIM_FIFO}"
 	log "using experimental pcm-shim backend from '${SOLOIST_PCM_SHIM_DIR}', raw PCM FIFO=${SOLOIST_PCM_SHIM_FIFO}"
 	log "pcm-shim settings: SOLOIST_PCM_SHIM_LOG=${SOLOIST_PCM_SHIM_LOG} (passed to Soloist as SOLOIST_SHIM_LOG), SOLOIST_SHIM_MAX_TLENGTH_MS=${SOLOIST_SHIM_MAX_TLENGTH_MS:-300}"
@@ -230,34 +224,33 @@ fi
 # ---------------------------------------------------------------------------
 # 2. Launch Soloist
 # ---------------------------------------------------------------------------
-SOLOIST_ARGS=(
-	--device-name "$DEVICE_NAME"
-	--api-key "$SOLOIST_API_KEY"
-	--data-dir "$SOLOIST_DATA_DIR"
-	--cache-dir "$SOLOIST_CACHE_DIR"
-	--ws "$WS_ENDPOINT"
-)
-
-if [ "$SOLOIST_AUDIO_BACKEND" = "pulse" ]; then
-	SOLOIST_ARGS+=(--pipewire-device "$PIPEWIRE_SINK")
-fi
-
 log "starting soloist: device='${DEVICE_NAME}' backend=${SOLOIST_AUDIO_BACKEND} target='${SOLOIST_AUDIO_TARGET_DESC}' ws=${WS_ENDPOINT} data-dir=${SOLOIST_DATA_DIR}"
-SOLOIST_ENV_PREFIX=()
-if [ -n "${SOLOIST_LD_LIBRARY_PATH:-}" ]; then
-	SOLOIST_ENV_PREFIX+=(LD_LIBRARY_PATH="$SOLOIST_LD_LIBRARY_PATH")
-fi
 if [ "$SOLOIST_AUDIO_BACKEND" = "pcm-shim" ]; then
 	SOLOIST_SHIM_MAX_TLENGTH_MS="${SOLOIST_SHIM_MAX_TLENGTH_MS:-300}"
 	# The shim defaults to s24 (packed) output if SOLOIST_SHIM_FORMAT is
 	# unset, but the capture side below assumes s16le/44100 -- so this
 	# must force s16 explicitly, or audio would be garbled/wrong-speed.
-	SOLOIST_ENV_PREFIX+=(SOLOIST_SHIM_OUT="$SOLOIST_PCM_SHIM_FIFO" SOLOIST_SHIM_FORMAT=s16 SOLOIST_SHIM_RATE=44100 SOLOIST_SHIM_LOG="$SOLOIST_PCM_SHIM_LOG" SOLOIST_SHIM_MAX_TLENGTH_MS="$SOLOIST_SHIM_MAX_TLENGTH_MS")
-fi
-if [ "${#SOLOIST_ENV_PREFIX[@]}" -gt 0 ]; then
-	env "${SOLOIST_ENV_PREFIX[@]}" "$SOLOIST_BIN" "${SOLOIST_ARGS[@]}" &
+	env \
+		LD_LIBRARY_PATH="$SOLOIST_LD_LIBRARY_PATH" \
+		SOLOIST_SHIM_OUT="$SOLOIST_PCM_SHIM_FIFO" \
+		SOLOIST_SHIM_FORMAT=s16 \
+		SOLOIST_SHIM_RATE=44100 \
+		SOLOIST_SHIM_LOG="$SOLOIST_PCM_SHIM_LOG" \
+		SOLOIST_SHIM_MAX_TLENGTH_MS="$SOLOIST_SHIM_MAX_TLENGTH_MS" \
+		"$SOLOIST_BIN" \
+		--device-name "$DEVICE_NAME" \
+		--api-key "$SOLOIST_API_KEY" \
+		--data-dir "$SOLOIST_DATA_DIR" \
+		--cache-dir "$SOLOIST_CACHE_DIR" \
+		--ws "$WS_ENDPOINT" &
 else
-	"$SOLOIST_BIN" "${SOLOIST_ARGS[@]}" &
+	"$SOLOIST_BIN" \
+		--device-name "$DEVICE_NAME" \
+		--api-key "$SOLOIST_API_KEY" \
+		--data-dir "$SOLOIST_DATA_DIR" \
+		--cache-dir "$SOLOIST_CACHE_DIR" \
+		--ws "$WS_ENDPOINT" \
+		--pipewire-device "$PIPEWIRE_SINK" &
 fi
 SOLOIST_PID=$!
 
@@ -310,12 +303,10 @@ fi
 # server's current default sink first.
 if [ "$SOLOIST_AUDIO_BACKEND" = "pulse" ]; then
 	sink_router() {
-		local target_index=""
+		target_index=""
 		while kill -0 "$SOLOIST_PID" 2>/dev/null; do
-			local listing
 			listing="$(pactl list sink-inputs 2>/dev/null)"
 
-			local sink_input_id
 			sink_input_id="$(echo "$listing" | awk -v pid="$SOLOIST_PID" '
 				BEGIN { RS="" }
 				$0 ~ "application.process.id = \"" pid "\"" {
@@ -331,7 +322,6 @@ if [ "$SOLOIST_AUDIO_BACKEND" = "pulse" ]; then
 			if [ -n "$sink_input_id" ]; then
 				target_index="$(pactl list short sinks 2>/dev/null | awk -v name="$PIPEWIRE_SINK" '$2==name{print $1}')"
 
-				local current_sink
 				current_sink="$(echo "$listing" | awk -v want="$sink_input_id" '
 					BEGIN { RS="" }
 					{
@@ -376,8 +366,6 @@ case "$FORMAT" in
 		: "${FFMPEG_BIN:?FFMPEG_BIN is required when FORMAT=flac}"
 		# Live FLAC should emit frames promptly rather than favoring archive
 		# compression, otherwise Lyrion can wait several seconds for audio.
-		ENCODE_ARGS=(-c:a flac -compression_level 0)
-		MUX_ARGS=(-flush_packets 1)
 		MUX_FORMAT="flac"
 		CONTENT_TYPE="audio/flac"
 		STREAM_EXTENSION="flac"
@@ -386,24 +374,15 @@ case "$FORMAT" in
 		CAPTURE_MODE="pcm-direct"
 		CONTENT_TYPE="audio/wav"
 		STREAM_EXTENSION="wav"
-		RELAY_EXTRA_ARGS+=(--wav-stream --wav-sample-rate 44100 --wav-channels 2 --wav-bits-per-sample 16)
 		if [ "$SOLOIST_AUDIO_BACKEND" = "pulse" ]; then
 			if ! command -v parec >/dev/null 2>&1; then
 				log "ERROR: parec not found -- PCM direct mode on the Pulse backend needs PulseAudio utilities"
 				exit 1
 			fi
-			PCM_CAPTURE_ARGS=(parec --raw --rate=44100 --channels=2 --format=s16le --latency-msec=300 --process-time-msec=50 -d "${PIPEWIRE_SINK}.monitor")
-		else
-			# The shim already writes raw s16le/44100/stereo PCM straight to
-			# its own FIFO -- just forward those bytes on, no capture tool
-			# needed.
-			PCM_CAPTURE_ARGS=(cat "$SOLOIST_PCM_SHIM_FIFO")
 		fi
 		;;
 	*)
 		: "${FFMPEG_BIN:?FFMPEG_BIN is required when FORMAT=mp3}"
-		ENCODE_ARGS=(-c:a libmp3lame -b:a "$BITRATE")
-		MUX_ARGS=()
 		FORMAT="mp3"
 		MUX_FORMAT="mp3"
 		CONTENT_TYPE="audio/mpeg"
@@ -412,14 +391,24 @@ case "$FORMAT" in
 esac
 
 log "starting relay on ${RELAY_BIND}:${RELAY_PORT} (content-type ${CONTENT_TYPE})"
-"$RELAY_BIN" \
-	--fifo "$FIFO_PATH" \
-	--port "$RELAY_PORT" \
-	--bind "$RELAY_BIND" \
-	--content-type "$CONTENT_TYPE" \
-	"${RELAY_EXTRA_ARGS[@]}" \
-	--flush-file "$RELAY_FLUSH_FILE" \
-	--ready-file "$RELAY_READY_FILE" &
+if [ "$FORMAT" = "pcm" ]; then
+	"$RELAY_BIN" \
+		--fifo "$FIFO_PATH" \
+		--port "$RELAY_PORT" \
+		--bind "$RELAY_BIND" \
+		--content-type "$CONTENT_TYPE" \
+		--wav-stream --wav-sample-rate 44100 --wav-channels 2 --wav-bits-per-sample 16 \
+		--flush-file "$RELAY_FLUSH_FILE" \
+		--ready-file "$RELAY_READY_FILE" &
+else
+	"$RELAY_BIN" \
+		--fifo "$FIFO_PATH" \
+		--port "$RELAY_PORT" \
+		--bind "$RELAY_BIND" \
+		--content-type "$CONTENT_TYPE" \
+		--flush-file "$RELAY_FLUSH_FILE" \
+		--ready-file "$RELAY_READY_FILE" &
+fi
 RELAY_PID=$!
 
 # Confirm that the relay is actually listening instead of sleeping a
@@ -429,18 +418,7 @@ for _try in $(seq 1 10); do
 	if ! kill -0 "$RELAY_PID" 2>/dev/null; then
 		break
 	fi
-	if ( exec 3<>"/dev/tcp/127.0.0.1/${RELAY_PORT}" ) 2>/dev/null; then
-		# IMPORTANT: this must stay a braced *group*, not a bare `exec`.
-		# A bare top-level `exec 3>&- 3<&- 2>/dev/null` here would permanently
-		# redirect this shell's own stderr to /dev/null for the rest of the
-		# script (exec without a command changes the current shell's fd
-		# table, it doesn't fork), silently swallowing every later log()
-		# call (including every "starting ... capture" / "stream ready"
-		# line) while already-forked children keep logging fine -- which is
-		# exactly the "lines that must print never show up" bug this once
-		# was. `{ ... } 2>/dev/null` scopes the stderr redirect to just the
-		# fd-3 close, restoring fd 2 immediately afterwards.
-		{ exec 3>&- 3<&-; } 2>/dev/null
+	if [ -f "$RELAY_READY_FILE" ]; then
 		RELAY_READY=1
 		break
 	fi
@@ -471,17 +449,42 @@ capture_supervisor() {
 
 	while kill -0 "$SOLOIST_PID" 2>/dev/null; do
 		if [ "$CAPTURE_MODE" = "pcm-direct" ]; then
-			log "starting PCM capture: ${PCM_CAPTURE_ARGS[*]} > ${FIFO_PATH}"
-			"${PCM_CAPTURE_ARGS[@]}" > "$FIFO_PATH" &
+			if [ "$SOLOIST_AUDIO_BACKEND" = "pulse" ]; then
+				log "starting PCM capture from ${PIPEWIRE_SINK}.monitor > ${FIFO_PATH}"
+				parec --raw --rate=44100 --channels=2 --format=s16le \
+					--latency-msec=300 --process-time-msec=50 \
+					-d "${PIPEWIRE_SINK}.monitor" > "$FIFO_PATH" &
+			else
+				log "starting PCM capture: cat ${SOLOIST_PCM_SHIM_FIFO} > ${FIFO_PATH}"
+				cat "$SOLOIST_PCM_SHIM_FIFO" > "$FIFO_PATH" &
+			fi
 		else
 			log "starting ${CAPTURE_MODE} capture: ${FFMPEG_BIN} ... -f ${MUX_FORMAT} ${FIFO_PATH}"
-			"$FFMPEG_BIN" -nostdin -hide_banner -loglevel warning -y \
-				-fflags +genpts \
-				"${CAPTURE_INPUT_ARGS[@]}" \
-				"${ENCODE_ARGS[@]}" \
-				"${MUX_ARGS[@]}" \
-				-f "$MUX_FORMAT" \
-				"$FIFO_PATH" &
+			if [ "$SOLOIST_AUDIO_BACKEND" = "pulse" ]; then
+				if [ "$FORMAT" = "flac" ]; then
+					"$FFMPEG_BIN" -nostdin -hide_banner -loglevel warning -y \
+						-fflags +genpts -f pulse -i "${PIPEWIRE_SINK}.monitor" \
+						-c:a flac -compression_level 0 -flush_packets 1 \
+						-f "$MUX_FORMAT" "$FIFO_PATH" &
+				else
+					"$FFMPEG_BIN" -nostdin -hide_banner -loglevel warning -y \
+						-fflags +genpts -f pulse -i "${PIPEWIRE_SINK}.monitor" \
+						-c:a libmp3lame -b:a "$BITRATE" \
+						-f "$MUX_FORMAT" "$FIFO_PATH" &
+				fi
+			else
+				if [ "$FORMAT" = "flac" ]; then
+					"$FFMPEG_BIN" -nostdin -hide_banner -loglevel warning -y \
+						-fflags +genpts -f s16le -ar 44100 -ac 2 -i "$SOLOIST_PCM_SHIM_FIFO" \
+						-c:a flac -compression_level 0 -flush_packets 1 \
+						-f "$MUX_FORMAT" "$FIFO_PATH" &
+				else
+					"$FFMPEG_BIN" -nostdin -hide_banner -loglevel warning -y \
+						-fflags +genpts -f s16le -ar 44100 -ac 2 -i "$SOLOIST_PCM_SHIM_FIFO" \
+						-c:a libmp3lame -b:a "$BITRATE" \
+						-f "$MUX_FORMAT" "$FIFO_PATH" &
+				fi
+			fi
 		fi
 		CUR_CAPTURE_PID=$!
 		wait "$CUR_CAPTURE_PID"

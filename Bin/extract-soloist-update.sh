@@ -1,7 +1,6 @@
-#!/bin/bash
+#!/bin/sh
 
 set -eu
-set -o pipefail
 umask 077
 
 ARCHIVE=${1:-}
@@ -26,7 +25,7 @@ if [ "$ENTRY_COUNT" -ne 1 ]; then
 	exit 1
 fi
 
-tar -xOzf "$ARCHIVE" -- soloist > "$TMP"
+tar -xOzf "$ARCHIVE" soloist > "$TMP"
 if [ ! -s "$TMP" ]; then
 	echo "archive's soloist entry is empty" >&2
 	exit 1

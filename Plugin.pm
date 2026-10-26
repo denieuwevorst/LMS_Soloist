@@ -575,7 +575,7 @@ sub _managedSoloistDownloadComplete {
 	my $pid = fork();
 	return _failSoloistUpdate("could not start archive extraction: $!") unless defined $pid;
 	if ( $pid == 0 ) {
-		exec( '/bin/bash', $extractor, $archive, $context->{candidate} ) or exit(127);
+		exec( '/bin/sh', $extractor, $archive, $context->{candidate} ) or exit(127);
 	}
 
 	$soloistUpdatePid = $pid;
@@ -998,7 +998,7 @@ sub _startBridge {
 	}
 
 	my $proc;
-	eval { $proc = Proc::Background->new( '/bin/bash', $scriptPath ); };
+	eval { $proc = Proc::Background->new( '/bin/sh', $scriptPath ); };
 
 	if ( $@ || !$proc ) {
 		my $error = $@ || $! || 'unknown process launch failure';
