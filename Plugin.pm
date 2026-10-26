@@ -315,6 +315,31 @@ sub _epochFromIso8601Utc {
 	return $@ ? undef : $epoch;
 }
 
+sub _buildInfoFromVersionOutput {
+	my ($output) = @_;
+	return unless defined $output;
+
+	my ($timestamp) = $output =~ /(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z)/;
+	my $epoch = _epochFromIso8601Utc($timestamp);
+	if ( !defined $epoch ) {
+		($epoch) = $output =~ /\bbuild\s+(\d{10})\b/;
+		return unless defined $epoch && $epoch >= 946684800 && $epoch <= time() + 366 * 86400;
+		my @utc = gmtime($epoch);
+		$timestamp = sprintf(
+			'%04d-%02d-%02dT%02d:%02d:%02dZ',
+			$utc[5] + 1900,
+			$utc[4] + 1,
+			@utc[ 3, 2, 1, 0 ]
+		);
+	}
+
+	return {
+		output    => $output,
+		timestamp => $timestamp,
+		epoch     => 0 + $epoch,
+	};
+}
+
 sub soloistBinaryStatus {
 	my $path = soloistBin();
 	my $configuredPath = $prefs->get('soloistBin') || '';
@@ -340,8 +365,7 @@ sub soloistBinaryStatus {
 	} unless length $path && -f $path;
 
 	my $versionOutput = _captureSoloistVersionOutput($path);
-	my ($buildTimestamp) = ( $versionOutput || '' ) =~ /(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z)/;
-	my $buildEpoch = _epochFromIso8601Utc($buildTimestamp);
+	my $build = _buildInfoFromVersionOutput($versionOutput);
 	return {
 		%managed,
 		path             => $path,
@@ -349,9 +373,9 @@ sub soloistBinaryStatus {
 		downloadsUrl     => SOLOIST_DOWNLOADS_URL,
 		ageCheckPossible => 0,
 		stale            => 0,
-	} unless defined $buildEpoch;
+	} unless $build;
 
-	my $ageSeconds = time() - $buildEpoch;
+	my $ageSeconds = time() - $build->{epoch};
 	$ageSeconds = 0 if $ageSeconds < 0;
 	my $ageDays = int( $ageSeconds / 86400 );
 	my $stale = $ageSeconds >= SOLOIST_BINARY_WARN_AFTER_DAYS * 86400 ? 1 : 0;
@@ -361,7 +385,7 @@ sub soloistBinaryStatus {
 		path             => $path,
 		ageSeconds       => $ageSeconds,
 		ageDays          => $ageDays,
-		buildTimestamp   => $buildTimestamp,
+		buildTimestamp   => $build->{timestamp},
 		warnAfterDays    => SOLOIST_BINARY_WARN_AFTER_DAYS,
 		downloadsUrl     => SOLOIST_DOWNLOADS_URL,
 		ageCheckPossible => 1,
@@ -421,14 +445,7 @@ sub _failSoloistUpdate {
 sub _candidateBuildInfo {
 	my ($path) = @_;
 	my $output = _captureSoloistVersionOutput($path);
-	my ($timestamp) = ( $output || '' ) =~ /(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z)/;
-	my $epoch = _epochFromIso8601Utc($timestamp);
-	return unless defined $epoch;
-	return {
-		output    => $output,
-		timestamp => $timestamp,
-		epoch     => $epoch,
-	};
+	return _buildInfoFromVersionOutput($output);
 }
 
 sub _installManagedSoloistCandidate {

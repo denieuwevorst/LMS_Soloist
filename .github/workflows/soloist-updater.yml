@@ -52,5 +52,5 @@ jobs:
           LD_LIBRARY_PATH="$PWD/Bin/X86_64" "$work/soloist" --version \
             >"$work/version.txt" 2>&1
           cat "$work/version.txt"
-          grep -Eq '[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z' \
+          grep -Eq 'build [0-9]{10}|[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z' \
             "$work/version.txt"
