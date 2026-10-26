@@ -95,4 +95,12 @@ BEGIN {
 require './Plugin.pm';
 require './Settings.pm';
 
+my $build = Plugins::SpotifySoloist::Plugin::_buildInfoFromVersionOutput(
+	'soloist 1.3.10.15 build 1792994471 (20261026) (g19412df6ea) (linux/x86_64)'
+);
+die "Unix build epoch was not parsed\n"
+	unless $build
+		&& $build->{epoch} == 1792994471
+		&& $build->{timestamp} eq '2026-10-26T06:01:11Z';
+
 print "Plugin.pm and Settings.pm syntax OK\n";

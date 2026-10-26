@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.3.57
+
+- Capture both stdout and stderr from `soloist --version` and accept the Unix
+  build epoch format used by current Spotify builds (`build 1792994471`) in
+  addition to ISO timestamps. This fixes otherwise valid managed downloads
+  being rejected during version validation.
+
 ## 0.3.56
 
 - Accept a fully published managed-update candidate when LMS has already
