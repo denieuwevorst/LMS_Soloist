@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.3.60
+
+- Bundle a private Debian glibc 2.41 runtime for x86_64, ARMv7, and AArch64
+  and launch only Soloist through its matching loader. This supports current
+  Spotify builds requiring glibc 2.38 on older hosts such as piCorePlayer
+  without replacing any system libraries.
+
 ## 0.3.59
 
 - Accept valid `soloist --version` output when LMS has already reaped the

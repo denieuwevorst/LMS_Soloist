@@ -54,8 +54,46 @@ jobs:
             -o "$work/soloist.tar.gz" \
             https://soloist-builds.spotifycdn.com/soloist_release_x86_64.tar.gz
           Bin/extract-soloist-update.sh "$work/soloist.tar.gz" "$work/soloist"
-          LD_LIBRARY_PATH="$PWD/Bin/X86_64" "$work/soloist" --version \
+          Bin/X86_64/glibc/ld-linux-x86-64.so.2 \
+            --library-path "$PWD/Bin/X86_64:$PWD/Bin/X86_64/glibc" \
+            "$work/soloist" --version \
             >"$work/version.txt" 2>&1
+          cat "$work/version.txt"
+          grep -Eq 'build [0-9]{10}|[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z' \
+            "$work/version.txt"
+
+  test-portable-arm-runtimes:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        include:
+          - archive: arm32
+            directory: ARMv7
+            loader: ld-linux-armhf.so.3
+            emulator: qemu-arm-static
+          - archive: arm64
+            directory: ARMv8_Arch64
+            loader: ld-linux-aarch64.so.1
+            emulator: qemu-aarch64-static
+    steps:
+      - uses: actions/checkout@v5
+      - name: Install user-mode ARM emulation
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq qemu-user-static
+      - name: Validate official Soloist with private runtime
+        run: |
+          set -eu
+          work=$(mktemp -d)
+          trap 'rm -rf "$work"' EXIT
+          curl --fail --location --silent --show-error \
+            -o "$work/soloist.tar.gz" \
+            "https://soloist-builds.spotifycdn.com/soloist_release_${{ matrix.archive }}.tar.gz"
+          Bin/extract-soloist-update.sh "$work/soloist.tar.gz" "$work/soloist"
+          "${{ matrix.emulator }}" \
+            "Bin/${{ matrix.directory }}/glibc/${{ matrix.loader }}" \
+            --library-path "$PWD/Bin/${{ matrix.directory }}:$PWD/Bin/${{ matrix.directory }}/glibc" \
+            "$work/soloist" --version >"$work/version.txt" 2>&1
           cat "$work/version.txt"
           grep -Eq 'build [0-9]{10}|[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z' \
             "$work/version.txt"
