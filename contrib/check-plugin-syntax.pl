@@ -4,6 +4,9 @@ use strict;
 use warnings;
 
 BEGIN {
+	package main;
+	sub WEBUI () { 0 }
+
 	package SyntaxCheck::Prefs;
 	sub init { }
 	sub get { return }
