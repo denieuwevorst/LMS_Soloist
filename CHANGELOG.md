@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.3.66
 
 - Keep direct `soloist://` playback at unity gain in LMS instead of inheriting
   the player's remote/internet-radio replay-gain correction.
