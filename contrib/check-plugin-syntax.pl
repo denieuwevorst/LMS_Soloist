@@ -113,6 +113,18 @@ die "Non-ELF Soloist command was rewritten unexpectedly\n"
 	unless join( "\0", @plainCommand )
 		eq join( "\0", 'contrib/check-plugin-syntax.pl', 'ctl', 'now' );
 
+my @cachedCtlCommand =
+		Plugins::SpotifySoloist::Plugin::_soloistCtlCommand(
+		{
+			soloistCtlCommand => [ 'soloist', 'ctl', '-w', '127.0.0.1:9091' ],
+		},
+		'now',
+		'--json',
+);
+die "Cached Soloist ctl command was assembled incorrectly\n"
+		unless join( "\0", @cachedCtlCommand )
+			eq join( "\0", 'soloist', 'ctl', '-w', '127.0.0.1:9091', 'now', '--json' );
+
 my $probeDir = 'contrib/.version-probe-test';
 mkdir $probeDir or die "Could not create $probeDir: $!\n";
 my $probe = "$probeDir/soloist";
