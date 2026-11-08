@@ -83,12 +83,7 @@ sub new {
 	${*$self}{staleBytesDiscarded} = 0;
 
 	my $song = $args->{song};
-	if ( $format->{key} eq 'pcm' ) {
-		$song->samplerate(44100);
-		$song->samplesize(16);
-		$song->channels(2);
-		$song->blockalign(4);
-	}
+	Plugins::SpotifySoloist::StreamSemantics::applySongFormat( $song, $format );
 
 	$log->debug("opened direct Soloist stream '$url' from '$fifo'");
 	return $self;
@@ -174,7 +169,8 @@ sub contentType {
 
 sub getStreamBitrate {
 	my ( $self, $maxRate ) = @_;
-	my $bitrate = ${*$self}{bitrate} || $maxRate;
+	my $bitrate = ${*$self}{bitrate};
+	return $maxRate unless defined $bitrate;
 	return $maxRate && $bitrate > $maxRate ? $maxRate : $bitrate;
 }
 
