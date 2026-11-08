@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.3.67
 
 - Publish Spotify track duration and align LMS's displayed elapsed time with
   Soloist's playback-position anchor while keeping the continuous stream
