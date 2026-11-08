@@ -196,11 +196,12 @@ The two normalization stages are separate:
 - Lyrion's remote/internet-radio replay-gain fallback is bypassed for
   `soloist://` streams. Soloist supplies already-rendered audio, so LMS keeps
   the stream at unity gain rather than applying the player's radio correction.
-- Spotify Soloist's own loudness normalization cannot currently be changed.
-  The official Soloist 1.3.10.51 command line and local WebSocket/`soloist ctl`
-  APIs expose volume but no normalization option. The settings page reports
-  this limitation per player instead of presenting a switch that would not
-  affect playback.
+- Spotify Soloist's own loudness normalization is configurable per player.
+  Soloist reads `audio.normalize_v2` from its classic prefs stores only at
+  startup, so the plugin atomically updates the player's global prefs and all
+  existing per-user prefs before each daemon spawn. Changing the checkbox
+  restarts only that player's bridge. Existing installs default to enabled,
+  preserving Soloist's previous behavior.
 
 ## Runtime files and logs
 

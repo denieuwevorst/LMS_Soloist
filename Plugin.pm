@@ -57,6 +57,8 @@ use Slim::Player::Client;
 use Slim::Player::Playlist;
 use Slim::Control::Request;
 
+require( dirname(__FILE__) . '/SoloistPrefs.pm' );
+
 my $log = Slim::Utils::Log->addLogCategory({
 	category     => 'plugin.spotifysoloist',
 	defaultLevel => 'WARN',
@@ -96,6 +98,7 @@ $prefs->init({
 	idleDisconnectSeconds => 30,
 	selectedPlayers => {},                # { playerID => 1, ... }
 	playerFormatOverrides => {},          # { playerID => mp3|flac|pcm } (missing = global format)
+	playerNormalization => {},            # { playerID => 0|1 } (missing = enabled for compatibility)
 	playerSlots     => {},                # { playerID => slot int }, stable across restarts
 });
 
@@ -175,6 +178,14 @@ sub formatForPlayer {
 	my $overrides = $prefs->get('playerFormatOverrides') || {};
 	my $format = ref $overrides eq 'HASH' ? _normalizedFormatKey( $overrides->{$playerId} ) : undef;
 	return $format || currentFormatSpec()->{key};
+}
+
+sub normalizationForPlayer {
+	my ($playerId) = @_;
+	return Plugins::SpotifySoloist::SoloistPrefs::normalizationForPlayer(
+		$prefs->get('playerNormalization'),
+		$playerId,
+	);
 }
 
 sub _managedSoloistDir {
@@ -901,6 +912,7 @@ sub _configFor {
 		pcmShimFifo => catfile( $baseCacheDir, "player_$slot", 'pcm-shim.fifo' ),
 		runtimeDir => $runtime ? $runtime->{dir} : '',
 		runtimeLoader => $runtime ? $runtime->{loader} : '',
+		normalization => normalizationForPlayer($playerId),
 		deviceName => $playerName . $prefs->get('deviceNameSuffix'),
 	};
 }
@@ -1090,6 +1102,22 @@ sub _startBridge {
 	# so wiping Soloist's own cache here is no longer needed and can make
 	# post-restart recovery of an already-playing device less reliable.
 	make_path( $cfg->{dataDir}, $cfg->{cacheDir} );
+	my $normalizationFiles;
+	eval {
+		$normalizationFiles = Plugins::SpotifySoloist::SoloistPrefs::writeNormalization(
+			$cfg->{dataDir},
+			$cfg->{normalization},
+		);
+	};
+	if ($@) {
+		my $error = $@;
+		$error =~ s/\s+\z//;
+		$log->error(
+			"can't start Soloist bridge for '" . $client->name
+			. "': failed to set Spotify normalization: $error"
+		);
+		return;
+	}
 
 	local $ENV{SOLOIST_BIN}       = soloistBin();
 	local $ENV{FFMPEG_BIN}        = $prefs->get('ffmpegBin');
@@ -1109,7 +1137,12 @@ sub _startBridge {
 	local $ENV{SOLOIST_RUNTIME_LIB_DIR} = $cfg->{runtimeDir};
 	local $ENV{SOLOIST_RUNTIME_LOADER}  = $cfg->{runtimeLoader};
 
-	$log->info( "starting soloist bridge for player '" . $client->name . "' (device='$cfg->{deviceName}', slot=$cfg->{slot})" );
+	$log->info(
+		"starting soloist bridge for player '" . $client->name
+		. "' (device='$cfg->{deviceName}', slot=$cfg->{slot}, normalization="
+		. ( $cfg->{normalization} ? 'on' : 'off' )
+		. ', prefs=' . scalar(@$normalizationFiles) . ')'
+	);
 
 	my $scriptPath = _scriptPath();
 	unless ( -f $scriptPath ) {

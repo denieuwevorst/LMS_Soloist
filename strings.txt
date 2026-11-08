@@ -106,8 +106,8 @@ PLUGIN_SPOTIFYSOLOIST_PLAYERS
 PLUGIN_SPOTIFYSOLOIST_PLAYERS_DESC
 	EN	Each checked player gets its own Spotify Connect device (shown separately in the Spotify app's device picker as "&lt;player name&gt;&lt;suffix&gt;") and automatically starts playing the moment Spotify actually starts sending it audio. Unchecking a player stops and removes its instance immediately.
 
-PLUGIN_SPOTIFYSOLOIST_NORMALIZATION_UNAVAILABLE
-	EN	Always on in Soloist; its current CLI and local API provide no toggle. Lyrion's separate internet-radio gain correction is bypassed.
+PLUGIN_SPOTIFYSOLOIST_NORMALIZATION_ENABLED
+	EN	Enabled
 
 PLUGIN_SPOTIFYSOLOIST_RUNNING
 	EN	running
@@ -116,7 +116,7 @@ PLUGIN_SPOTIFYSOLOIST_STOPPED
 	EN	stopped
 
 PLUGIN_SPOTIFYSOLOIST_RESTART_NOTE
-	EN	Toggling a player's checkbox takes effect immediately (starts/stops just that instance). Saving a player's format override restarts only that selected player. Changing the default format restarts selected players that use the default; changing MP3 bitrate restarts selected players currently using MP3. A successful managed Soloist update restarts selected players automatically. Other changes to binary paths, backend settings, port bases, the sink/device prefix, or initial Soloist volume only apply the next time an instance is (re)started.
+	EN	Toggling a player's checkbox takes effect immediately (starts/stops just that instance). Saving a player's format or Spotify normalization setting restarts only that selected player. Changing the default format restarts selected players that use the default; changing MP3 bitrate restarts selected players currently using MP3. A successful managed Soloist update restarts selected players automatically. Other changes to binary paths, backend settings, port bases, the sink/device prefix, or initial Soloist volume only apply the next time an instance is (re)started.
 
 PLUGIN_SPOTIFYSOLOIST_BINARY_STALE
 	EN	Soloist binary nearing expiry.

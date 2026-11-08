@@ -75,7 +75,11 @@
 					<option value="pcm" [% IF player.formatOverride == 'pcm' %]selected[% END %]>PCM/WAV (LMS may transcode)</option>
 				</select>
 			</td>
-			<td><small>[% "PLUGIN_SPOTIFYSOLOIST_NORMALIZATION_UNAVAILABLE" | string %]</small></td>
+			<td>
+				<input type="checkbox" name="normalization.[% player.id %]"
+					id="normalization.[% player.id %]" [% IF player.normalization %]checked[% END %]>
+				<label for="normalization.[% player.id %]">[% "PLUGIN_SPOTIFYSOLOIST_NORMALIZATION_ENABLED" | string %]</label>
+			</td>
 			<td><small>[% player.streamUrl %]</small></td>
 		</tr>
 	[% END %]

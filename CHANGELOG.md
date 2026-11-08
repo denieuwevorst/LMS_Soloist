@@ -4,9 +4,10 @@
 
 - Keep direct `soloist://` playback at unity gain in LMS instead of inheriting
   the player's remote/internet-radio replay-gain correction.
-- Document in the per-player settings table that Spotify Soloist normalization
-  remains always enabled because the current official CLI and local control
-  API provide no normalization switch.
+- Add a per-player Spotify normalization toggle. Before each daemon spawn the
+  plugin atomically updates `audio.normalize_v2` in the player's global and
+  existing per-user Soloist prefs while preserving unrelated engine settings;
+  existing installs continue with normalization enabled by default.
 
 ## 0.3.65
 
