@@ -23,6 +23,7 @@ BEGIN {
 	package TestLogger;
 	sub debug { }
 	sub error { }
+	sub info { }
 
 	package Slim::Utils::Strings;
 	sub import {
@@ -89,6 +90,28 @@ is( substr( $buffer, 36, 4 ), 'data', 'WAV header has data marker' );
 $buffer = '';
 is( $handler->sysread( $buffer, 32 ), 9, 'reads FIFO audio after the header' );
 is( $buffer, 'audio-one', 'forwards FIFO audio unchanged' );
+
+select undef, undef, undef, 1.05;
+syswrite( $writer, 'stale-audio' ) == 11 or die "write stale payload: $!";
+$buffer = '';
+my $staleRead = $handler->sysread( $buffer, 32 );
+ok(
+	!defined $staleRead && ( $! == EAGAIN || $! == EWOULDBLOCK ),
+	'starts catch-up instead of forwarding audio queued during an LMS read stall'
+);
+
+select undef, undef, undef, 0.30;
+$buffer = '';
+my $catchupRead = $handler->sysread( $buffer, 32 );
+ok(
+	!defined $catchupRead && ( $! == EAGAIN || $! == EWOULDBLOCK ),
+	'finishes catch-up with the FIFO empty'
+);
+
+syswrite( $writer, 'audio-live' ) == 10 or die "write live payload: $!";
+$buffer = '';
+is( $handler->sysread( $buffer, 32 ), 10, 'reads live audio after catch-up' );
+is( $buffer, 'audio-live', 'does not forward the stale queued payload' );
 
 close $writer;
 $buffer = '';
