@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.3.68
 
 - Publish the final bridge/FIFO stream codec, bitrate, sample rate, bit depth,
   and channel count through LMS metadata and Song fields. PCM/WAV reports its
