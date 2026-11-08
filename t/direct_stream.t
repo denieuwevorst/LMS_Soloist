@@ -49,7 +49,9 @@ require './ProtocolHandler.pm';
 
 my $dir = tempdir( CLEANUP => 1 );
 my $fifo = File::Spec->catfile( $dir, 'audio.fifo' );
-mkfifo( $fifo, 0600 ) == 0 or plan skip_all => "mkfifo unavailable: $!";
+my $fifoCreated = eval { mkfifo( $fifo, 0600 ) == 0 };
+plan skip_all => "mkfifo unavailable: " . ( $@ || $! )
+	unless $fifoCreated;
 
 $Plugins::SpotifySoloist::Plugin::stream = {
 	fifoPath => $fifo,
