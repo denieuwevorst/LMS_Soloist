@@ -23,8 +23,8 @@ sub page {
 sub prefs {
 	return ( $prefs, qw(
 		soloistBin managedSoloistUpdates managedSoloistArch
-		ffmpegBin audioBackend pipewireSink pcmShimDir wsPortBase relayPortBase
-		format bitrate initialVolume deviceNameSuffix apiKey relayBind autostart
+		ffmpegBin audioBackend pipewireSink pcmShimDir wsPortBase
+		format bitrate initialVolume deviceNameSuffix apiKey autostart
 		idleDisconnectSeconds
 	) );
 }

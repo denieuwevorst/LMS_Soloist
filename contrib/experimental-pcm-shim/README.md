@@ -62,12 +62,12 @@ Soloist
   -> direct byte forwarding for PCM/WAV
      or ffmpeg encoding for MP3/FLAC
   -> player_<slot>/audio.fifo
-  -> bundled C audio relay
+  -> soloist:// protocol handler
   -> LMS/player
 ```
 
-For PCM/WAV, the relay adds a streaming WAV header per HTTP client; it does not
-encode or alter the PCM payload.
+For PCM/WAV, the protocol handler adds a streaming WAV header when LMS opens
+the FIFO; it does not encode or alter the PCM payload.
 
 ## Diagnostics
 

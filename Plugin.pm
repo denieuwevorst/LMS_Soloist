@@ -2,7 +2,7 @@ package Plugins::SpotifySoloist::Plugin;
 
 # Runs ONE independent Spotify Soloist instance PER selected Squeezebox
 # player -- each with its own device name, own backend-specific audio
-# target, own control port, own audio relay -- so each shows up as a
+# target, and own control port -- so each shows up as a
 # SEPARATE, individually
 # selectable device in the Spotify app's picker (e.g. "Kitchen (Soloist)",
 # "Living Room (Soloist)"), and picking one plays specifically on that one
@@ -12,17 +12,15 @@ package Plugins::SpotifySoloist::Plugin;
 # advertising does, so "one process per player" is how you get an
 # equivalent per-player selection experience.
 #
-# Real Now Playing metadata (including cover art) works the same way as
-# before: a custom `soloist://` scheme routed through our own protocol
-# handler (ProtocolHandler.pm), same pattern as ShairTunes2's
-# `airplay://` + AIRPLAY.pm. No Icecast: the bundled C audio relay is a small
-# embedded multi-client HTTP server per instance, fed by ffmpeg through a
-# FIFO (so ffmpeg restarts don't disturb the relay or connected clients).
+# Real Now Playing metadata (including cover art) and direct audio delivery
+# both use the custom `soloist://` protocol handler. The handler opens the
+# bridge FIFO itself, so no HTTP relay or network listener sits between the
+# generated audio and LMS.
 #
 # Division of labour:
 #   - Bin/soloist-bridge.sh: backend-specific audio setup, launches one
-#     Soloist instance, captures + feeds its own bundled audio relay via a
-#     dedicated FIFO. Fully parameterized by env vars -- one script,
+#     Soloist instance, captures + feeds its own dedicated FIFO. Fully
+#     parameterized by env vars -- one script,
 #     launched once per selected player with different env each time.
 #   - This module: allocates a stable port/backend-target/data-dir "slot" per
 #     player, starts/stops one bridge per selected player, consumes each
@@ -51,7 +49,6 @@ use POSIX qw(dup2 WNOHANG uname);
 use Slim::Utils::Log;
 use Slim::Utils::Prefs;
 use Slim::Utils::Timers;
-use Slim::Utils::Network;
 use Slim::Utils::PluginManager;
 use Slim::Utils::Strings qw(cstring);
 use Slim::Networking::SimpleAsyncHTTP;
@@ -75,8 +72,6 @@ use constant TRACE_RESTART_DELAY       => 5;    # seconds
 use constant BRIDGE_START_RETRY_DELAY  => 5;    # seconds
 use constant PLAYER_OFFLINE_STOP_DELAY => 10;   # seconds
 use constant PLAYBACK_TRANSITION_GRACE => 1.5; # seconds
-use constant RELAY_AUTOPLAY_READY_TIMEOUT => 1.0; # seconds
-use constant RELAY_AUTOPLAY_READY_MAX_AGE => 1.0; # seconds
 use constant SOLOIST_BINARY_REFRESH_AFTER_DAYS => 75;
 use constant SOLOIST_BINARY_WARN_AFTER_DAYS => 80;
 use constant SOLOIST_UPDATE_CHECK_INTERVAL => 86400;
@@ -92,13 +87,11 @@ $prefs->init({
 	pipewireSink    => 'soloist_sink',    # base name; each player gets _<slot> appended
 	pcmShimDir      => '',                # optional override; supported bundled architectures are selected automatically
 	wsPortBase      => 9091,              # each player gets +<slot>
-	relayPortBase   => 9077,              # each player gets +<slot>
 	format          => 'mp3',             # mp3 | flac | pcm
 	bitrate         => '320k',            # only used when format = mp3
 	initialVolume   => 100,               # applied at bridge start and when the Soloist device reconnects
 	deviceNameSuffix => ' (Soloist)',     # appended to each player's own name
 	apiKey          => '',
-	relayBind       => '0.0.0.0',
 	autostart       => 1,
 	idleDisconnectSeconds => 30,
 	selectedPlayers => {},                # { playerID => 1, ... }
@@ -106,7 +99,7 @@ $prefs->init({
 	playerSlots     => {},                # { playerID => slot int }, stable across restarts
 });
 
-my %bridges;      # playerID => { proc, wsPort, relayPort, sink, dataDir, cacheDir, fifoPath, deviceName, lastStatus, wasPlayingHere }
+my %bridges;      # playerID => { proc, wsPort, sink, dataDir, cacheDir, fifoPath, deviceName, lastStatus, wasPlayingHere }
 my $baseDataDir;
 my $baseCacheDir;
 my %originalTransportCommand;    # command name -> original dispatch coderef
@@ -122,6 +115,7 @@ my %FORMAT_SPECS = (
 	mp3 => {
 		wireExt       => 'mp3',
 		displayFormat => 'MP3',
+		contentType   => 'mp3',
 		bufferKb      => sub {
 			my ($bitrate) = @_;
 			my ($kbps) = ( $bitrate || '' ) =~ /(\d+)/;
@@ -134,11 +128,13 @@ my %FORMAT_SPECS = (
 	flac => {
 		wireExt       => 'flac',
 		displayFormat => 'FLAC',
+		contentType   => 'flc',
 		bufferKb      => 24,
 	},
 	pcm => {
 		wireExt       => 'wav',
 		displayFormat => 'WAV',
+		contentType   => 'wav',
 		bufferKb      => 35,
 	},
 );
@@ -158,13 +154,18 @@ sub currentFormatSpec {
 	$format = _normalizedFormatKey( $prefs->get('format') ) || 'mp3' unless defined $format;
 	my $spec = $FORMAT_SPECS{$format} || $FORMAT_SPECS{mp3};
 	my $bitrate = $format eq 'mp3' ? ( $prefs->get('bitrate') || '320k' ) : undef;
+	my ($bitrateKbps) = ( $bitrate || '' ) =~ /(\d+)/;
 	my $bufferKb = ref $spec->{bufferKb} eq 'CODE' ? $spec->{bufferKb}->($bitrate) : $spec->{bufferKb};
 
 	return {
 		key           => $format,
 		wireExt       => $spec->{wireExt},
 		displayFormat => $spec->{displayFormat},
+		contentType   => $spec->{contentType},
 		bufferKb      => $bufferKb,
+		bitrateBps    => $format eq 'pcm' ? 1_411_200
+			: $format eq 'flac' ? 705_000
+			: ( $bitrateKbps || 320 ) * 1000,
 		( defined $bitrate ? ( bitrate => $bitrate ) : () ),
 	};
 }
@@ -174,14 +175,6 @@ sub formatForPlayer {
 	my $overrides = $prefs->get('playerFormatOverrides') || {};
 	my $format = ref $overrides eq 'HASH' ? _normalizedFormatKey( $overrides->{$playerId} ) : undef;
 	return $format || currentFormatSpec()->{key};
-}
-
-sub currentFormatSpecForUrl {
-	my ($url) = @_;
-	my ($ext) = ( $url || '' ) =~ /\.([A-Za-z0-9]+)(?:\?.*)?\z/;
-	return currentFormatSpec('flac') if defined $ext && lc($ext) eq 'flac';
-	return currentFormatSpec('pcm')  if defined $ext && lc($ext) eq 'wav';
-	return currentFormatSpec('mp3');
 }
 
 sub _managedSoloistDir {
@@ -293,12 +286,6 @@ sub _soloistCommand {
 		$path,
 		@args,
 	);
-}
-
-sub bundledRelayBin {
-	my $dir = _bundledArchitectureDir( _hostBundledArch() ) or return;
-	my $relay = catfile( $dir, 'audio-relay' );
-	return -f $relay ? $relay : undef;
 }
 
 sub _applySoloistExecEnv {
@@ -904,31 +891,40 @@ sub _configFor {
 	return {
 		slot       => $slot,
 		wsPort     => $prefs->get('wsPortBase') + $slot,
-		relayPort  => $prefs->get('relayPortBase') + $slot,
 		backend    => $backend,
 		format     => formatForPlayer($playerId),
 		sink       => $prefs->get('pipewireSink') . '_' . $slot,
 		dataDir    => catdir( $baseDataDir, "player_$slot" ),
 		cacheDir   => catdir( $baseCacheDir, "player_$slot" ),
 		fifoPath   => catfile( $baseCacheDir, "player_$slot", 'audio.fifo' ),
-		relayReadyFile => catfile( $baseCacheDir, "player_$slot", 'relay.ready' ),
-		relayFlushFile => catfile( $baseCacheDir, "player_$slot", 'relay.flush' ),
 		pcmShimDir => $prefs->get('pcmShimDir') || bundledPcmShimDir(),
 		pcmShimFifo => catfile( $baseCacheDir, "player_$slot", 'pcm-shim.fifo' ),
 		runtimeDir => $runtime ? $runtime->{dir} : '',
 		runtimeLoader => $runtime ? $runtime->{loader} : '',
-		relayBin => bundledRelayBin(),
 		deviceName => $playerName . $prefs->get('deviceNameSuffix'),
 	};
 }
 
 sub streamUrlFor {
 	my ($cfg) = @_;
-	my $bind = $prefs->get('relayBind');
-	my $host = ( !$bind || $bind eq '0.0.0.0' ) ? Slim::Utils::Network::serverAddr() : $bind;
 	my $format = currentFormatSpec( $cfg->{format} );
 
-	return 'soloist://' . $host . ':' . $cfg->{relayPort} . '/soloist.' . $format->{wireExt};
+	return 'soloist://player-' . $cfg->{slot} . '/soloist.' . $format->{wireExt};
+}
+
+sub directStreamInfoForUrl {
+	my ($url) = @_;
+	my ($slot) = ( $url || '' ) =~ m{\Asoloist://player-(\d+)/soloist\.[A-Za-z0-9]+\z};
+	return unless defined $slot;
+
+	for my $bridge ( values %bridges ) {
+		next unless defined $bridge->{slot} && $bridge->{slot} == $slot;
+		return {
+			fifoPath => $bridge->{fifoPath},
+			format   => currentFormatSpec( $bridge->{format} ),
+		};
+	}
+	return;
 }
 
 # ---------------------------------------------------------------------------
@@ -975,6 +971,7 @@ sub _bridgeRunning {
 	return 1 if $b->{proc} && $b->{proc}->alive;
 
 	_closeTraceObserver( $b, "bridge process exited for player $playerId" );
+	_closeDirectStreamForPlayer( $playerId, $b, 'bridge process exited' );
 	delete $bridges{$playerId};
 	_logBridgeFailure( $playerId, $b );
 	_scheduleBridgeStartRetry( $playerId, 'bridge process exited' );
@@ -1052,13 +1049,27 @@ sub _stopBridge {
 
 	$log->info( ( $reason || 'stopping' ) . " soloist bridge for player $playerId" );
 	_closeTraceObserver( $b, "bridge stop for player $playerId" );
+	_closeDirectStreamForPlayer( $playerId, $b, $reason || 'bridge stopped' );
 	eval { $b->{proc}->die if $b->{proc}->alive; };
 
-	if ( my $client = Slim::Player::Client::getClient($playerId) ) {
-		_clearMetadataForPlayer($client);
-	}
-
 	delete $bridges{$playerId};
+}
+
+sub _closeDirectStreamForPlayer {
+	my ( $playerId, $b, $reason ) = @_;
+	my $client = Slim::Player::Client::getClient($playerId) or return;
+	my $url = streamUrlFor($b);
+
+	_clearMetadataForPlayer($client);
+	return unless _clientIsOnOwnSoloistStream( $client, $url );
+
+	$log->info(
+		'closing ' . $client->name . ' direct Soloist stream'
+		. ( $reason ? " ($reason)" : '' )
+	);
+	$b->{suppressLyrionTransportUntil} = time() + 1;
+	$client->execute( [ 'playlist', 'stop' ] );
+	$client->execute( [ 'playlist', 'clear' ] );
 }
 
 sub _startBridge {
@@ -1082,7 +1093,6 @@ sub _startBridge {
 
 	local $ENV{SOLOIST_BIN}       = soloistBin();
 	local $ENV{FFMPEG_BIN}        = $prefs->get('ffmpegBin');
-	local $ENV{RELAY_BIN}         = $cfg->{relayBin};
 	local $ENV{SOLOIST_AUDIO_BACKEND} = $cfg->{backend};
 	local $ENV{PIPEWIRE_SINK}     = $cfg->{sink};
 	local $ENV{FORMAT}            = $cfg->{format};
@@ -1093,11 +1103,7 @@ sub _startBridge {
 	local $ENV{SOLOIST_API_KEY}   = $prefs->get('apiKey');
 	local $ENV{SOLOIST_DATA_DIR}  = $cfg->{dataDir};
 	local $ENV{SOLOIST_CACHE_DIR} = $cfg->{cacheDir};
-	local $ENV{RELAY_PORT}        = $cfg->{relayPort};
-	local $ENV{RELAY_BIND}        = $prefs->get('relayBind');
 	local $ENV{FIFO_PATH}         = $cfg->{fifoPath};
-	local $ENV{RELAY_READY_FILE}  = $cfg->{relayReadyFile};
-	local $ENV{RELAY_FLUSH_FILE}  = $cfg->{relayFlushFile};
 	local $ENV{SOLOIST_PCM_SHIM_DIR}  = $cfg->{pcmShimDir};
 	local $ENV{SOLOIST_PCM_SHIM_FIFO} = $cfg->{pcmShimFifo};
 	local $ENV{SOLOIST_RUNTIME_LIB_DIR} = $cfg->{runtimeDir};
@@ -1481,12 +1487,7 @@ sub _mergeTraceEventIntoState {
 	elsif ( $type eq 'track_changed' ) {
 		$state->{item} = $event->{item};
 		if ( ( $b->{format} || '' ) eq 'pcm' ) {
-			my $item = ref $event->{item} eq 'HASH' ? $event->{item} : {};
-			my $decorations = ref $item->{decorations} eq 'HASH' ? $item->{decorations} : {};
-			my $identity = ref $decorations->{identity} eq 'HASH' ? $decorations->{identity} : {};
 			$b->{pendingSpotifyTrackChange} = 1;
-			$b->{lastTraceFlushedTitle} = $identity->{name} // '';
-			_requestRelayFlush( $b, 'Spotify track changed' );
 		}
 		return 1;
 	}
@@ -1628,15 +1629,10 @@ sub _playbackStateForBridge {
 	};
 }
 
-sub _relayAutoplayGateReady {
+sub _directStreamReady {
 	my ($b) = @_;
-	my $path = $b->{relayReadyFile} || '';
-	return 0 unless length $path && -f $path;
-
-	my @stat = stat($path);
-	return 0 unless @stat && $stat[9];
-
-	return ( Time::HiRes::time() - $stat[9] ) <= RELAY_AUTOPLAY_READY_MAX_AGE ? 1 : 0;
+	my $path = $b->{fifoPath} || '';
+	return length $path && -p $path ? 1 : 0;
 }
 
 sub _maybeApplyConfiguredVolumeOnConnect {
@@ -1680,9 +1676,9 @@ sub _applySpotifyTransportEvents {
 	$b->{spotifyPauseApplied} = 0;
 	return unless $onOwnStream;
 
-	# Reopen the continuous HTTP stream at the new track boundary. The relay
-	# queue was flushed as soon as track_changed arrived; reconnecting here
-	# also discards bytes already buffered by LMS/the player.
+	# Reopen the direct stream at the new track boundary. The new protocol
+	# handler drains bytes left in the FIFO before it starts feeding LMS,
+	# while reconnecting also discards bytes buffered by LMS/the player.
 	$log->info( 'restarting ' . $client->name . ' stream immediately after Spotify changed track' );
 	$b->{suppressLyrionTransportUntil} = time() + 1;
 	$client->execute( [ 'playlist', 'play', $url ] );
@@ -1692,27 +1688,22 @@ sub _applyPlaybackTransition {
 	my ( $playerId, $b, $client, $url, $playback ) = @_;
 
 	if ( $playback->{reallyPlayingHere} && !$playback->{wasPlayingHere} ) {
-		$b->{pendingAutoplaySince} ||= Time::HiRes::time();
-		my $relayReady = _relayAutoplayGateReady($b);
-		my $timedOut = ( Time::HiRes::time() - $b->{pendingAutoplaySince} ) >= RELAY_AUTOPLAY_READY_TIMEOUT ? 1 : 0;
-		return unless $relayReady || $timedOut;
+		return unless _directStreamReady($b);
 
 		$log->info(
 			'auto-tuning ' . $client->name . ' to its Spotify Soloist instance'
-			. ( $relayReady ? ' after relay readiness' : ' after relay readiness timeout' )
+			. ' through the direct LMS stream'
 		);
 		$b->{suppressLyrionTransportUntil} = time() + 1;
 		$client->execute( [ 'playlist', 'play', $url ] );
 		$b->{notPlayingSince} = undef;
 		$b->{pausedSince} = undef;
 		$b->{idleDisconnectArmed} = 1;
-		$b->{pendingAutoplaySince} = undef;
 		$b->{wasPlayingHere} = 1;
 		$b->{spotifyPauseApplied} = 0;
 		return;
 	}
 
-	$b->{pendingAutoplaySince} = undef;
 	return unless !$playback->{reallyPlayingHere} && $playback->{wasPlayingHere};
 
 	if ( $playback->{isActiveDevice} ) {
@@ -1795,23 +1786,6 @@ sub _coverUrlFromDecorations {
 	return ( $large || $xlarge || $covers->[0] || {} )->{url} // '';
 }
 
-sub _requestRelayFlush {
-	my ( $b, $reason ) = @_;
-	return unless $b->{format} && $b->{format} eq 'pcm';
-
-	my $path = $b->{relayFlushFile} || '';
-	return unless length $path;
-
-	if ( open my $fh, '>>', $path ) {
-		close $fh;
-		utime undef, undef, $path;
-		$log->info("requested relay flush for track change" . ( $reason ? " ($reason)" : '' ));
-	}
-	else {
-		$log->warn("couldn't request relay flush for '$path': $!");
-	}
-}
-
 sub _publishMetadataForPlayer {
 	my ( $b, $client, $url, $state ) = @_;
 	return unless _clientIsActivelyPlayingOwnSoloistStream( $client, $url );
@@ -1850,15 +1824,6 @@ sub _publishMetadataForPlayer {
 	Slim::Music::Info::setCurrentTitle( $url, $title, $client );
 	$master->currentPlaylistUpdateTime( Time::HiRes::time() );
 	Slim::Control::Request::notifyFromArray( $master, ['newmetadata'] );
-
-	if ( ( $meta->{title} // '' ) ne '' && ( $meta->{title} // '' ) ne $title ) {
-		if ( ( $b->{lastTraceFlushedTitle} // '' ) eq $title ) {
-			delete $b->{lastTraceFlushedTitle};
-		}
-		else {
-			_requestRelayFlush( $b, $title );
-		}
-	}
 
 	$log->debug( 'metadata updated for ' . $client->name . ": $artist - $title" );
 }

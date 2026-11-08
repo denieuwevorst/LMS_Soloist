@@ -1,20 +1,20 @@
 #!/bin/sh
 #
-# soloist-bridge.sh -- pure audio pipeline, no Icecast. Launched (and
+# soloist-bridge.sh -- direct LMS audio pipeline. Launched (and
 # supervised) by Plugin.pm via Proc::Background, configured entirely
 # through environment variables it sets.
 #
 # Audio path:
 #   - Pulse backend: PipeWire/PulseAudio null-sink -> ffmpeg capture of that
-#     sink's monitor -> named pipe -> bundled C audio relay
+#     sink's monitor -> LMS-owned named-pipe reader
 #   - pcm-shim backend: contrib/experimental-pcm-shim's libpulse.so.0
 #     replacement writes raw PCM straight to a FIFO this script creates ->
-#     ffmpeg reads that FIFO directly -> named pipe -> bundled C audio relay. No
+#     ffmpeg reads that FIFO directly -> LMS-owned named-pipe reader. No
 #     Pulse/PipeWire server needed -- only the shim's own build-time dependency on
 #     libpulse-dev headers (see contrib/experimental-pcm-shim/README.md).
 #     Opt-in and still less validated than the Pulse/PipeWire backend.
-# The relay role is identical in both cases and replaces Icecast. It reads
-# from a FIFO so capture can restart without dropping clients.
+# ProtocolHandler.pm opens the final FIFO directly. Its read/write handle keeps
+# the FIFO alive while capture restarts, without an HTTP listener or relay.
 #
 # Metadata is NOT handled here -- Plugin.pm consumes Soloist's pushed
 # `ctl trace` event stream (with an occasional snapshot resync fallback)
@@ -22,9 +22,8 @@
 #
 # Required env vars: SOLOIST_BIN DEVICE_NAME SOLOIST_API_KEY
 # Optional (defaulted below): FORMAT BITRATE WS_PORT SOLOIST_DATA_DIR
-#                     SOLOIST_CACHE_DIR RELAY_PORT RELAY_BIND FIFO_PATH
-#                     RELAY_BIN SOLOIST_AUDIO_BACKEND PIPEWIRE_SINK
-#                     RELAY_READY_FILE RELAY_FLUSH_FILE FFMPEG_BIN
+#                     SOLOIST_CACHE_DIR FIFO_PATH
+#                     SOLOIST_AUDIO_BACKEND PIPEWIRE_SINK FFMPEG_BIN
 #                     SOLOIST_PCM_SHIM_DIR
 #                     SOLOIST_PCM_SHIM_FIFO SOLOIST_PCM_SHIM_LOG
 #                     SOLOIST_RUNTIME_LIB_DIR SOLOIST_RUNTIME_LOADER
@@ -43,12 +42,7 @@ SOLOIST_INITIAL_VOLUME="${SOLOIST_INITIAL_VOLUME:-100}"
 WS_PORT="${WS_PORT:-9091}"
 SOLOIST_DATA_DIR="${SOLOIST_DATA_DIR:-$HOME/.local/share/soloist-lyrion}"
 SOLOIST_CACHE_DIR="${SOLOIST_CACHE_DIR:-$HOME/.cache/soloist-lyrion}"
-RELAY_PORT="${RELAY_PORT:-9077}"
-RELAY_BIND="${RELAY_BIND:-0.0.0.0}"
 FIFO_PATH="${FIFO_PATH:-/tmp/soloist-audio.fifo}"
-RELAY_READY_FILE="${RELAY_READY_FILE:-${SOLOIST_CACHE_DIR}/relay.ready}"
-RELAY_FLUSH_FILE="${RELAY_FLUSH_FILE:-${SOLOIST_CACHE_DIR}/relay.flush}"
-RELAY_BIN="${RELAY_BIN:-}"
 SOLOIST_PCM_SHIM_DIR="${SOLOIST_PCM_SHIM_DIR:-}"
 SOLOIST_PCM_SHIM_FIFO="${SOLOIST_PCM_SHIM_FIFO:-}"
 SOLOIST_PCM_SHIM_LOG="${SOLOIST_PCM_SHIM_LOG:-0}"
@@ -101,13 +95,11 @@ echo "[soloist-bridge] running script: ${_SELF_PATH} (size=$(wc -c < "${_SELF_PA
 SOLOIST_PID=""
 SILENCE_PID=""
 FFMPEG_SUP_PID=""
-RELAY_PID=""
 SINK_ROUTER_PID=""
 
 cleanup() {
 	trap - EXIT TERM INT
 	[ -n "$SINK_ROUTER_PID" ] && kill "$SINK_ROUTER_PID" 2>/dev/null
-	[ -n "$RELAY_PID" ]      && kill "$RELAY_PID"      2>/dev/null
 	[ -n "$FFMPEG_SUP_PID" ] && kill "$FFMPEG_SUP_PID" 2>/dev/null
 	[ -n "$SILENCE_PID" ]    && kill "$SILENCE_PID"    2>/dev/null
 	[ -n "$SOLOIST_PID" ]    && kill "$SOLOIST_PID"    2>/dev/null
@@ -117,15 +109,6 @@ cleanup() {
 trap cleanup EXIT TERM INT
 
 log() { echo "[soloist-bridge] $*" >&2; }
-
-if [ -z "$RELAY_BIN" ] || [ ! -f "$RELAY_BIN" ]; then
-	log "ERROR: bundled relay executable not found at '${RELAY_BIN:-<unset>}'"
-	exit 1
-fi
-if [ ! -x "$RELAY_BIN" ]; then
-	log "ERROR: bundled relay '$RELAY_BIN' is not executable"
-	exit 1
-fi
 
 case "$SOLOIST_AUDIO_BACKEND" in
 	pulse)
@@ -367,12 +350,9 @@ if [ "$SOLOIST_AUDIO_BACKEND" = "pulse" ]; then
 fi
 
 # ---------------------------------------------------------------------------
-# 3. Set up the FIFO and start the relay (persistent, independent of ffmpeg
-#    restarts and of how many/which HTTP clients connect).
+# 3. Set up the FIFO that the LMS protocol handler opens directly.
 # ---------------------------------------------------------------------------
 [ -p "$FIFO_PATH" ] || { rm -f "$FIFO_PATH"; mkfifo "$FIFO_PATH"; }
-rm -f "$RELAY_READY_FILE"
-rm -f "$RELAY_FLUSH_FILE"
 
 case "$FORMAT" in
 	flac)
@@ -380,12 +360,10 @@ case "$FORMAT" in
 		# Live FLAC should emit frames promptly rather than favoring archive
 		# compression, otherwise Lyrion can wait several seconds for audio.
 		MUX_FORMAT="flac"
-		CONTENT_TYPE="audio/flac"
 		STREAM_EXTENSION="flac"
 		;;
 	pcm)
 		CAPTURE_MODE="pcm-direct"
-		CONTENT_TYPE="audio/wav"
 		STREAM_EXTENSION="wav"
 		if [ "$SOLOIST_AUDIO_BACKEND" = "pulse" ]; then
 			if ! command -v parec >/dev/null 2>&1; then
@@ -398,71 +376,20 @@ case "$FORMAT" in
 		: "${FFMPEG_BIN:?FFMPEG_BIN is required when FORMAT=mp3}"
 		FORMAT="mp3"
 		MUX_FORMAT="mp3"
-		CONTENT_TYPE="audio/mpeg"
 		STREAM_EXTENSION="mp3"
 		;;
 esac
 
-log "starting relay on ${RELAY_BIND}:${RELAY_PORT} (content-type ${CONTENT_TYPE})"
-if [ "$FORMAT" = "pcm" ]; then
-	"$RELAY_BIN" \
-		--fifo "$FIFO_PATH" \
-		--port "$RELAY_PORT" \
-		--bind "$RELAY_BIND" \
-		--content-type "$CONTENT_TYPE" \
-		--wav-stream --wav-sample-rate 44100 --wav-channels 2 --wav-bits-per-sample 16 \
-		--flush-file "$RELAY_FLUSH_FILE" \
-		--ready-file "$RELAY_READY_FILE" &
-else
-	"$RELAY_BIN" \
-		--fifo "$FIFO_PATH" \
-		--port "$RELAY_PORT" \
-		--bind "$RELAY_BIND" \
-		--content-type "$CONTENT_TYPE" \
-		--flush-file "$RELAY_FLUSH_FILE" \
-		--ready-file "$RELAY_READY_FILE" &
-fi
-RELAY_PID=$!
-
-# Confirm that the relay is actually listening instead of sleeping a
-# fixed amount and only checking whether the process still exists.
-RELAY_READY=0
-for _try in $(seq 1 10); do
-	if ! kill -0 "$RELAY_PID" 2>/dev/null; then
-		break
-	fi
-	if [ -f "$RELAY_READY_FILE" ]; then
-		RELAY_READY=1
-		break
-	fi
-	# The relay's readiness marker intentionally means that the first audio
-	# bytes have arrived. Capture starts below, so waiting only for that marker
-	# here would deadlock. Surviving two poll intervals confirms the listener
-	# did not fail immediately on bind or architecture startup.
-	if [ "$_try" -ge 2 ]; then
-		RELAY_READY=1
-		break
-	fi
-	sleep 0.1
-done
-
-if [ "$RELAY_READY" != "1" ]; then
-	log "ERROR: relay failed to start -- check the bundled relay binary matches this architecture and the port isn't in use"
-	exit 1
-fi
-
-log "relay confirmed ready, preparing capture pipeline (mode=${CAPTURE_MODE}, backend=${SOLOIST_AUDIO_BACKEND})"
+log "direct LMS stream FIFO ready at ${FIFO_PATH}; preparing capture pipeline (mode=${CAPTURE_MODE}, backend=${SOLOIST_AUDIO_BACKEND})"
 
 # ---------------------------------------------------------------------------
 # 4. Capture the backend output ONCE and write continuously into the FIFO.
-#    (One persistent capture connection regardless of how many HTTP
-#    listeners come and go -- restarting the capture on every
-#    listener connect/disconnect is what caused corrupted timestamps in an
-#    earlier version of this bridge.) For mp3/flac, ffmpeg still gets its
-#    own restart loop for resilience against transient capture/relay hiccups.
+#    (One persistent capture connection for the LMS protocol handler.)
+#    For mp3/flac, ffmpeg still gets its own restart loop for resilience
+#    against transient capture hiccups.
 #    For PCM/WAV, keep the path simpler and skip ffmpeg entirely: capture
-#    raw 44.1 kHz stereo 16-bit PCM directly and let the relay prepend the
-#    streaming WAV header for each client.
+#    raw 44.1 kHz stereo 16-bit PCM directly; ProtocolHandler.pm prepends the
+#    streaming WAV header when LMS opens the source.
 # ---------------------------------------------------------------------------
 capture_supervisor() {
 	CUR_CAPTURE_PID=""
@@ -513,13 +440,13 @@ capture_supervisor() {
 		CUR_CAPTURE_PID=""
 
 		if kill -0 "$SOLOIST_PID" 2>/dev/null; then
-			log "${CAPTURE_MODE} capture exited with status ${CAPTURE_STATUS} -- restarting in 2s (relay/clients unaffected)"
+			log "${CAPTURE_MODE} capture exited with status ${CAPTURE_STATUS} -- restarting in 2s (LMS FIFO remains open)"
 			sleep 2
 		fi
 	done
 }
 
-log "stream ready: http://$(hostname -I 2>/dev/null | awk '{print $1}'):${RELAY_PORT}/soloist.${STREAM_EXTENSION}"
+log "direct LMS stream ready: ${FIFO_PATH} (${STREAM_EXTENSION})"
 capture_supervisor
 
 wait "$SOLOIST_PID" 2>/dev/null
