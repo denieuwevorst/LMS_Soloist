@@ -203,6 +203,18 @@ The two normalization stages are separate:
   restarts only that player's bridge. Existing installs default to enabled,
   preserving Soloist's previous behavior.
 
+## Track timing and DSTM
+
+Soloist's current item duration and position are mapped into LMS's active Song
+object and remote metadata. This gives the logical Spotify track a total time
+and accurate progress display even though the underlying `soloist://`
+transport remains continuous and non-seekable.
+
+The protocol handler identifies that transport as a repeating stream, and the
+plugin implements LMS's DSTM conflict hook. Don't Stop The Music is suppressed
+only while a player is using its Soloist stream; switching to another source
+restores that player's normal DSTM behavior.
+
 ## Runtime files and logs
 
 Per-player data is stored below LMS's preferences and cache directories:

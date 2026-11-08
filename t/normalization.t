@@ -45,6 +45,11 @@ is(
 	0,
 	'soloist streams override LMS remote replay gain with unity gain',
 );
+is(
+	Plugins::SpotifySoloist::ProtocolHandler->isRepeatingStream(),
+	1,
+	'soloist streams identify as continuous so DSTM does not queue a next song',
+);
 
 is(
 	Plugins::SpotifySoloist::SoloistPrefs::normalizationForPlayer( undef, 'player-a' ),
