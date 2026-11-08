@@ -106,6 +106,9 @@ PLUGIN_SPOTIFYSOLOIST_PLAYERS
 PLUGIN_SPOTIFYSOLOIST_PLAYERS_DESC
 	EN	Each checked player gets its own Spotify Connect device (shown separately in the Spotify app's device picker as "&lt;player name&gt;&lt;suffix&gt;") and automatically starts playing the moment Spotify actually starts sending it audio. Unchecking a player stops and removes its instance immediately.
 
+PLUGIN_SPOTIFYSOLOIST_NORMALIZATION_UNAVAILABLE
+	EN	Always on in Soloist; its current CLI and local API provide no toggle. Lyrion's separate internet-radio gain correction is bypassed.
+
 PLUGIN_SPOTIFYSOLOIST_RUNNING
 	EN	running
 

@@ -189,6 +189,19 @@ environment variables, and limitations.
 The global format is the default. Each enabled player can override it
 independently from the settings page.
 
+## Volume normalization
+
+The two normalization stages are separate:
+
+- Lyrion's remote/internet-radio replay-gain fallback is bypassed for
+  `soloist://` streams. Soloist supplies already-rendered audio, so LMS keeps
+  the stream at unity gain rather than applying the player's radio correction.
+- Spotify Soloist's own loudness normalization cannot currently be changed.
+  The official Soloist 1.3.10.51 command line and local WebSocket/`soloist ctl`
+  APIs expose volume but no normalization option. The settings page reports
+  this limitation per player instead of presenting a switch that would not
+  affect playback.
+
 ## Runtime files and logs
 
 Per-player data is stored below LMS's preferences and cache directories:

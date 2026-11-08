@@ -1,5 +1,13 @@
 # Changelog
 
+## Unreleased
+
+- Keep direct `soloist://` playback at unity gain in LMS instead of inheriting
+  the player's remote/internet-radio replay-gain correction.
+- Document in the per-player settings table that Spotify Soloist normalization
+  remains always enabled because the current official CLI and local control
+  API provide no normalization switch.
+
 ## 0.3.65
 
 - Prevent a temporary LMS/player read stall from becoming a persistent

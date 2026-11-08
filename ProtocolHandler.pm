@@ -26,6 +26,11 @@ sub canHandleTranscode { 0 }
 sub isAudioURL { 1 }
 sub canDirectStream { 0 }
 
+# Soloist already supplies fully rendered audio. Returning unity gain here
+# prevents LMS from applying the per-player remote/internet-radio replay gain
+# fallback merely because soloist:// is a remote URL.
+sub trackGain { 0 }
+
 sub bufferThreshold {
 	my ( $class, $client, $url ) = @_;
 	my $stream = Plugins::SpotifySoloist::Plugin::directStreamInfoForUrl($url);

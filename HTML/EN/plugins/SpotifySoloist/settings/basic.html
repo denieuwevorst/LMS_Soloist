@@ -50,6 +50,7 @@
 		<th align="left">Player</th>
 		<th align="left">Status</th>
 		<th align="left">Format</th>
+		<th align="left">Spotify normalization</th>
 		<th align="left">Stream</th>
 	</tr>
 	[% FOREACH player IN players %]
@@ -74,6 +75,7 @@
 					<option value="pcm" [% IF player.formatOverride == 'pcm' %]selected[% END %]>PCM/WAV (LMS may transcode)</option>
 				</select>
 			</td>
+			<td><small>[% "PLUGIN_SPOTIFYSOLOIST_NORMALIZATION_UNAVAILABLE" | string %]</small></td>
 			<td><small>[% player.streamUrl %]</small></td>
 		</tr>
 	[% END %]
