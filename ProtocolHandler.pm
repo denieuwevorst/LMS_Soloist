@@ -31,6 +31,10 @@ sub canDirectStream { 0 }
 # fallback merely because soloist:// is a remote URL.
 sub trackGain { 0 }
 
+# The transport is one continuous externally controlled stream. Logical
+# Spotify track boundaries are metadata updates, not LMS end-of-track events.
+sub isRepeatingStream { 1 }
+
 sub bufferThreshold {
 	my ( $class, $client, $url ) = @_;
 	my $stream = Plugins::SpotifySoloist::Plugin::directStreamInfoForUrl($url);

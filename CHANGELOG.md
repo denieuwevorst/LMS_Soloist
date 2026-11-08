@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.3.67
+
+- Publish Spotify track duration and align LMS's displayed elapsed time with
+  Soloist's playback-position anchor while keeping the continuous stream
+  non-seekable.
+- Mark `soloist://` as a repeating continuous stream and use DSTM's documented
+  per-plugin conflict hook to suppress automatic mixes only while the affected
+  player is playing Soloist.
+
 ## 0.3.66
 
 - Keep direct `soloist://` playback at unity gain in LMS instead of inheriting

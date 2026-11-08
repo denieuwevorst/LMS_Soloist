@@ -58,6 +58,7 @@ use Slim::Player::Playlist;
 use Slim::Control::Request;
 
 require( dirname(__FILE__) . '/SoloistPrefs.pm' );
+require( dirname(__FILE__) . '/StreamSemantics.pm' );
 
 my $log = Slim::Utils::Log->addLogCategory({
 	category     => 'plugin.spotifysoloist',
@@ -186,6 +187,14 @@ sub normalizationForPlayer {
 		$prefs->get('playerNormalization'),
 		$playerId,
 	);
+}
+
+sub disableDSTM {
+	my ( $class, $client ) = @_;
+	return 0 unless $client;
+	my $master = eval { $client->master } || $client;
+	my $url = eval { Slim::Player::Playlist::url($master) };
+	return Plugins::SpotifySoloist::StreamSemantics::isSoloistUrl($url);
 }
 
 sub _managedSoloistDir {
@@ -1848,6 +1857,20 @@ sub _publishMetadataForPlayer {
 	my $format = $b->{formatSpec} || currentFormatSpec( $b->{format} );
 	my $master = $client->master;
 	my $meta   = $master->pluginData('metadata') || {};
+	my $duration = Plugins::SpotifySoloist::StreamSemantics::durationSeconds($state);
+	my $song = eval { $master->controller->playingSong() };
+	if ($song) {
+		my $songUrl = eval { $song->currentTrack()->url };
+		if ( defined $songUrl && $songUrl eq $url ) {
+			my $rawElapsed = eval { $master->songElapsedSeconds() };
+			Plugins::SpotifySoloist::StreamSemantics::applySongTiming(
+				$song,
+				$state,
+				$rawElapsed,
+				Time::HiRes::time() * 1000,
+			);
+		}
+	}
 	my $streamType = 'Spotify Soloist (' . $format->{displayFormat}
 		. ( defined $format->{bitrate} ? " $format->{bitrate}" : '' ) . ')';
 
@@ -1855,7 +1878,8 @@ sub _publishMetadataForPlayer {
 	     && ( $meta->{artist} // '' ) eq $artist
 	     && ( $meta->{cover}  // '' ) eq $cover
 	     && ( $meta->{format} // '' ) eq $format->{displayFormat}
-	     && ( $meta->{bitrate} // '' ) eq ( $format->{bitrate} // '' );
+	     && ( $meta->{bitrate} // '' ) eq ( $format->{bitrate} // '' )
+	     && ( $meta->{duration} // '' ) eq ( $duration // '' );
 
 	$master->pluginData( metadata => {
 		title    => $title,
@@ -1865,6 +1889,7 @@ sub _publishMetadataForPlayer {
 		icon     => $cover,
 		type     => $streamType,
 		format   => $format->{displayFormat},
+		( defined $duration ? ( duration => $duration ) : () ),
 		( defined $format->{bitrate} ? ( bitrate => $format->{bitrate} ) : () ),
 	} );
 

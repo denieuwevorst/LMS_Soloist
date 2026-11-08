@@ -90,6 +90,13 @@ BEGIN {
 		(my $file = "$package.pm") =~ s{::}{/}g;
 		$INC{$file} = __FILE__;
 	}
+
+	package SyntaxCheck::Client;
+	sub master { $_[0] }
+
+	package Slim::Player::Playlist;
+	our $currentUrl = '';
+	sub url { $currentUrl }
 }
 
 require './Plugin.pm';
@@ -124,6 +131,14 @@ my @cachedCtlCommand =
 die "Cached Soloist ctl command was assembled incorrectly\n"
 		unless join( "\0", @cachedCtlCommand )
 			eq join( "\0", 'soloist', 'ctl', '-w', '127.0.0.1:9091', 'now', '--json' );
+
+my $client = bless {}, 'SyntaxCheck::Client';
+$Slim::Player::Playlist::currentUrl = 'soloist://player-1/soloist.wav';
+die "DSTM was not disabled for Soloist playback\n"
+	unless Plugins::SpotifySoloist::Plugin->disableDSTM($client);
+$Slim::Player::Playlist::currentUrl = 'https://radio.example/stream.mp3';
+die "DSTM was disabled for unrelated playback\n"
+	if Plugins::SpotifySoloist::Plugin->disableDSTM($client);
 
 my $probeDir = 'contrib/.version-probe-test';
 mkdir $probeDir or die "Could not create $probeDir: $!\n";
