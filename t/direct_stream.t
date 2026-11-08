@@ -59,10 +59,16 @@ plan skip_all => "mkfifo unavailable: " . ( $@ || $! )
 $Plugins::SpotifySoloist::Plugin::stream = {
 	fifoPath => $fifo,
 	format   => {
-		key         => 'pcm',
-		contentType => 'wav',
-		bitrateBps  => 1_411_200,
-		bufferKb    => 35,
+		key           => 'pcm',
+		contentType   => 'wav',
+		displayFormat => 'WAV',
+		bitrateBps    => 1_411_200,
+		bitrateLabel  => '1411.2 kbps',
+		sampleRate    => 44_100,
+		sampleSize    => 16,
+		channels      => 2,
+		blockAlign    => 4,
+		bufferKb      => 35,
 	},
 };
 
