@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.3.65
+
+- Prevent a temporary LMS/player read stall from becoming a persistent
+  multi-second playback delay. When the direct `soloist://` handler resumes
+  after a real read gap and finds queued audio, it briefly drains the FIFO and
+  upstream capture backlog, then reopens the stream to clear audio already
+  buffered by LMS/the player. Normal startup and uninterrupted playback keep
+  the existing low-latency buffering.
+- Log the detected read gap and total discarded stale bytes to make future
+  capture or player stalls diagnosable from the LMS log.
+
 ## 0.3.64
 
 - Replaced the per-player HTTP audio relay with direct LMS injection through

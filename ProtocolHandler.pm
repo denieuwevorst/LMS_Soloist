@@ -7,6 +7,7 @@ use base qw(IO::Handle);
 
 use Errno qw(EAGAIN EWOULDBLOCK);
 use Fcntl qw(O_NONBLOCK O_RDWR);
+use Time::HiRes ();
 
 use Slim::Utils::Log;
 use Slim::Utils::Strings qw(cstring);
@@ -14,6 +15,10 @@ use Slim::Utils::Strings qw(cstring);
 Slim::Player::ProtocolHandlers->registerHandler( 'soloist', __PACKAGE__ );
 
 my $log = logger('plugin.spotifysoloist');
+
+use constant STALE_READ_GAP_SECONDS => 1.0;
+use constant STALE_DRAIN_SECONDS    => 0.25;
+use constant MAX_DRAIN_BYTES        => 4 * 1024 * 1024;
 
 sub isRemote { 1 }
 sub canSeek { 0 }
@@ -60,9 +65,13 @@ sub new {
 
 	my $format = $stream->{format};
 	${*$self}{url} = $url;
+	${*$self}{client} = $args->{client};
 	${*$self}{contentType} = $format->{contentType};
 	${*$self}{bitrate} = $format->{bitrateBps};
 	${*$self}{prefix} = $format->{key} eq 'pcm' ? _wavHeader() : '';
+	${*$self}{lastAudioReadAt} = undef;
+	${*$self}{staleDrainUntil} = undef;
+	${*$self}{staleBytesDiscarded} = 0;
 
 	my $song = $args->{song};
 	if ( $format->{key} eq 'pcm' ) {
@@ -92,11 +101,60 @@ sub sysread {
 		return length $chunk;
 	}
 
+	my $now = Time::HiRes::time();
+	if ( my $lastRead = ${*$self}{lastAudioReadAt} ) {
+		my $gap = $now - $lastRead;
+		if ( $gap >= STALE_READ_GAP_SECONDS && !${*$self}{staleDrainUntil} ) {
+			my $discarded = _drainFifo($self);
+			if ($discarded) {
+				${*$self}{staleDrainUntil} = $now + STALE_DRAIN_SECONDS;
+				${*$self}{staleBytesDiscarded} = $discarded;
+				$log->info(
+					sprintf(
+						'discarding stale Soloist audio after %.3fs LMS read gap (%d bytes immediately queued)',
+						$gap,
+						$discarded,
+					)
+				);
+				$! = EWOULDBLOCK;
+				return;
+			}
+		}
+	}
+
+	if ( my $until = ${*$self}{staleDrainUntil} ) {
+		${*$self}{staleBytesDiscarded} += _drainFifo($self);
+		if ( $now < $until ) {
+			$! = EWOULDBLOCK;
+			return;
+		}
+
+		$log->info(
+			'finished stale Soloist audio catch-up after discarding '
+			. ${*$self}{staleBytesDiscarded}
+			. ' bytes'
+		);
+		my $discarded = ${*$self}{staleBytesDiscarded};
+		${*$self}{staleDrainUntil} = undef;
+		${*$self}{staleBytesDiscarded} = 0;
+		${*$self}{lastAudioReadAt} = $now;
+		if ( my $client = ${*$self}{client} ) {
+			Plugins::SpotifySoloist::Plugin::recoverDirectStreamAfterStall(
+				$client,
+				${*$self}{url},
+				$discarded,
+			);
+		}
+		$! = EWOULDBLOCK;
+		return;
+	}
+
 	my $read = CORE::sysread( $self, $_[1], $length, $offset || 0 );
 	if ( !defined $read && ( $! == EAGAIN || $! == EWOULDBLOCK ) ) {
 		$! = EWOULDBLOCK;
 		return;
 	}
+	${*$self}{lastAudioReadAt} = $now if $read;
 	return $read;
 }
 
@@ -136,11 +194,20 @@ sub _wavHeader {
 sub _drainFifo {
 	my ($self) = @_;
 	my $discard = '';
+	my $total = 0;
 
-	while (1) {
-		my $read = CORE::sysread( $self, $discard, 32 * 1024 );
+	while ( $total < MAX_DRAIN_BYTES ) {
+		my $remaining = MAX_DRAIN_BYTES - $total;
+		my $read = CORE::sysread(
+			$self,
+			$discard,
+			$remaining < 32 * 1024 ? $remaining : 32 * 1024,
+		);
 		last unless defined $read && $read > 0;
+		$total += $read;
 	}
+
+	return $total;
 }
 
 1;

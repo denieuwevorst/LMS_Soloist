@@ -1223,6 +1223,34 @@ sub _bridgeForSoloistStream {
 	return $playing && $playing eq streamUrlFor($b) ? $b : undef;
 }
 
+sub recoverDirectStreamAfterStall {
+	my ( $client, $url, $discarded ) = @_;
+	my $master = $client->master;
+	my $playerId = $master->id;
+	my $b = $bridges{$playerId} or return;
+
+	return unless $url eq streamUrlFor($b);
+	return unless _clientIsOnOwnSoloistStream( $master, $url );
+	return if $b->{stallRecoveryPending};
+
+	$b->{stallRecoveryPending} = 1;
+	Slim::Utils::Timers::setTimer( undef, time() + 0.01, sub {
+		my $liveBridge = $bridges{$playerId} or return;
+		$liveBridge->{stallRecoveryPending} = 0;
+		my $liveClient = Slim::Player::Client::getClient($playerId) or return;
+		return unless _clientIsOnOwnSoloistStream( $liveClient, $url );
+
+		$log->info(
+			'restarting ' . $liveClient->name
+			. ' direct Soloist stream after a read stall discarded '
+			. ( $discarded || 0 )
+			. ' stale bytes'
+		);
+		$liveBridge->{suppressLyrionTransportUntil} = time() + 1;
+		$liveClient->execute( [ 'playlist', 'play', $url ] );
+	} );
+}
+
 sub _runSoloistCtl {
 	my ($b, @args) = @_;
 	my @cmd = _soloistCommand(
