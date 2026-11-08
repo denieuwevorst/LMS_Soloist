@@ -123,10 +123,6 @@
 	<input name="pref_wsPortBase" id="pref_wsPortBase" type="number" min="1024" max="65000" value="[% prefs.pref_wsPortBase %]">
 [% END %]
 
-[% WRAPPER setting title="PLUGIN_SPOTIFYSOLOIST_RELAYPORTBASE" desc="PLUGIN_SPOTIFYSOLOIST_RELAYPORTBASE_DESC" %]
-	<input name="pref_relayPortBase" id="pref_relayPortBase" type="number" min="1024" max="65000" value="[% prefs.pref_relayPortBase %]">
-[% END %]
-
 [% WRAPPER setting title="PLUGIN_SPOTIFYSOLOIST_FORMAT" desc="PLUGIN_SPOTIFYSOLOIST_FORMAT_DESC" %]
 	<select class="stdedit" name="pref_format" id="pref_format">
 		<option value="mp3"  [% IF prefs.pref_format == 'mp3'  %]selected[% END %]>mp3</option>
@@ -149,10 +145,6 @@
 
 [% WRAPPER setting title="PLUGIN_SPOTIFYSOLOIST_APIKEY" desc="PLUGIN_SPOTIFYSOLOIST_APIKEY_DESC" %]
 	<input name="pref_apiKey" id="pref_apiKey" type="password" size="40" value="[% prefs.pref_apiKey %]">
-[% END %]
-
-[% WRAPPER setting title="PLUGIN_SPOTIFYSOLOIST_RELAYBIND" desc="PLUGIN_SPOTIFYSOLOIST_RELAYBIND_DESC" %]
-	<input name="pref_relayBind" id="pref_relayBind" type="text" size="20" value="[% prefs.pref_relayBind %]">
 [% END %]
 
 [% WRAPPER setting title="PLUGIN_SPOTIFYSOLOIST_AUTOSTART" desc="PLUGIN_SPOTIFYSOLOIST_AUTOSTART_DESC" %]

@@ -1,4 +1,8 @@
-# Bundled C audio relay
+# Legacy C audio relay
+
+This relay is retained as historical source for releases before 0.3.64. The
+current plugin opens each bridge FIFO directly through `ProtocolHandler.pm` and
+does not launch this binary or expose an HTTP audio listener.
 
 `audio_relay.c` replaces the former Python relay used between each bridge
 FIFO and LMS. It has no runtime dependencies beyond the Linux kernel and is

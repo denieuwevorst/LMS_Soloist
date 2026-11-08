@@ -26,7 +26,7 @@ PLUGIN_SPOTIFYSOLOIST_FFMPEGBIN
 	EN	Path to ffmpeg binary
 
 PLUGIN_SPOTIFYSOLOIST_FFMPEGBIN_DESC
-	EN	Used to capture each player's backend-specific audio source and feed its relay.
+	EN	Used to capture each player's backend-specific audio source and feed its direct LMS stream.
 
 PLUGIN_SPOTIFYSOLOIST_AUDIOBACKEND
 	EN	Audio backend
@@ -51,12 +51,6 @@ PLUGIN_SPOTIFYSOLOIST_WSPORTBASE
 
 PLUGIN_SPOTIFYSOLOIST_WSPORTBASE_DESC
 	EN	Each player's soloist --ws / soloist ctl port is this base plus a per-player slot number. Loopback only, not reachable from the network.
-
-PLUGIN_SPOTIFYSOLOIST_RELAYPORTBASE
-	EN	Relay port base
-
-PLUGIN_SPOTIFYSOLOIST_RELAYPORTBASE_DESC
-	EN	Each player's audio relay listens on this base plus its slot number. No separate Icecast install needed.
 
 PLUGIN_SPOTIFYSOLOIST_FORMAT
 	EN	Default stream format
@@ -87,12 +81,6 @@ PLUGIN_SPOTIFYSOLOIST_APIKEY
 
 PLUGIN_SPOTIFYSOLOIST_APIKEY_DESC
 	EN	From the Spotify for Developers dashboard. Required at every Soloist startup. Shared across all per-player instances.
-
-PLUGIN_SPOTIFYSOLOIST_RELAYBIND
-	EN	Relay bind address
-
-PLUGIN_SPOTIFYSOLOIST_RELAYBIND_DESC
-	EN	0.0.0.0 (all interfaces) is usually right so other Squeezebox players on your LAN can reach it.
 
 PLUGIN_SPOTIFYSOLOIST_AUTOSTART
 	EN	Start automatically with Lyrion

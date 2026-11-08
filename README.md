@@ -1,12 +1,11 @@
 # Spotify Soloist for Lyrion Music Server
 
 Runs one Spotify Soloist instance per selected Lyrion/Squeezebox player. Each
-player appears as its own Spotify Connect device, while the plugin relays audio
-into LMS and publishes track metadata and cover art through LMS's native
+player appears as its own Spotify Connect device, while the plugin injects audio
+directly into LMS and publishes track metadata and cover art through LMS's native
 interfaces.
 
-No Icecast server is required.
-The bundled HTTP relay is written in C; Python is not required at runtime.
+No Icecast server, HTTP audio relay, or network audio port is required.
 
 ## Audio backends
 
@@ -31,8 +30,9 @@ Spotify
   -> per-player Pulse/PipeWire null sink
   -> parec (PCM/WAV) or ffmpeg (MP3/FLAC)
   -> per-player FIFO
-  -> bundled C audio relay
-  -> LMS/player
+  -> soloist:// protocol handler
+  -> LMS conversion/streaming pipeline
+  -> player
 ```
 
 ### Direct PCM shim
@@ -43,13 +43,18 @@ Spotify
   -> custom libpulse.so.0
   -> per-player raw-PCM FIFO
   -> direct forwarding (PCM/WAV) or ffmpeg (MP3/FLAC)
-  -> bundled C audio relay
-  -> LMS/player
+  -> soloist:// protocol handler
+  -> LMS conversion/streaming pipeline
+  -> player
 ```
 
-PCM/WAV mode does not run ffmpeg. The relay adds a streaming WAV header for
-each HTTP connection and forwards the PCM unchanged. LMS may then use its own
-conversion rules when a player cannot consume WAV directly.
+PCM/WAV mode does not run ffmpeg. The protocol handler adds a streaming WAV
+header when LMS opens the FIFO and forwards the PCM unchanged. LMS may then use
+its own conversion rules when a player cannot consume WAV directly.
+
+The handler opens the FIFO nonblocking in read/write mode. Keeping one local
+writer open prevents a temporary capture-process exit from appearing as EOF to
+LMS; the bridge can restart capture and continue through the same stream.
 
 ## Requirements
 
@@ -86,7 +91,7 @@ Configure:
 - the players that should receive a Spotify Connect device
 - the global or per-player stream format
 
-Each selected player receives stable control and relay ports based on its saved
+Each selected player receives a stable control port and FIFO based on its saved
 slot.
 
 ### Managed Soloist updates
@@ -104,8 +109,7 @@ updates are opt-in. When enabled, the plugin:
 
 Current Spotify builds require glibc 2.38 or newer. The plugin includes a
 private architecture-matched glibc runtime for Soloist so older hosts such as
-piCorePlayer can run it without replacing their system libraries. LMS, the
-audio relay, and all other processes continue using the host runtime. Runtime
+piCorePlayer can run it without replacing their system libraries. LMS and all other processes continue using the host runtime. Runtime
 provenance and license information is documented in `Bin/GLIBC-RUNTIME.md`.
 - checks daily and refreshes builds after 75 days, then restarts selected
   bridges only after a successful update
@@ -204,8 +208,8 @@ Useful successful startup lines include:
 
 ```text
 [soloist-bridge] soloist ready
-[soloist-bridge] relay confirmed ready
-[soloist-bridge] stream ready: http://...
+[soloist-bridge] direct LMS stream FIFO ready
+[soloist-bridge] direct LMS stream ready
 ```
 
 For the direct PCM shim, shim diagnostics appear in the same bridge log:
@@ -248,9 +252,8 @@ the expected per-player FIFO.
 
 ## Security and network exposure
 
-Soloist control WebSockets bind to loopback. Audio relays bind to the configured
-relay address (default `0.0.0.0`) so network players can reach LMS's source
-stream. Restrict access with host firewall rules on untrusted networks.
+Soloist control WebSockets bind to loopback. Audio remains local between the
+bridge FIFO and LMS; only LMS's normal player-facing connections are exposed.
 
 ## License
 

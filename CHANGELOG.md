@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.3.64
+
+- Replaced the per-player HTTP audio relay with direct LMS injection through
+  the `soloist://` protocol handler. The handler reads the bridge FIFO
+  nonblocking, keeps it open across capture restarts, supplies codec/bitrate
+  metadata, and frames raw PCM as a streaming WAV source.
+- Removed the obsolete relay port and bind-address settings; audio no longer
+  opens a separate network listener.
+
 ## 0.3.63
 
 - Retry selected bridges automatically after an unexpected process exit
