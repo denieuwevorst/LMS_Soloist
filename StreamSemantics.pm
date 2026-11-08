@@ -10,6 +10,79 @@ sub isSoloistUrl {
 	return defined $url && $url =~ m{\Asoloist://player-\d+/soloist\.[A-Za-z0-9]+\z} ? 1 : 0;
 }
 
+sub parseBitrateBps {
+	my ($value) = @_;
+	return unless defined $value;
+	return unless $value =~ /\A\s*(\d+(?:\.\d+)?)\s*([kKmM]?)\s*\z/;
+
+	my ( $number, $suffix ) = ( $1 + 0, lc $2 );
+	my $multiplier = $suffix eq 'm' ? 1_000_000
+		: $suffix eq 'k' ? 1_000
+		: 1;
+	my $bitrate = int( $number * $multiplier + 0.5 );
+	return $bitrate > 0 ? $bitrate : undef;
+}
+
+sub bitrateLabel {
+	my ($bitrate) = @_;
+	return unless defined $bitrate && looks_like_number($bitrate) && $bitrate > 0;
+	return "$bitrate bps" if $bitrate < 1000;
+
+	my $kbps = $bitrate / 1000;
+	return ( $kbps == int($kbps) ? int($kbps) : sprintf( '%.1f', $kbps ) )
+		. ' kbps';
+}
+
+sub metadataForFormat {
+	my ($format) = @_;
+	return {} unless ref $format eq 'HASH';
+
+	my $display = $format->{displayFormat} || uc( $format->{key} || '' );
+	my @details;
+	push @details, $format->{bitrateLabel} if $format->{bitrateLabel};
+	if ( $format->{key} eq 'pcm' ) {
+		push @details, '44.1 kHz', '16-bit', 'stereo';
+	}
+
+	return {
+		type   => 'Spotify Soloist (' . join( ', ', $display, @details ) . ')',
+		format => $display,
+		ct     => $format->{contentType},
+		( $format->{bitrateLabel} ? ( bitrate => $format->{bitrateLabel} ) : () ),
+		( $format->{sampleRate} ? ( samplerate => $format->{sampleRate} ) : () ),
+		( $format->{sampleSize} ? ( samplesize => $format->{sampleSize} ) : () ),
+		( $format->{channels} ? ( channels => $format->{channels} ) : () ),
+	};
+}
+
+sub applySongFormat {
+	my ( $song, $format ) = @_;
+	return {} unless $song && ref $format eq 'HASH';
+
+	my @targets = ($song);
+	my $track = eval { $song->currentTrack() };
+	push @targets, $track if $track;
+
+	for my $target (@targets) {
+		next unless $target;
+		$target->bitrate( $format->{bitrateBps} || 0 )
+			if $target->can('bitrate');
+		$target->samplerate( $format->{sampleRate} || 0 )
+			if $target->can('samplerate');
+		$target->samplesize( $format->{sampleSize} || 0 )
+			if $target->can('samplesize');
+		$target->channels( $format->{channels} || 0 )
+			if $target->can('channels');
+	}
+
+	$song->blockalign( $format->{blockAlign} || 0 )
+		if $song->can('blockalign');
+	$track->block_alignment( $format->{blockAlign} || 0 )
+		if $track && $track->can('block_alignment');
+
+	return metadataForFormat($format);
+}
+
 sub durationSeconds {
 	my ($state) = @_;
 	return unless ref $state eq 'HASH';

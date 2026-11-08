@@ -4,13 +4,13 @@
 		<title lang="EN">Spotify Soloist Repository</title>
 	</details>
 	<plugins>
-		<plugin name="SpotifySoloist" version="0.3.67" minTarget="8.0" maxTarget="*"
+		<plugin name="SpotifySoloist" version="0.3.68" minTarget="8.0" maxTarget="*"
 			category="musicservices"
 			creator="cortegedusage"
 			email="REPLACE_WITH_YOUR_EMAIL"
 			link="https://github.com/denieuwevorst/LMS_Soloist"
-			url="https://github.com/denieuwevorst/LMS_Soloist/releases/download/v0.3.67/SpotifySoloist-0.3.67.zip"
-			sha="6f52c111716c81cd947abc4e8db8a7f30a1d9538">
+			url="https://github.com/denieuwevorst/LMS_Soloist/releases/download/v0.3.68/SpotifySoloist-0.3.68.zip"
+			sha="32261d1ba5f9446a5b9134748e5c31dff592591c">
 			<title lang="EN">Spotify Soloist (Connect)</title>
 			<desc lang="EN">Run Spotify Soloist as a Spotify Connect target for your Lyrion players. One independent Connect device per selected Squeezebox player, direct FIFO-backed audio injection into Lyrion, and real Now Playing metadata including cover art. Uses the direct-PCM shim by default without a Pulse/PipeWire server, with the Pulse/PipeWire bridge still available as an alternative.</desc>
 		</plugin>

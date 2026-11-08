@@ -121,9 +121,10 @@ my %FORMAT_SPECS = (
 		displayFormat => 'MP3',
 		contentType   => 'mp3',
 		bufferKb      => sub {
-			my ($bitrate) = @_;
-			my ($kbps) = ( $bitrate || '' ) =~ /(\d+)/;
-			my $threshold = $kbps ? int( ( $kbps / 8 ) * 0.2 + 0.5 ) : 8;
+			my ($bitrateBps) = @_;
+			my $threshold = $bitrateBps
+				? int( ( $bitrateBps / 8000 ) * 0.2 + 0.5 )
+				: 8;
 			$threshold = 3  if $threshold < 3;
 			$threshold = 35 if $threshold > 35;
 			return $threshold;
@@ -157,9 +158,16 @@ sub currentFormatSpec {
 	$format = _normalizedFormatKey($format);
 	$format = _normalizedFormatKey( $prefs->get('format') ) || 'mp3' unless defined $format;
 	my $spec = $FORMAT_SPECS{$format} || $FORMAT_SPECS{mp3};
-	my $bitrate = $format eq 'mp3' ? ( $prefs->get('bitrate') || '320k' ) : undef;
-	my ($bitrateKbps) = ( $bitrate || '' ) =~ /(\d+)/;
-	my $bufferKb = ref $spec->{bufferKb} eq 'CODE' ? $spec->{bufferKb}->($bitrate) : $spec->{bufferKb};
+	my $configuredBitrate = $format eq 'mp3' ? ( $prefs->get('bitrate') || '320k' ) : undef;
+	my $parsedBitrate = $format eq 'mp3'
+		? Plugins::SpotifySoloist::StreamSemantics::parseBitrateBps($configuredBitrate)
+		: undef;
+	my $bitrateBps = $format eq 'pcm' ? 1_411_200
+		: $format eq 'mp3' ? ( $parsedBitrate || 320_000 )
+		: undef;
+	my $bufferKb = ref $spec->{bufferKb} eq 'CODE'
+		? $spec->{bufferKb}->($bitrateBps)
+		: $spec->{bufferKb};
 
 	return {
 		key           => $format,
@@ -167,10 +175,15 @@ sub currentFormatSpec {
 		displayFormat => $spec->{displayFormat},
 		contentType   => $spec->{contentType},
 		bufferKb      => $bufferKb,
-		bitrateBps    => $format eq 'pcm' ? 1_411_200
-			: $format eq 'flac' ? 705_000
-			: ( $bitrateKbps || 320 ) * 1000,
-		( defined $bitrate ? ( bitrate => $bitrate ) : () ),
+		sampleRate    => 44_100,
+		channels      => 2,
+		bitrateBps    => $bitrateBps,
+		bitrateLabel  => $format eq 'flac' ? 'VBR (live stream)'
+			: Plugins::SpotifySoloist::StreamSemantics::bitrateLabel($bitrateBps),
+		bitrateValid  => $format ne 'mp3' || defined $parsedBitrate,
+		( defined $configuredBitrate ? ( configuredBitrate => $configuredBitrate ) : () ),
+		( $format ne 'mp3' ? ( sampleSize => 16 ) : () ),
+		( $format eq 'pcm' ? ( blockAlign => 4 ) : () ),
 	};
 }
 
@@ -1145,7 +1158,7 @@ sub _startBridge {
 	local $ENV{SOLOIST_AUDIO_BACKEND} = $cfg->{backend};
 	local $ENV{PIPEWIRE_SINK}     = $cfg->{sink};
 	local $ENV{FORMAT}            = $cfg->{format};
-	local $ENV{BITRATE}           = $prefs->get('bitrate');
+	local $ENV{BITRATE}           = $cfg->{formatSpec}->{bitrateBps} || 320_000;
 	local $ENV{SOLOIST_INITIAL_VOLUME} = _initialVolume();
 	local $ENV{WS_PORT}           = $cfg->{wsPort};
 	local $ENV{DEVICE_NAME}       = $cfg->{deviceName};
@@ -1164,6 +1177,12 @@ sub _startBridge {
 		. ( $cfg->{normalization} ? 'on' : 'off' )
 		. ', prefs=' . scalar(@$normalizationFiles) . ')'
 	);
+	if ( $cfg->{format} eq 'mp3' && !$cfg->{formatSpec}->{bitrateValid} ) {
+		$log->warn(
+			"invalid MP3 bitrate '$cfg->{formatSpec}->{configuredBitrate}'; "
+			. 'using 320 kbps for both the bridge and LMS metadata'
+		);
+	}
 
 	my $scriptPath = _scriptPath();
 	unless ( -f $scriptPath ) {
@@ -1859,9 +1878,15 @@ sub _publishMetadataForPlayer {
 	my $meta   = $master->pluginData('metadata') || {};
 	my $duration = Plugins::SpotifySoloist::StreamSemantics::durationSeconds($state);
 	my $song = eval { $master->controller->playingSong() };
+	my $streamMeta =
+		Plugins::SpotifySoloist::StreamSemantics::metadataForFormat($format);
 	if ($song) {
 		my $songUrl = eval { $song->currentTrack()->url };
 		if ( defined $songUrl && $songUrl eq $url ) {
+			Plugins::SpotifySoloist::StreamSemantics::applySongFormat(
+				$song,
+				$format,
+			);
 			my $rawElapsed = eval { $master->songElapsedSeconds() };
 			Plugins::SpotifySoloist::StreamSemantics::applySongTiming(
 				$song,
@@ -1871,14 +1896,12 @@ sub _publishMetadataForPlayer {
 			);
 		}
 	}
-	my $streamType = 'Spotify Soloist (' . $format->{displayFormat}
-		. ( defined $format->{bitrate} ? " $format->{bitrate}" : '' ) . ')';
 
 	return if ( $meta->{title}  // '' ) eq $title
 	     && ( $meta->{artist} // '' ) eq $artist
 	     && ( $meta->{cover}  // '' ) eq $cover
 	     && ( $meta->{format} // '' ) eq $format->{displayFormat}
-	     && ( $meta->{bitrate} // '' ) eq ( $format->{bitrate} // '' )
+	     && ( $meta->{bitrate} // '' ) eq ( $streamMeta->{bitrate} // '' )
 	     && ( $meta->{duration} // '' ) eq ( $duration // '' );
 
 	$master->pluginData( metadata => {
@@ -1887,10 +1910,8 @@ sub _publishMetadataForPlayer {
 		album    => $album,
 		cover    => $cover,
 		icon     => $cover,
-		type     => $streamType,
-		format   => $format->{displayFormat},
+		%$streamMeta,
 		( defined $duration ? ( duration => $duration ) : () ),
-		( defined $format->{bitrate} ? ( bitrate => $format->{bitrate} ) : () ),
 	} );
 
 	Slim::Music::Info::setCurrentTitle( $url, $title, $client );

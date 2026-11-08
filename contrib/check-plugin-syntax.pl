@@ -8,9 +8,10 @@ BEGIN {
 	sub WEBUI () { 0 }
 
 	package SyntaxCheck::Prefs;
+	our %values;
 	sub init { }
-	sub get { return }
-	sub set { }
+	sub get { return $values{ $_[1] } }
+	sub set { $values{ $_[1] } = $_[2] }
 
 	package SyntaxCheck::Log;
 	sub is_info { 0 }
@@ -131,6 +132,23 @@ my @cachedCtlCommand =
 die "Cached Soloist ctl command was assembled incorrectly\n"
 		unless join( "\0", @cachedCtlCommand )
 			eq join( "\0", 'soloist', 'ctl', '-w', '127.0.0.1:9091', 'now', '--json' );
+
+my $syntaxPrefs = Slim::Utils::Prefs::preferences('plugin.spotifysoloist');
+$syntaxPrefs->set( 'bitrate', '2M' );
+my $mp3Format = Plugins::SpotifySoloist::Plugin::currentFormatSpec('mp3');
+die "MP3 format metadata did not use the configured ffmpeg bitrate\n"
+		unless $mp3Format->{bitrateBps} == 2_000_000
+			&& $mp3Format->{bitrateLabel} eq '2000 kbps'
+			&& $mp3Format->{bitrateValid};
+$syntaxPrefs->set( 'bitrate', 'not-a-rate' );
+$mp3Format = Plugins::SpotifySoloist::Plugin::currentFormatSpec('mp3');
+die "Invalid MP3 bitrate did not fall back consistently\n"
+		unless $mp3Format->{bitrateBps} == 320_000
+			&& $mp3Format->{bitrateLabel} eq '320 kbps'
+			&& !$mp3Format->{bitrateValid};
+my $flacFormat = Plugins::SpotifySoloist::Plugin::currentFormatSpec('flac');
+die "FLAC format metadata fabricated a fixed bitrate\n"
+		if defined $flacFormat->{bitrateBps};
 
 my $client = bless {}, 'SyntaxCheck::Client';
 $Slim::Player::Playlist::currentUrl = 'soloist://player-1/soloist.wav';

@@ -6,10 +6,13 @@ on:
       - "Bin/extract-soloist-update.sh"
       - "Bin/soloist-bridge.sh"
       - "Plugin.pm"
+      - "ProtocolHandler.pm"
       - "Settings.pm"
+      - "StreamSemantics.pm"
       - "HTML/EN/plugins/SpotifySoloist/settings/basic.html"
       - "strings.txt"
       - "repo.xml"
+      - "t/**"
       - ".github/workflows/soloist-updater.yml"
   workflow_dispatch:
 
@@ -45,6 +48,13 @@ jobs:
           fi
       - name: Check plugin Perl syntax
         run: perl contrib/check-plugin-syntax.pl
+      - name: Test stream semantics and direct FIFO handler
+        run: |
+          prove -v \
+            t/stream_semantics.t \
+            t/normalization.t \
+            t/stale_catchup.t \
+            t/direct_stream.t
       - name: Validate current official Soloist build
         run: |
           set -eu

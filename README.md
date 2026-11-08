@@ -181,13 +181,19 @@ environment variables, and limitations.
 
 ## Stream formats
 
-- **PCM/WAV** - raw 44.1 kHz, stereo, 16-bit PCM; no ffmpeg in the bridge.
-  LMS can transcode the WAV source through its normal conversion pipeline.
-- **FLAC** - encoded by the bridge with ffmpeg.
-- **MP3** - encoded by the bridge with ffmpeg at the configured bitrate.
+- **PCM/WAV** - raw 44.1 kHz, stereo, 16-bit PCM at exactly 1,411,200 bps;
+  no ffmpeg in the bridge. LMS can transcode the WAV source through its normal
+  conversion pipeline.
+- **FLAC** - 44.1 kHz, stereo, 16-bit lossless audio encoded by the bridge
+  with ffmpeg. Its live compressed bitrate varies with the audio, so LMS shows
+  it as a variable live stream rather than reporting a fabricated fixed value.
+- **MP3** - 44.1 kHz stereo audio encoded by the bridge with ffmpeg at the
+  configured constant bitrate.
 
 The global format is the default. Each enabled player can override it
-independently from the settings page.
+independently from the settings page. Lyrion's Now Playing and track-info
+surfaces report these final bridge/FIFO properties, not Spotify's upstream
+download quality.
 
 ## Volume normalization
 

@@ -412,11 +412,13 @@ capture_supervisor() {
 				if [ "$FORMAT" = "flac" ]; then
 					"$FFMPEG_BIN" -nostdin -hide_banner -loglevel warning -y \
 						-fflags +genpts -f pulse -i "${PIPEWIRE_SINK}.monitor" \
+						-ar 44100 -ac 2 -sample_fmt s16 \
 						-c:a flac -compression_level 0 -flush_packets 1 \
 						-f "$MUX_FORMAT" "$FIFO_PATH" &
 				else
 					"$FFMPEG_BIN" -nostdin -hide_banner -loglevel warning -y \
 						-fflags +genpts -f pulse -i "${PIPEWIRE_SINK}.monitor" \
+						-ar 44100 -ac 2 \
 						-c:a libmp3lame -b:a "$BITRATE" \
 						-f "$MUX_FORMAT" "$FIFO_PATH" &
 				fi
@@ -424,11 +426,13 @@ capture_supervisor() {
 				if [ "$FORMAT" = "flac" ]; then
 					"$FFMPEG_BIN" -nostdin -hide_banner -loglevel warning -y \
 						-fflags +genpts -f s16le -ar 44100 -ac 2 -i "$SOLOIST_PCM_SHIM_FIFO" \
+						-ar 44100 -ac 2 -sample_fmt s16 \
 						-c:a flac -compression_level 0 -flush_packets 1 \
 						-f "$MUX_FORMAT" "$FIFO_PATH" &
 				else
 					"$FFMPEG_BIN" -nostdin -hide_banner -loglevel warning -y \
 						-fflags +genpts -f s16le -ar 44100 -ac 2 -i "$SOLOIST_PCM_SHIM_FIFO" \
+						-ar 44100 -ac 2 \
 						-c:a libmp3lame -b:a "$BITRATE" \
 						-f "$MUX_FORMAT" "$FIFO_PATH" &
 				fi

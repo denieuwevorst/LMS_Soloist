@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.3.68
+
+- Publish the final bridge/FIFO stream codec, bitrate, sample rate, bit depth,
+  and channel count through LMS metadata and Song fields. PCM/WAV reports its
+  exact 1,411,200 bps properties, MP3 reports the configured encoder bitrate,
+  and live FLAC is identified as variable bitrate instead of using a fabricated
+  fixed estimate.
+
 ## 0.3.67
 
 - Publish Spotify track duration and align LMS's displayed elapsed time with

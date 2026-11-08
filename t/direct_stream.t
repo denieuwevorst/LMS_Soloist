@@ -37,11 +37,13 @@ BEGIN {
 	sub directStreamInfoForUrl { return $stream }
 }
 
+require './StreamSemantics.pm';
 require './ProtocolHandler.pm';
 
 {
 	package TestSong;
 	sub new { bless {}, shift }
+	sub bitrate { $_[0]->{bitrate} = $_[1] if @_ > 1; $_[0]->{bitrate} }
 	sub samplerate { $_[0]->{samplerate} = $_[1] if @_ > 1; $_[0]->{samplerate} }
 	sub samplesize { $_[0]->{samplesize} = $_[1] if @_ > 1; $_[0]->{samplesize} }
 	sub channels { $_[0]->{channels} = $_[1] if @_ > 1; $_[0]->{channels} }
@@ -57,10 +59,16 @@ plan skip_all => "mkfifo unavailable: " . ( $@ || $! )
 $Plugins::SpotifySoloist::Plugin::stream = {
 	fifoPath => $fifo,
 	format   => {
-		key         => 'pcm',
-		contentType => 'wav',
-		bitrateBps  => 1_411_200,
-		bufferKb    => 35,
+		key           => 'pcm',
+		contentType   => 'wav',
+		displayFormat => 'WAV',
+		bitrateBps    => 1_411_200,
+		bitrateLabel  => '1411.2 kbps',
+		sampleRate    => 44_100,
+		sampleSize    => 16,
+		channels      => 2,
+		blockAlign    => 4,
+		bufferKb      => 35,
 	},
 };
 
@@ -129,5 +137,33 @@ is( $buffer, 'audio-two', 'forwards restarted capture audio unchanged' );
 
 close $writer;
 close $handler;
+
+$Plugins::SpotifySoloist::Plugin::stream->{format} = {
+	key           => 'flac',
+	contentType   => 'flc',
+	displayFormat => 'FLAC',
+	bitrateLabel  => 'VBR (live stream)',
+	sampleRate    => 44_100,
+	sampleSize    => 16,
+	channels      => 2,
+	bufferKb      => 24,
+};
+my $flacSong = TestSong->new;
+my $flacHandler = Plugins::SpotifySoloist::ProtocolHandler->new({
+	url  => 'soloist://player-0/soloist.flac',
+	song => $flacSong,
+});
+ok( $flacHandler, 'opens a variable-bitrate FLAC direct stream' );
+is( $flacHandler->contentType, 'flc', 'declares the LMS FLAC content type' );
+is(
+	$flacHandler->getStreamBitrate(1_500_000),
+	1_500_000,
+	'leaves FLAC stream bitrate unknown instead of reporting a fixed estimate',
+);
+is( $flacSong->bitrate, 0, 'does not set a fabricated numeric FLAC bitrate' );
+is( $flacSong->samplerate, 44_100, 'sets the final FLAC sample rate' );
+is( $flacSong->samplesize, 16, 'sets the final FLAC sample size' );
+is( $flacSong->channels, 2, 'sets the final FLAC channel count' );
+close $flacHandler;
 
 done_testing;
