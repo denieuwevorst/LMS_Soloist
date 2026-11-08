@@ -57,6 +57,8 @@ use Slim::Player::Client;
 use Slim::Player::Playlist;
 use Slim::Control::Request;
 
+require( dirname(__FILE__) . '/SoloistPrefs.pm' );
+
 my $log = Slim::Utils::Log->addLogCategory({
 	category     => 'plugin.spotifysoloist',
 	defaultLevel => 'WARN',
@@ -96,6 +98,7 @@ $prefs->init({
 	idleDisconnectSeconds => 30,
 	selectedPlayers => {},                # { playerID => 1, ... }
 	playerFormatOverrides => {},          # { playerID => mp3|flac|pcm } (missing = global format)
+	playerNormalization => {},            # { playerID => 0|1 } (missing = enabled for compatibility)
 	playerSlots     => {},                # { playerID => slot int }, stable across restarts
 });
 
@@ -175,6 +178,14 @@ sub formatForPlayer {
 	my $overrides = $prefs->get('playerFormatOverrides') || {};
 	my $format = ref $overrides eq 'HASH' ? _normalizedFormatKey( $overrides->{$playerId} ) : undef;
 	return $format || currentFormatSpec()->{key};
+}
+
+sub normalizationForPlayer {
+	my ($playerId) = @_;
+	return Plugins::SpotifySoloist::SoloistPrefs::normalizationForPlayer(
+		$prefs->get('playerNormalization'),
+		$playerId,
+	);
 }
 
 sub _managedSoloistDir {
@@ -886,13 +897,17 @@ sub _configFor {
 	my $slot = _slotFor($playerId);
 	my $backend = $prefs->get('audioBackend') || 'pcm-shim';
 	$backend = 'pcm-shim' unless $backend eq 'pulse' || $backend eq 'pcm-shim';
-	my $runtime = bundledSoloistRuntime( soloistBin() );
+	my $soloistPath = soloistBin();
+	my $runtime = bundledSoloistRuntime($soloistPath);
+	my $format = formatForPlayer($playerId);
+	my $wsPort = $prefs->get('wsPortBase') + $slot;
 
 	return {
 		slot       => $slot,
-		wsPort     => $prefs->get('wsPortBase') + $slot,
+		wsPort     => $wsPort,
 		backend    => $backend,
-		format     => formatForPlayer($playerId),
+		format     => $format,
+		formatSpec => currentFormatSpec($format),
 		sink       => $prefs->get('pipewireSink') . '_' . $slot,
 		dataDir    => catdir( $baseDataDir, "player_$slot" ),
 		cacheDir   => catdir( $baseCacheDir, "player_$slot" ),
@@ -901,13 +916,22 @@ sub _configFor {
 		pcmShimFifo => catfile( $baseCacheDir, "player_$slot", 'pcm-shim.fifo' ),
 		runtimeDir => $runtime ? $runtime->{dir} : '',
 		runtimeLoader => $runtime ? $runtime->{loader} : '',
+		soloistCtlCommand => [
+			_soloistCommand(
+				$soloistPath,
+				'ctl',
+				'-w',
+				"127.0.0.1:$wsPort",
+			)
+		],
+		normalization => normalizationForPlayer($playerId),
 		deviceName => $playerName . $prefs->get('deviceNameSuffix'),
 	};
 }
 
 sub streamUrlFor {
 	my ($cfg) = @_;
-	my $format = currentFormatSpec( $cfg->{format} );
+	my $format = $cfg->{formatSpec} || currentFormatSpec( $cfg->{format} );
 
 	return 'soloist://player-' . $cfg->{slot} . '/soloist.' . $format->{wireExt};
 }
@@ -921,7 +945,7 @@ sub directStreamInfoForUrl {
 		next unless defined $bridge->{slot} && $bridge->{slot} == $slot;
 		return {
 			fifoPath => $bridge->{fifoPath},
-			format   => currentFormatSpec( $bridge->{format} ),
+			format   => $bridge->{formatSpec} || currentFormatSpec( $bridge->{format} ),
 		};
 	}
 	return;
@@ -1090,6 +1114,22 @@ sub _startBridge {
 	# so wiping Soloist's own cache here is no longer needed and can make
 	# post-restart recovery of an already-playing device less reliable.
 	make_path( $cfg->{dataDir}, $cfg->{cacheDir} );
+	my $normalizationFiles;
+	eval {
+		$normalizationFiles = Plugins::SpotifySoloist::SoloistPrefs::writeNormalization(
+			$cfg->{dataDir},
+			$cfg->{normalization},
+		);
+	};
+	if ($@) {
+		my $error = $@;
+		$error =~ s/\s+\z//;
+		$log->error(
+			"can't start Soloist bridge for '" . $client->name
+			. "': failed to set Spotify normalization: $error"
+		);
+		return;
+	}
 
 	local $ENV{SOLOIST_BIN}       = soloistBin();
 	local $ENV{FFMPEG_BIN}        = $prefs->get('ffmpegBin');
@@ -1109,7 +1149,12 @@ sub _startBridge {
 	local $ENV{SOLOIST_RUNTIME_LIB_DIR} = $cfg->{runtimeDir};
 	local $ENV{SOLOIST_RUNTIME_LOADER}  = $cfg->{runtimeLoader};
 
-	$log->info( "starting soloist bridge for player '" . $client->name . "' (device='$cfg->{deviceName}', slot=$cfg->{slot})" );
+	$log->info(
+		"starting soloist bridge for player '" . $client->name
+		. "' (device='$cfg->{deviceName}', slot=$cfg->{slot}, normalization="
+		. ( $cfg->{normalization} ? 'on' : 'off' )
+		. ', prefs=' . scalar(@$normalizationFiles) . ')'
+	);
 
 	my $scriptPath = _scriptPath();
 	unless ( -f $scriptPath ) {
@@ -1253,26 +1298,12 @@ sub recoverDirectStreamAfterStall {
 
 sub _runSoloistCtl {
 	my ($b, @args) = @_;
-	my @cmd = _soloistCommand(
-		soloistBin(),
-		'ctl',
-		'-w',
-		"127.0.0.1:$b->{wsPort}",
-		@args,
-	);
+	my @cmd = _soloistCtlCommand( $b, @args );
+	my ( $pid, $fh ) = _openSoloistCommand( $b, @cmd );
 
-	my $pid = open( my $fh, '-|' );
 	if ( !defined $pid ) {
 		$log->error("can't run soloist ctl: $!");
 		return;
-	}
-
-	if ( $pid == 0 ) {
-		if ( open( my $devnull, '>', '/dev/null' ) ) {
-			POSIX::dup2( fileno($devnull), fileno(STDERR) );
-		}
-		_applySoloistExecEnv($b);
-		exec(@cmd) or exit(1);
 	}
 
 	close $fh;
@@ -1282,6 +1313,11 @@ sub _runSoloistCtl {
 	}
 
 	return 1;
+}
+
+sub _soloistCtlCommand {
+	my ( $b, @args ) = @_;
+	return ( @{ $b->{soloistCtlCommand} }, @args );
 }
 
 sub _applyConfiguredSoloistVolume {
@@ -1394,38 +1430,31 @@ sub selectedPlayerIds {
 # anymore: the player<->instance mapping is direct.
 # ---------------------------------------------------------------------------
 
-sub _fetchNowPlaying {
-	my ($wsPort) = @_;
-	my $ws = "127.0.0.1:$wsPort";
-	my @cmd = _soloistCommand(
-		soloistBin(),
-		'ctl',
-		'-w',
-		$ws,
-		'now',
-		'--json',
-	);
+sub _openSoloistCommand {
+	my ( $b, @cmd ) = @_;
 
 	my $pid = open( my $fh, '-|' );
-	if ( !defined $pid ) {
-		$log->debug("fork failed for soloist ctl: $!");
-		return undef;
-	}
+	return unless defined $pid;
 
 	if ( $pid == 0 ) {
-		# Lyrion globally ties STDOUT/STDERR to its own logging class
-		# (Slim::Utils::Log::Trapper) so it can capture server output --
-		# that tie survives fork() into this child. Calling Perl's open()
-		# directly on an already-tied STDERR routes through the tie's
-		# OPEN method, which that class doesn't implement, and dies with
-		# "Can't locate object method OPEN". POSIX::dup2 redirects the
-		# raw OS file descriptor instead, bypassing Perl's tie layer
-		# entirely, so this works regardless of what STDERR is tied to.
+		# Use the raw descriptor because LMS may tie Perl's STDERR handle.
 		if ( open( my $devnull, '>', '/dev/null' ) ) {
 			POSIX::dup2( fileno($devnull), fileno(STDERR) );
 		}
-		_applySoloistExecEnv();
+		_applySoloistExecEnv($b);
 		exec(@cmd) or exit(1);
+	}
+
+	return ( $pid, $fh );
+}
+
+sub _fetchNowPlaying {
+	my ($b) = @_;
+	my @cmd = _soloistCtlCommand( $b, 'now', '--json' );
+	my ( $pid, $fh ) = _openSoloistCommand( $b, @cmd );
+	if ( !defined $pid ) {
+		$log->debug("fork failed for soloist ctl: $!");
+		return;
 	}
 
 	local $/;
@@ -1459,26 +1488,11 @@ sub _startTraceObserver {
 	return if time() - ( $b->{lastTraceStartAttempt} || 0 ) < TRACE_RESTART_DELAY;
 
 	$b->{lastTraceStartAttempt} = time();
-	my @cmd = _soloistCommand(
-		soloistBin(),
-		'ctl',
-		'-w',
-		"127.0.0.1:$b->{wsPort}",
-		'trace',
-	);
-
-	my $pid = open( my $fh, '-|' );
+	my @cmd = _soloistCtlCommand( $b, 'trace' );
+	my ( $pid, $fh ) = _openSoloistCommand( $b, @cmd );
 	if ( !defined $pid ) {
 		$log->warn("can't start soloist trace observer for port $b->{wsPort}: $!");
 		return;
-	}
-
-	if ( $pid == 0 ) {
-		if ( open( my $devnull, '>', '/dev/null' ) ) {
-			POSIX::dup2( fileno($devnull), fileno(STDERR) );
-		}
-		_applySoloistExecEnv($b);
-		exec(@cmd) or exit(1);
 	}
 
 	my $flags = fcntl( $fh, F_GETFL, 0 );
@@ -1599,7 +1613,7 @@ sub _drainTraceObserver {
 
 sub _refreshPlaybackStateSnapshot {
 	my ($b) = @_;
-	my $json = _fetchNowPlaying( $b->{wsPort} );
+	my $json = _fetchNowPlaying($b);
 	return unless $json;
 
 	my $state = eval { decode_json($json) };
@@ -1768,6 +1782,18 @@ sub _updateIdleDisconnectState {
 	$b->{notPlayingSince} = undef if $playback->{reallyPlayingHere};
 }
 
+sub _restartBridgeAfterDisconnect {
+	my ( $playerId, $reason ) = @_;
+	stopBridgeForPlayer($playerId);
+	$log->debug(
+		"scheduling Soloist bridge restart for player $playerId"
+		. ( $reason ? " ($reason)" : '' )
+	);
+	Slim::Utils::Timers::setTimer( undef, time() + IDLE_RESTART_DELAY, sub {
+		restartBridgeForPlayer($playerId);
+	} );
+}
+
 sub _maybeRestartIdleBridge {
 	my ( $playerId, $b, $client, $playback ) = @_;
 	my $idleDisconnectSeconds = $prefs->get('idleDisconnectSeconds');
@@ -1779,11 +1805,7 @@ sub _maybeRestartIdleBridge {
 		&& time() - $b->{pausedSince} >= $idleDisconnectSeconds;
 
 	$log->info( 'disconnecting ' . $client->name . " after $idleDisconnectSeconds seconds paused" );
-	stopBridgeForPlayer($playerId);
-	$log->debug("scheduling Soloist bridge restart for player $playerId");
-	Slim::Utils::Timers::setTimer( undef, time() + IDLE_RESTART_DELAY, sub {
-		restartBridgeForPlayer($playerId);
-	} );
+	_restartBridgeAfterDisconnect( $playerId, 'idle timeout' );
 	return 1;
 }
 
@@ -1798,10 +1820,7 @@ sub _maybeDisconnectBridgeForExternalSource {
 	return 0 if ( $b->{suppressLyrionTransportUntil} || 0 ) >= time();
 
 	$log->info( 'disconnecting ' . $client->name . ' from Spotify Soloist because it switched away to another Lyrion source' );
-	stopBridgeForPlayer($playerId);
-	Slim::Utils::Timers::setTimer( undef, time() + IDLE_RESTART_DELAY, sub {
-		restartBridgeForPlayer($playerId);
-	} );
+	_restartBridgeAfterDisconnect( $playerId, 'external source selected' );
 	return 1;
 }
 
@@ -1826,7 +1845,7 @@ sub _publishMetadataForPlayer {
 	my $artist = $deco->{creators}->[0]->{entity}->{decorations}->{identity}->{name} // '';
 	my $album  = $deco->{parent}->{entity}->{decorations}->{identity}->{name} // '';
 	my $cover  = _coverUrlFromDecorations($deco);
-	my $format = currentFormatSpec( $b->{format} );
+	my $format = $b->{formatSpec} || currentFormatSpec( $b->{format} );
 	my $master = $client->master;
 	my $meta   = $master->pluginData('metadata') || {};
 	my $streamType = 'Spotify Soloist (' . $format->{displayFormat}
