@@ -37,6 +37,7 @@ BEGIN {
 	sub directStreamInfoForUrl { return $stream }
 }
 
+require './StreamSemantics.pm';
 require './ProtocolHandler.pm';
 
 {
