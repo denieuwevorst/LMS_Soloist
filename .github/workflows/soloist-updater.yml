@@ -55,6 +55,7 @@ jobs:
             t/normalization.t \
             t/stale_catchup.t \
             t/direct_stream.t
+          sh t/direct_fifo.sh
       - name: Validate current official Soloist build
         run: |
           set -eu

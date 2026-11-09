@@ -380,6 +380,17 @@ case "$FORMAT" in
 		;;
 esac
 
+if [ "$CAPTURE_MODE" = "pcm-direct" ]; then
+	# Own both ends for the bridge lifetime, not merely for one LMS protocol
+	# handler instance. Stall recovery deliberately replaces that handler to
+	# clear downstream player buffers; without this guard, the old handler can
+	# close before its replacement opens and the PCM writer receives SIGPIPE.
+	# Encoded streams deliberately retain their old lifecycle so a new ffmpeg
+	# process supplies fresh MP3/FLAC stream headers.
+	exec 3<> "$FIFO_PATH"
+	log "holding PCM direct FIFO read/write guard on fd 3 for bridge lifetime"
+fi
+
 log "direct LMS stream FIFO ready at ${FIFO_PATH}; preparing capture pipeline (mode=${CAPTURE_MODE}, backend=${SOLOIST_AUDIO_BACKEND})"
 
 # ---------------------------------------------------------------------------
@@ -401,10 +412,10 @@ capture_supervisor() {
 				log "starting PCM capture from ${PIPEWIRE_SINK}.monitor > ${FIFO_PATH}"
 				parec --raw --rate=44100 --channels=2 --format=s16le \
 					--latency-msec=300 --process-time-msec=50 \
-					-d "${PIPEWIRE_SINK}.monitor" > "$FIFO_PATH" &
+					-d "${PIPEWIRE_SINK}.monitor" > "$FIFO_PATH" 3>&- &
 			else
 				log "starting PCM capture: cat ${SOLOIST_PCM_SHIM_FIFO} > ${FIFO_PATH}"
-				cat "$SOLOIST_PCM_SHIM_FIFO" > "$FIFO_PATH" &
+				cat "$SOLOIST_PCM_SHIM_FIFO" > "$FIFO_PATH" 3>&- &
 			fi
 		else
 			log "starting ${CAPTURE_MODE} capture: ${FFMPEG_BIN} ... -f ${MUX_FORMAT} ${FIFO_PATH}"
