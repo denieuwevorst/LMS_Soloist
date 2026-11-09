@@ -70,12 +70,13 @@ sub new {
 		return;
 	}
 	binmode($self);
-	_drainFifo($self);
+	my $initialDiscarded = _drainFifo($self);
 
 	my $format = $stream->{format};
 	${*$self}{url} = $url;
 	${*$self}{client} = $args->{client};
 	${*$self}{contentType} = $format->{contentType};
+	${*$self}{formatKey} = $format->{key};
 	${*$self}{bitrate} = $format->{bitrateBps};
 	${*$self}{prefix} = $format->{key} eq 'pcm' ? _wavHeader() : '';
 	${*$self}{lastAudioReadAt} = undef;
@@ -85,7 +86,12 @@ sub new {
 	my $song = $args->{song};
 	Plugins::SpotifySoloist::StreamSemantics::applySongFormat( $song, $format );
 
-	$log->debug("opened direct Soloist stream '$url' from '$fifo'");
+	$log->info(
+		"opened direct Soloist stream '$url' from '$fifo'"
+		. ( $initialDiscarded
+			? " after discarding $initialDiscarded bytes queued while the LMS reader was replaced"
+			: '' )
+	);
 	return $self;
 }
 
@@ -115,7 +121,7 @@ sub sysread {
 				${*$self}{staleBytesDiscarded} = $discarded;
 				$log->info(
 					sprintf(
-						'discarding stale Soloist audio after %.3fs LMS read gap (%d bytes immediately queued)',
+						'starting stale Soloist catch-up after %.3fs LMS read gap (%d bytes immediately discarded)',
 						$gap,
 						$discarded,
 					)
@@ -143,6 +149,10 @@ sub sysread {
 		${*$self}{staleBytesDiscarded} = 0;
 		${*$self}{lastAudioReadAt} = $now;
 		if ( my $client = ${*$self}{client} ) {
+			$log->info(
+				"requesting direct Soloist stream replacement for '${*$self}{url}' "
+				. 'to clear downstream LMS/player buffers'
+			);
 			Plugins::SpotifySoloist::Plugin::recoverDirectStreamAfterStall(
 				$client,
 				${*$self}{url},
@@ -160,6 +170,18 @@ sub sysread {
 	}
 	${*$self}{lastAudioReadAt} = $now if $read;
 	return $read;
+}
+
+sub close {
+	my ($self) = @_;
+	my $url = ${*$self}{url} || 'unknown Soloist stream';
+	$log->info(
+		"closing direct Soloist protocol handler for '$url'"
+		. ( ( ${*$self}{formatKey} || '' ) eq 'pcm'
+			? '; the PCM bridge guard remains open during handler replacement'
+			: '' )
+	);
+	return $self->SUPER::close();
 }
 
 sub contentType {

@@ -1,5 +1,13 @@
 # Changelog
 
+## Unreleased
+
+- Keep a bridge-owned read/write guard on PCM's direct LMS FIFO so
+  stale-catchup handler replacement cannot break forwarding with `EPIPE` and
+  a fixed two-second capture restart. Encoded stream lifecycle is unchanged.
+- Add explicit diagnostics for FIFO guard ownership, stale-byte draining, and
+  the reason the LMS protocol handler is replaced.
+
 ## 0.3.68
 
 - Publish the final bridge/FIFO stream codec, bitrate, sample rate, bit depth,

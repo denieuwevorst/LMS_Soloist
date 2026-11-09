@@ -1314,8 +1314,8 @@ sub recoverDirectStreamAfterStall {
 		return unless _clientIsOnOwnSoloistStream( $liveClient, $url );
 
 		$log->info(
-			'restarting ' . $liveClient->name
-			. ' direct Soloist stream after a read stall discarded '
+			'replacing ' . $liveClient->name
+			. ' direct Soloist protocol handler after a read stall discarded '
 			. ( $discarded || 0 )
 			. ' stale bytes'
 		);
