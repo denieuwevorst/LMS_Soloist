@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.3.70
+
+- Detect logical Spotify URI changes from both pushed events and full playback
+  snapshots, then replace the PCM protocol handler once the new position
+  timeline resets. This clears FIFO, LMS, and player audio buffered from the
+  previous track without restarting capture.
+- Apply the same scoped live-edge resync to meaningful backward seeks, while
+  ignoring initial playback, pause/resume, metadata enrichment, and ordinary
+  same-track progress updates.
+- Add monotonic transition diagnostics from URI detection through metadata,
+  handler replacement, stale-byte discard, and the first newly read PCM bytes.
+
 ## 0.3.69
 
 - Keep a bridge-owned read/write guard on PCM's direct LMS FIFO so

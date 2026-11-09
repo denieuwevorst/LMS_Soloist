@@ -4,10 +4,22 @@ use strict;
 use warnings;
 
 use Scalar::Util qw(looks_like_number);
+use Time::HiRes ();
+
+use constant BACKWARD_SEEK_THRESHOLD_MS => 2_000;
+use constant TRACK_RESET_POSITION_MS     => 5_000;
+use constant TRACK_RESET_TIMEOUT_SECONDS => 0.75;
 
 sub isSoloistUrl {
 	my ($url) = @_;
 	return defined $url && $url =~ m{\Asoloist://player-\d+/soloist\.[A-Za-z0-9]+\z} ? 1 : 0;
+}
+
+sub monotonicNow {
+	my $now = eval {
+		Time::HiRes::clock_gettime( Time::HiRes::CLOCK_MONOTONIC() );
+	};
+	return defined $now ? $now : Time::HiRes::time();
 }
 
 sub parseBitrateBps {
@@ -119,6 +131,97 @@ sub positionSeconds {
 	my $duration = durationSeconds($state);
 	$positionMs = $duration * 1000 if defined $duration && $positionMs > $duration * 1000;
 	return $positionMs / 1000;
+}
+
+sub timelineObservation {
+	my ($state) = @_;
+	return {} unless ref $state eq 'HASH';
+	my $item = $state->{item};
+	my $position = $state->{position};
+
+	return {
+		( ref $item eq 'HASH' && defined $item->{uri}
+			? ( uri => $item->{uri} ) : () ),
+		( ref $position eq 'HASH'
+				&& defined $position->{position_ms}
+				&& looks_like_number( $position->{position_ms} )
+			? ( positionMs => 0 + $position->{position_ms} ) : () ),
+	};
+}
+
+sub observeTimelineTransition {
+	my ( $tracker, $state, $now ) = @_;
+	$tracker ||= {};
+	my $current = timelineObservation($state);
+	my $previous = $tracker->{observation} || {};
+	return unless defined $current->{uri} && length $current->{uri};
+	$current->{positionMs} = $previous->{positionMs}
+		if !defined $current->{positionMs}
+			&& defined $previous->{positionMs}
+			&& ( $previous->{uri} || '' ) eq $current->{uri};
+	$tracker->{observation} = $current;
+
+	my $previousUri = $previous->{uri};
+	my $currentUri = $current->{uri};
+	if (
+		defined $previousUri && length $previousUri
+		&& defined $currentUri && length $currentUri
+		&& $previousUri ne $currentUri
+	) {
+		return {
+			reason             => 'track',
+			fromUri            => $previousUri,
+			toUri              => $currentUri,
+			detectedAt         => $now,
+			previousPositionMs => $previous->{positionMs},
+		};
+	}
+
+	if (
+		defined $currentUri && defined $previousUri
+		&& $currentUri eq $previousUri
+		&& defined $current->{positionMs}
+		&& defined $previous->{positionMs}
+		&& $current->{positionMs}
+			< $previous->{positionMs} - BACKWARD_SEEK_THRESHOLD_MS
+	) {
+		return {
+			reason             => 'backward-seek',
+			fromUri            => $currentUri,
+			toUri              => $currentUri,
+			detectedAt         => $now,
+			previousPositionMs => $previous->{positionMs},
+		};
+	}
+
+	return;
+}
+
+sub timelineResyncReady {
+	my ( $pending, $state, $now ) = @_;
+	return 0 unless ref $pending eq 'HASH';
+	return 1 if ( $pending->{reason} || '' ) eq 'backward-seek';
+
+	my $current = timelineObservation($state);
+	return 0 unless ( $pending->{reason} || '' ) eq 'track';
+	return 0 unless defined $current->{uri}
+		&& defined $pending->{toUri}
+		&& $current->{uri} eq $pending->{toUri};
+
+	return 1 if defined $current->{positionMs}
+		&& (
+			$current->{positionMs} <= TRACK_RESET_POSITION_MS
+			|| (
+				defined $pending->{previousPositionMs}
+				&& $current->{positionMs}
+					< $pending->{previousPositionMs}
+						- BACKWARD_SEEK_THRESHOLD_MS
+			)
+		);
+
+	return defined $now && defined $pending->{detectedAt}
+		&& $now - $pending->{detectedAt} >= TRACK_RESET_TIMEOUT_SECONDS
+		? 1 : 0;
 }
 
 sub applySongTiming {

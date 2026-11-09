@@ -209,4 +209,98 @@ ok(
 	'DSTM suppression remains scoped away from other content',
 );
 
+my $timeline = {};
+my $firstState = {
+	item     => { uri => 'spotify:track:first', decorations => {} },
+	position => { position_ms => 120_000 },
+};
+ok(
+	!Plugins::SpotifySoloist::StreamSemantics::observeTimelineTransition(
+		$timeline, $firstState, 10,
+	),
+	'initial timeline observation does not request a stream replacement',
+);
+
+my $sameTrackEnriched = {
+	item => {
+		uri         => 'spotify:track:first',
+		decorations => { identity => { name => 'Enriched title' } },
+	},
+	position => { position_ms => 121_000 },
+};
+ok(
+	!Plugins::SpotifySoloist::StreamSemantics::observeTimelineTransition(
+		$timeline, $sameTrackEnriched, 10.1,
+	),
+	'same-track metadata enrichment does not request a replacement',
+);
+
+my $newTrackBeforeReset = {
+	item     => { uri => 'spotify:track:second', decorations => {} },
+};
+my $trackTransition =
+	Plugins::SpotifySoloist::StreamSemantics::observeTimelineTransition(
+		$timeline, $newTrackBeforeReset, 10.2,
+	);
+is( $trackTransition->{reason}, 'track', 'detects a genuine logical track identity change' );
+ok(
+	!Plugins::SpotifySoloist::StreamSemantics::timelineResyncReady(
+		$trackTransition, $newTrackBeforeReset, 10.2,
+	),
+	'waits for the new track position/audio timeline instead of reopening too early',
+);
+
+my $newTrackReset = {
+	item     => { uri => 'spotify:track:second', decorations => {} },
+	position => { position_ms => 250 },
+};
+ok(
+	Plugins::SpotifySoloist::StreamSemantics::timelineResyncReady(
+		$trackTransition, $newTrackReset, 10.3,
+	),
+	'requests live-edge resync as soon as the new track position resets',
+);
+ok(
+	!Plugins::SpotifySoloist::StreamSemantics::observeTimelineTransition(
+		$timeline, $newTrackReset, 10.3,
+	),
+	'does not request a second replacement for the same logical track',
+);
+
+my $snapshotOnlyTransition = {
+	item     => { uri => 'spotify:episode:third', decorations => {} },
+	position => { position_ms => 20_000 },
+};
+my $snapshotTransition =
+	Plugins::SpotifySoloist::StreamSemantics::observeTimelineTransition(
+		$timeline, $snapshotOnlyTransition, 20,
+	);
+is(
+	$snapshotTransition->{reason},
+	'track',
+	'detects URI changes from full playback snapshots without a track_changed event',
+);
+ok(
+	Plugins::SpotifySoloist::StreamSemantics::timelineResyncReady(
+		$snapshotTransition, $snapshotOnlyTransition, 20.8,
+	),
+	'uses a bounded fallback when a URI change arrives without a fresh position reset',
+);
+
+my $backwardSeek = {
+	item     => { uri => 'spotify:episode:third', decorations => {} },
+	position => { position_ms => 5_000 },
+};
+my $seekTransition =
+	Plugins::SpotifySoloist::StreamSemantics::observeTimelineTransition(
+		$timeline, $backwardSeek, 21,
+	);
+is( $seekTransition->{reason}, 'backward-seek', 'detects a meaningful backward seek' );
+ok(
+	Plugins::SpotifySoloist::StreamSemantics::timelineResyncReady(
+		$seekTransition, $backwardSeek, 21,
+	),
+	'backward seeks request an immediate live-edge resync',
+);
+
 done_testing;

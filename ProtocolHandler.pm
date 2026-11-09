@@ -78,6 +78,13 @@ sub new {
 	${*$self}{contentType} = $format->{contentType};
 	${*$self}{formatKey} = $format->{key};
 	${*$self}{bitrate} = $format->{bitrateBps};
+	${*$self}{streamGeneration} = $stream->{streamGeneration} || 0;
+	${*$self}{transition} =
+		Plugins::SpotifySoloist::Plugin::claimDirectStreamTransitionForUrl(
+			$url,
+			${*$self}{streamGeneration},
+		);
+	${*$self}{firstAudioReadLogged} = 0;
 	${*$self}{prefix} = $format->{key} eq 'pcm' ? _wavHeader() : '';
 	${*$self}{lastAudioReadAt} = undef;
 	${*$self}{staleDrainUntil} = undef;
@@ -168,7 +175,30 @@ sub sysread {
 		$! = EWOULDBLOCK;
 		return;
 	}
-	${*$self}{lastAudioReadAt} = $now if $read;
+	if ($read) {
+		${*$self}{lastAudioReadAt} = $now;
+		if (
+			!${*$self}{firstAudioReadLogged}
+			&& ${*$self}{streamGeneration}
+			&& ref ${*$self}{transition} eq 'HASH'
+		) {
+			${*$self}{firstAudioReadLogged} = 1;
+			my $transition = ${*$self}{transition};
+			my $readAt =
+				Plugins::SpotifySoloist::StreamSemantics::monotonicNow();
+			$log->info(
+				sprintf(
+					'read first PCM audio for stream generation %d at monotonic %.3f '
+					. '(%d bytes, reason=%s, resync_to_first_audio_ms=%.0f)',
+					${*$self}{streamGeneration},
+					$readAt,
+					$read,
+					$transition->{reason} || 'unknown',
+					( $readAt - ( $transition->{resyncAt} || $readAt ) ) * 1000,
+				)
+			);
+		}
+	}
 	return $read;
 }
 
