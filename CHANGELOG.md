@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.3.70
 
 - Detect logical Spotify URI changes from both pushed events and full playback
   snapshots, then replace the PCM protocol handler once the new position
