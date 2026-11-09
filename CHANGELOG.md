@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.3.69
 
 - Keep a bridge-owned read/write guard on PCM's direct LMS FIFO so
   stale-catchup handler replacement cannot break forwarding with `EPIPE` and
