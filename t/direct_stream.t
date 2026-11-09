@@ -35,6 +35,7 @@ BEGIN {
 	package Plugins::SpotifySoloist::Plugin;
 	our $stream;
 	sub directStreamInfoForUrl { return $stream }
+	sub claimDirectStreamTransitionForUrl { return }
 }
 
 require './StreamSemantics.pm';

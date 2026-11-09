@@ -27,17 +27,17 @@ printf 'first' >&5
 first="$(dd bs=1 count=5 <&4 2>/dev/null)"
 [ "$first" = "first" ]
 
-# Stall recovery replaces the LMS reader. The forwarding process must stay
-# alive during this window instead of exiting with SIGPIPE.
+# A logical Spotify track change replaces the LMS reader without a read gap.
+# The forwarding process must stay alive instead of exiting with SIGPIPE.
 exec 4<&-
-printf 'stale' >&5
+printf 'old!!' >&5
 sleep 0.1
 kill -0 "$forward_pid"
 
 start="$(date +%s)"
 exec 4<"$fifo"
 discarded="$(dd bs=1 count=5 <&4 2>/dev/null)"
-[ "$discarded" = "stale" ]
+[ "$discarded" = "old!!" ]
 
 printf 'live' >&5
 live="$(dd bs=1 count=4 <&4 2>/dev/null)"
@@ -51,4 +51,4 @@ wait "$forward_pid"
 forward_pid=""
 exec 4<&-
 exec 3>&-
-echo "direct FIFO reader replacement recovered at live edge without restarting capture"
+echo "continuous PCM track transition recovered at live edge without restarting capture"

@@ -966,9 +966,26 @@ sub directStreamInfoForUrl {
 	for my $bridge ( values %bridges ) {
 		next unless defined $bridge->{slot} && $bridge->{slot} == $slot;
 		return {
-			fifoPath => $bridge->{fifoPath},
-			format   => $bridge->{formatSpec} || currentFormatSpec( $bridge->{format} ),
+			fifoPath        => $bridge->{fifoPath},
+			format          => $bridge->{formatSpec} || currentFormatSpec( $bridge->{format} ),
+			streamGeneration => $bridge->{streamGeneration} || 0,
 		};
+	}
+	return;
+}
+
+sub claimDirectStreamTransitionForUrl {
+	my ( $url, $generation ) = @_;
+	my ($slot) = ( $url || '' ) =~ m{\Asoloist://player-(\d+)/soloist\.[A-Za-z0-9]+\z};
+	return unless defined $slot && $generation;
+
+	for my $bridge ( values %bridges ) {
+		next unless defined $bridge->{slot} && $bridge->{slot} == $slot;
+		my $transition = $bridge->{lastStreamTransition};
+		return unless ref $transition eq 'HASH'
+			&& ( $transition->{generation} || 0 ) == $generation;
+		delete $bridge->{lastStreamTransition};
+		return $transition;
 	}
 	return;
 }
@@ -1209,6 +1226,8 @@ sub _startBridge {
 		lastTraceStartAttempt => 0,
 		tracePid              => undef,
 		traceHandle           => undef,
+		timelineTracker       => {},
+		streamGeneration      => 0,
 		traceBuffer           => '',
 		missingClientSince    => undef,
 		notPlayingSince       => undef,
@@ -1556,9 +1575,9 @@ sub _mergeTraceEventIntoState {
 	}
 	elsif ( $type eq 'track_changed' ) {
 		$state->{item} = $event->{item};
-		if ( ( $b->{format} || '' ) eq 'pcm' ) {
-			$b->{pendingSpotifyTrackChange} = 1;
-		}
+		# The existing position belongs to the previous URI. Wait for the new
+		# position_sync before deciding that the audio timeline has reset.
+		delete $state->{position};
 		return 1;
 	}
 	elsif ( $type eq 'playback_changed' ) {
@@ -1715,8 +1734,53 @@ sub _maybeApplyConfiguredVolumeOnConnect {
 	$b->{wasActiveDevice} = $playback->{isActiveDevice} ? 1 : 0;
 }
 
+sub _observeSpotifyTimeline {
+	my ( $b, $client, $state, $playback ) = @_;
+	return unless ( $b->{format} || '' ) eq 'pcm';
+	unless ( $playback->{isActiveDevice} ) {
+		$b->{timelineTracker} = {};
+		$b->{pendingTimelineResync} = undef;
+		return;
+	}
+
+	my $now = Plugins::SpotifySoloist::StreamSemantics::monotonicNow();
+	my $transition =
+		Plugins::SpotifySoloist::StreamSemantics::observeTimelineTransition(
+			$b->{timelineTracker},
+			$state,
+			$now,
+		);
+	return unless $transition;
+
+	if ( my $pending = $b->{pendingTimelineResync} ) {
+		$log->info(
+			'superseding pending Spotify PCM timeline transition for '
+			. $client->name . ' ('
+			. ( $pending->{toUri} // '' ) . ' -> '
+			. ( $transition->{toUri} // '' ) . ')'
+		);
+	}
+	$b->{pendingTimelineResync} = $transition;
+	my $position = Plugins::SpotifySoloist::StreamSemantics::timelineObservation($state)
+		->{positionMs};
+	$log->info(
+		sprintf(
+			'detected Spotify PCM timeline %s for %s at monotonic %.3f '
+			. '(from=%s, to=%s, previous_position_ms=%s, current_position_ms=%s)',
+			$transition->{reason},
+			$client->name,
+			$now,
+			$transition->{fromUri} // '',
+			$transition->{toUri} // '',
+			defined $transition->{previousPositionMs}
+				? $transition->{previousPositionMs} : 'unknown',
+			defined $position ? $position : 'unknown',
+		)
+	);
+}
+
 sub _applySpotifyTransportEvents {
-	my ( $b, $client, $url, $playback ) = @_;
+	my ( $b, $client, $url, $playback, $state ) = @_;
 	my $onOwnStream = _clientIsOnOwnSoloistStream( $client, $url );
 
 	if ( $b->{pendingSpotifyPause} ) {
@@ -1739,17 +1803,41 @@ sub _applySpotifyTransportEvents {
 		}
 	}
 
-	return unless $b->{pendingSpotifyTrackChange};
+	my $transition = $b->{pendingTimelineResync} or return;
 	return unless $playback->{reallyPlayingHere};
+	return unless Plugins::SpotifySoloist::StreamSemantics::timelineResyncReady(
+		$transition,
+		$state,
+		Plugins::SpotifySoloist::StreamSemantics::monotonicNow(),
+	);
 
-	$b->{pendingSpotifyTrackChange} = 0;
+	$b->{pendingTimelineResync} = undef;
 	$b->{spotifyPauseApplied} = 0;
 	return unless $onOwnStream;
 
-	# Reopen the direct stream at the new track boundary. The new protocol
-	# handler drains bytes left in the FIFO before it starts feeding LMS,
-	# while reconnecting also discards bytes buffered by LMS/the player.
-	$log->info( 'restarting ' . $client->name . ' stream immediately after Spotify changed track' );
+	my $now = Plugins::SpotifySoloist::StreamSemantics::monotonicNow();
+	my $position = Plugins::SpotifySoloist::StreamSemantics::timelineObservation($state)
+		->{positionMs};
+	$b->{streamGeneration} = ( $b->{streamGeneration} || 0 ) + 1;
+	$b->{lastStreamTransition} = {
+		%$transition,
+		resyncAt   => $now,
+		generation => $b->{streamGeneration},
+	};
+	$log->info(
+		sprintf(
+			'replacing %s direct PCM handler for %s at monotonic %.3f '
+			. '(generation=%d, uri=%s, position_ms=%s, detection_to_resync_ms=%.0f); '
+			. 'capture remains connected',
+			$client->name,
+			$transition->{reason},
+			$now,
+			$b->{streamGeneration},
+			$transition->{toUri} // '',
+			defined $position ? $position : 'unknown',
+			( $now - ( $transition->{detectedAt} || $now ) ) * 1000,
+		)
+	);
 	$b->{suppressLyrionTransportUntil} = time() + 1;
 	$client->execute( [ 'playlist', 'play', $url ] );
 }
@@ -1918,7 +2006,21 @@ sub _publishMetadataForPlayer {
 	$master->currentPlaylistUpdateTime( Time::HiRes::time() );
 	Slim::Control::Request::notifyFromArray( $master, ['newmetadata'] );
 
-	$log->debug( 'metadata updated for ' . $client->name . ": $artist - $title" );
+	my $timeline =
+		Plugins::SpotifySoloist::StreamSemantics::timelineObservation($state);
+	$log->info(
+		sprintf(
+			'published Spotify metadata for %s at monotonic %.3f '
+			. '(uri=%s, position_ms=%s): %s - %s',
+			$client->name,
+			Plugins::SpotifySoloist::StreamSemantics::monotonicNow(),
+			$timeline->{uri} // '',
+			defined $timeline->{positionMs}
+				? $timeline->{positionMs} : 'unknown',
+			$artist,
+			$title,
+		)
+	);
 }
 
 sub _handleMissingPlayerClient {
@@ -1966,7 +2068,8 @@ sub pollMetadata {
 		# still stops immediately when the active device is lost.
 		_maybeApplyConfiguredVolumeOnConnect( $b, $playback );
 		next if _maybeDisconnectBridgeForExternalSource( $playerId, $b, $client, $url, $playback );
-		_applySpotifyTransportEvents( $b, $client, $url, $playback );
+		_observeSpotifyTimeline( $b, $client, $state, $playback );
+		_applySpotifyTransportEvents( $b, $client, $url, $playback, $state );
 		_applyPlaybackTransition( $playerId, $b, $client, $url, $playback );
 		_updateIdleDisconnectState( $b, $playback );
 		next if _maybeRestartIdleBridge( $playerId, $b, $client, $playback );
