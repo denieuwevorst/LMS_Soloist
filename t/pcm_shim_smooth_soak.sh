@@ -95,11 +95,19 @@ max_wait = max(float(row[2]) for row in pressure)
 max_queued = max(float(row[3]) for row in pressure)
 if max_wait > 200.0:
     raise SystemExit(f"sink wait exceeded ring budget: {max_wait} ms")
-if max_queued > 200.0:
-    raise SystemExit(f"queued audio exceeded ring budget: {max_queued} ms")
+ages = [
+    float(value)
+    for value in re.findall(r"runtime summary: .*?oldest_age=([0-9.]+) ms", log)
+]
+if not ages:
+    raise SystemExit("runtime summaries did not report oldest audio age")
+max_age = max(ages)
+if max_age > 220.0:
+    raise SystemExit(f"oldest audio exceeded live-edge age budget: {max_age} ms")
 print(
     f"steady-state pressure stayed bounded: "
-    f"max_wait={max_wait:.1f} ms max_queued={max_queued:.1f} ms"
+    f"max_wait={max_wait:.1f} ms producer_queue={max_queued:.1f} ms "
+    f"oldest_age={max_age:.1f} ms"
 )
 PY
 
