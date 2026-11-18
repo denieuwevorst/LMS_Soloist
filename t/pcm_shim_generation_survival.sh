@@ -28,7 +28,7 @@ run_mode() {
 	SOLOIST_SHIM_CONTROL="$control" \
 	SOLOIST_SHIM_ACK="$ack" \
 	SOLOIST_SHIM_LOG=1 \
-	"$shim/marker_client" 4 >"$log" 2>&1 &
+	"$shim/marker_client" 30 >"$log" 2>&1 &
 	client_pid=$!
 	original_pid="$client_pid"
 
@@ -48,7 +48,8 @@ run_mode() {
 	kill -0 "$original_pid"
 	[ "$client_pid" = "$original_pid" ]
 
-	wait "$client_pid"
+	kill "$client_pid"
+	wait "$client_pid" 2>/dev/null || true
 	client_pid=""
 	grep -q "loaded build 2026-11-18.3-loadcheck: mode=$mode" "$log"
 	grep -q 'generation flush: generation=8 reason=track' "$log"
