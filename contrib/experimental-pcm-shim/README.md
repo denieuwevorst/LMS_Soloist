@@ -47,6 +47,9 @@ and sets:
 - `SOLOIST_SHIM_FORMAT` - `s16` for the plugin integration
 - `SOLOIST_SHIM_RATE` - `44100` for the plugin integration
 - `SOLOIST_SHIM_LOG` - diagnostic level (`0`, `1`, or `2`)
+- `SOLOIST_SHIM_RING_MS` - bounded live-edge ring depth; the bridge uses `200`
+- `SOLOIST_SHIM_CONTROL` - optional atomic generation command file
+- `SOLOIST_SHIM_ACK` - optional generation acknowledgement file
 - `SOLOIST_SHIM_MAX_TLENGTH_MS` - playback buffer clamp; the bridge defaults
   this to `300`
 
@@ -58,9 +61,9 @@ for each Soloist process.
 ```text
 Soloist
   -> this libpulse.so.0
-  -> player_<slot>/pcm-shim.fifo
-  -> direct byte forwarding for PCM/WAV
-     or ffmpeg encoding for MP3/FLAC
+  -> bounded live-edge ring (200 ms by default)
+  -> player_<slot>/audio.fifo for PCM/WAV
+     or player_<slot>/pcm-shim.fifo -> ffmpeg for MP3/FLAC
   -> player_<slot>/audio.fifo
   -> soloist:// protocol handler
   -> LMS/player
@@ -69,16 +72,28 @@ Soloist
 For PCM/WAV, the protocol handler adds a streaming WAV header when LMS opens
 the FIFO; it does not encode or alter the PCM payload.
 
+`pa_stream_write` only copies complete frames into the bounded ring. The writer
+thread transmits available frames immediately with nonblocking FIFO writes. If
+the ring or FIFO is full, the oldest complete frames are discarded, keeping
+playback near the live edge and bounding memory independently of reader stalls.
+
+Generation command files contain `<generation> <reason>`. When the plugin
+atomically replaces the file, the writer clears queued old-generation frames,
+resets resampling state, and atomically writes the same generation to the
+acknowledgement file. The plugin waits for that acknowledgement before replacing
+the LMS protocol handler. Pulse `flush` requests clear the ring through the same
+internal generation path.
+
 ## Diagnostics
 
 Set `SOLOIST_PCM_SHIM_LOG=1` or `2` in the LMS service environment, restart LMS,
 and inspect the player's `bridge.log`. The bridge maps this setting to
 `SOLOIST_SHIM_LOG`.
 
-A successfully loaded build logs:
+A successfully loaded build logs its configured ring depth and control path:
 
 ```text
-[soloist-shim] loaded build 2026-10-25.2: ...
+[soloist-shim] loaded build 2026-11-18.1: ... ring_ms=200 ...
 ```
 
 Level `2` also logs Pulse API activity. A constructor/load marker without

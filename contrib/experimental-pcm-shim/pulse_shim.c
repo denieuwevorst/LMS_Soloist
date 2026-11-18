@@ -11,6 +11,9 @@
  *   SOLOIST_SHIM_FORMAT  s16 | s24 | s32 (interleaved stereo LE)   (s24, packed)
  *   SOLOIST_SHIM_RATE    output rate in Hz, 0 = pass through       (44100)
  *   SOLOIST_SHIM_LOG     0 quiet, 1 info, 2 trace API calls         (0)
+ *   SOLOIST_SHIM_RING_MS bounded live-edge ring depth               (200)
+ *   SOLOIST_SHIM_CONTROL generation/flush command file              (unset)
+ *   SOLOIST_SHIM_ACK     generation acknowledgement file            (unset)
  *   SOLOIST_SHIM_MAX_TLENGTH_MS  clamp requested tlength/prebuf/minreq
  *                     to this many ms to keep Soloist's virtual playback
  *                     clock close to real drained audio              (0=off)
@@ -26,7 +29,6 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <math.h>
-#include <poll.h>
 #include <pthread.h>
 #include <signal.h>
 #include <stdarg.h>
@@ -42,7 +44,10 @@
 
 /* ------------------------------------------------------------------ config */
 
-static struct { char out[512]; int bytes; int rate; int log; int max_tlength_ms; } cfg;
+static struct {
+    char out[512], control[512], ack[512];
+    int bytes, rate, log, max_tlength_ms, ring_ms;
+} cfg;
 static pthread_once_t cfg_once = PTHREAD_ONCE_INIT;
 
 static void cfg_init(void)
@@ -59,6 +64,13 @@ static void cfg_init(void)
     if ((e = getenv("SOLOIST_SHIM_RATE"))) cfg.rate = atoi(e);
     cfg.log = (e = getenv("SOLOIST_SHIM_LOG")) ? atoi(e) : 0;
     cfg.max_tlength_ms = (e = getenv("SOLOIST_SHIM_MAX_TLENGTH_MS")) ? atoi(e) : 0;
+    cfg.ring_ms = (e = getenv("SOLOIST_SHIM_RING_MS")) ? atoi(e) : 200;
+    if (cfg.ring_ms < 20) cfg.ring_ms = 20;
+    if (cfg.ring_ms > 1000) cfg.ring_ms = 1000;
+    snprintf(cfg.control, sizeof cfg.control, "%s",
+             (e = getenv("SOLOIST_SHIM_CONTROL")) && *e ? e : "");
+    snprintf(cfg.ack, sizeof cfg.ack, "%s",
+             (e = getenv("SOLOIST_SHIM_ACK")) && *e ? e : "");
 }
 #define CFG() pthread_once(&cfg_once, cfg_init)
 #define LOG(l, ...) do { CFG(); if (cfg.log >= (l)) { \
@@ -67,8 +79,9 @@ static void cfg_init(void)
 __attribute__((constructor))
 static void shim_loaded(void)
 {
-    LOG(1, "loaded build 2026-10-25.2: out=%s format=%dB rate=%d max_tlength_ms=%d",
-        cfg.out, cfg.bytes, cfg.rate, cfg.max_tlength_ms);
+    LOG(1, "loaded build 2026-11-18.1: out=%s format=%dB rate=%d ring_ms=%d max_tlength_ms=%d control=%s",
+        cfg.out, cfg.bytes, cfg.rate, cfg.ring_ms, cfg.max_tlength_ms,
+        cfg.control[0] ? cfg.control : "off");
 }
 
 static uint64_t now_ns(void)
@@ -86,8 +99,13 @@ static uint64_t now_ns(void)
 static struct {
     pthread_mutex_t lk;
     int fd, is_sock;
-    uint64_t next_try_ns, dropped;
-} out = { PTHREAD_MUTEX_INITIALIZER, -1, 0, 0, 0 };
+    uint64_t next_try_ns, dropped, last_drop_log_ns;
+    unsigned char pending[8];
+    size_t pending_len;
+} out = {
+    .lk = PTHREAD_MUTEX_INITIALIZER,
+    .fd = -1
+};
 
 static int out_open_locked(void)
 {
@@ -118,10 +136,23 @@ static int out_open_locked(void)
         if (connect(fd, (struct sockaddr *) &a, sizeof a) < 0) { close(fd); return -1; }
         out.is_sock = 1;
     } else if (S_ISFIFO(st.st_mode)) {
+        int pipe_size;
         /* ENXIO while no reader has the FIFO open: stay silent and retry. */
         fd = open(cfg.out, O_WRONLY | O_NONBLOCK | O_CLOEXEC);
         if (fd < 0) return -1;
-        fcntl(fd, F_SETPIPE_SZ, 1 << 20);
+        /*
+         * Keep the kernel queue below 100 ms at the plugin's 44.1 kHz s16
+         * stereo format. The userspace ring owns the deliberate buffering;
+         * a large FIFO would preserve stale audio that cannot be dropped
+         * from the head by the writer.
+         */
+        fcntl(fd, F_SETPIPE_SZ, 16384);
+        pipe_size = fcntl(fd, F_GETPIPE_SZ);
+        if (pipe_size > 0) {
+            int output_rate = cfg.rate > 0 ? cfg.rate : 44100;
+            LOG(1, "FIFO kernel queue: %d bytes (%.1f ms at configured output)",
+                pipe_size, 1000.0 * pipe_size / (output_rate * cfg.bytes * 2));
+        }
         out.is_sock = 0;
     } else {
         fd = open(cfg.out, O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC, 0644);
@@ -133,24 +164,101 @@ static int out_open_locked(void)
     return 0;
 }
 
-static void out_write(const unsigned char *b, size_t len)
+static void out_log_drops_locked(void)
+{
+    uint64_t t = now_ns();
+    if (out.dropped && t - out.last_drop_log_ns >= 1000000000ull) {
+        LOG(1, "output live-edge drop: %llu bytes while FIFO unavailable/slow",
+            (unsigned long long) out.dropped);
+        out.dropped = 0;
+        out.last_drop_log_ns = t;
+    }
+}
+
+static void out_write(const unsigned char *b, size_t len, size_t frame_size)
 {
     size_t off = 0;
-    uint64_t deadline;
 
     pthread_mutex_lock(&out.lk);
-    if (out_open_locked() < 0) { out.dropped += len; pthread_mutex_unlock(&out.lk); return; }
-    deadline = now_ns() + 200000000ull;
-    while (off < len) {
-        ssize_t n = out.is_sock ? send(out.fd, b + off, len - off, MSG_NOSIGNAL)
-                                : write(out.fd, b + off, len - off);
-        if (n > 0) { off += (size_t) n; continue; }
-        if (n < 0 && errno == EINTR) continue;
-        if (n < 0 && errno == EAGAIN) {           /* reader is slow: wait a little, then drop */
-            struct pollfd p = { out.fd, POLLOUT, 0 };
-            if (now_ns() > deadline) { out.dropped += len - off; break; }
-            poll(&p, 1, 20);
+    if (out_open_locked() < 0) {
+        out.dropped += len;
+        out_log_drops_locked();
+        pthread_mutex_unlock(&out.lk);
+        return;
+    }
+    while (out.pending_len) {
+        ssize_t n = out.is_sock
+            ? send(out.fd, out.pending, out.pending_len, MSG_NOSIGNAL)
+            : write(out.fd, out.pending, out.pending_len);
+        if (n > 0) {
+            out.pending_len -= (size_t) n;
+            if (out.pending_len)
+                memmove(out.pending, out.pending + n, out.pending_len);
             continue;
+        }
+        if (n < 0 && errno == EINTR) continue;
+        if (n < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) {
+            out.dropped += len;
+            out_log_drops_locked();
+            pthread_mutex_unlock(&out.lk);
+            return;
+        }
+        LOG(1, "output closed while completing a partial frame: %s", strerror(errno));
+        close(out.fd);
+        out.fd = -1;
+        out.pending_len = 0;
+        out.dropped += len;
+        pthread_mutex_unlock(&out.lk);
+        return;
+    }
+    while (off < len) {
+        size_t chunk = len - off;
+        ssize_t n;
+        if (!out.is_sock && chunk > 4096) chunk = 4096;
+        chunk -= chunk % frame_size;
+        if (!chunk) chunk = frame_size;
+        n = out.is_sock ? send(out.fd, b + off, chunk, MSG_NOSIGNAL)
+                        : write(out.fd, b + off, chunk);
+        if (n > 0) {
+            off += (size_t) n;
+            if ((size_t) n % frame_size) {
+                size_t needed = frame_size - (size_t) n % frame_size;
+                memcpy(out.pending, b + off, needed);
+                out.pending_len = needed;
+                off += needed;
+                while (out.pending_len) {
+                    n = out.is_sock
+                        ? send(out.fd, out.pending, out.pending_len, MSG_NOSIGNAL)
+                        : write(out.fd, out.pending, out.pending_len);
+                    if (n > 0) {
+                        out.pending_len -= (size_t) n;
+                        if (out.pending_len)
+                            memmove(out.pending, out.pending + n, out.pending_len);
+                        continue;
+                    }
+                    if (n < 0 && errno == EINTR) continue;
+                    if (n < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) {
+                        out.dropped += len - off;
+                        out_log_drops_locked();
+                        off = len;
+                        break;
+                    }
+                    LOG(1, "output closed during partial frame: %s", strerror(errno));
+                    close(out.fd);
+                    out.fd = -1;
+                    out.pending_len = 0;
+                    out.dropped += len - off;
+                    off = len;
+                    break;
+                }
+            }
+            continue;
+        }
+        if (n < 0 && errno == EINTR) continue;
+        if (n < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) {
+            out.dropped += len - off;
+            out_log_drops_locked();
+            break;
         }
         /* EPIPE (reader went away) or a hard error: close, reopen later */
         {
@@ -164,6 +272,7 @@ static void out_write(const unsigned char *b, size_t len)
         close(out.fd);
         out.fd = -1;
         out.dropped += len - off;
+        out_log_drops_locked();
         break;
     }
     pthread_mutex_unlock(&out.lk);
@@ -727,8 +836,6 @@ pa_operation *pa_context_drain(pa_context *c, pa_context_notify_cb_t cb, void *u
 
 /* ---------------------------------------------------------------- streams */
 
-#define RING_MAX (8u << 20)
-
 struct pa_stream {
     int refcnt;
     pa_context *c;
@@ -747,7 +854,8 @@ struct pa_stream {
     unsigned char *ring;
     size_t cap, rd, fill;
     size_t requested, prebuf, minreq;
-    uint64_t consumed_bytes, written_bytes;
+    uint64_t consumed_bytes, written_bytes, dropped_bytes, last_drop_log_ns;
+    unsigned long generation, control_seen;
     int corked, clock_on, force_start, started_once, write_pending, quit, thread_started;
     pa_operation *drain_op;
     pthread_t th;
@@ -802,32 +910,31 @@ pa_stream *pa_stream_new(pa_context *c, const char *name, const pa_sample_spec *
     return pa_stream_new_with_proplist(c, name, ss, map, NULL);
 }
 
-/* ring buffer (caller holds s->lk) */
+/* bounded live-edge ring buffer (caller holds s->lk) */
 static size_t ring_put(pa_stream *s, const unsigned char *d, size_t n)
 {
-    if (s->fill + n > s->cap) {
-        size_t want = s->cap ? s->cap : 65536;
-        while (want < s->fill + n && want < RING_MAX) want *= 2;
-        if (want > s->cap) {
-            unsigned char *nb = malloc(want);
-            size_t first = s->cap - s->rd < s->fill ? s->cap - s->rd : s->fill;
-            if (s->fill) {
-                memcpy(nb, s->ring + s->rd, first);
-                memcpy(nb + first, s->ring, s->fill - first);
-            }
-            free(s->ring);
-            s->ring = nb;
-            s->cap = want;
-            s->rd = 0;
-        }
+    size_t fs = pa_frame_size(&s->ss), dropped = 0;
+    n -= n % fs;
+    if (n > s->cap) {
+        dropped += n - s->cap;
+        d += n - s->cap;
+        n = s->cap;
     }
-    if (n > s->cap - s->fill) n = s->cap - s->fill;
+    if (s->fill + n > s->cap) {
+        size_t remove = s->fill + n - s->cap;
+        remove += (fs - remove % fs) % fs;
+        if (remove > s->fill) remove = s->fill;
+        s->rd = (s->rd + remove) % s->cap;
+        s->fill -= remove;
+        dropped += remove;
+    }
     {
         size_t wr = (s->rd + s->fill) % s->cap, first = s->cap - wr < n ? s->cap - wr : n;
         memcpy(s->ring + wr, d, first);
         memcpy(s->ring, d + first, n - first);
     }
     s->fill += n;
+    s->dropped_bytes += dropped;
     return n;
 }
 static void ring_get(pa_stream *s, unsigned char *d, size_t n)
@@ -837,6 +944,72 @@ static void ring_get(pa_stream *s, unsigned char *d, size_t n)
     memcpy(d + first, s->ring, n - first);
     s->rd = (s->rd + n) % s->cap;
     s->fill -= n;
+}
+
+static void stream_log_drops_locked(pa_stream *s)
+{
+    uint64_t t = now_ns();
+    if (s->dropped_bytes && t - s->last_drop_log_ns >= 1000000000ull) {
+        LOG(1, "ring live-edge drop: %llu bytes (%.1f ms), queued=%.1f ms",
+            (unsigned long long) s->dropped_bytes,
+            pa_bytes_to_usec(s->dropped_bytes, &s->ss) / 1000.0,
+            pa_bytes_to_usec(s->fill, &s->ss) / 1000.0);
+        s->dropped_bytes = 0;
+        s->last_drop_log_ns = t;
+    }
+}
+
+static void stream_post_write(pa_stream *s);
+
+static void control_ack(unsigned long generation, const char *reason)
+{
+    char tmp[560];
+    FILE *f;
+    if (!cfg.ack[0]) return;
+    snprintf(tmp, sizeof tmp, "%s.tmp.%ld", cfg.ack, (long) getpid());
+    f = fopen(tmp, "w");
+    if (!f) return;
+    fprintf(f, "%lu %s\n", generation, reason ? reason : "unknown");
+    if (fclose(f) == 0) rename(tmp, cfg.ack);
+    else unlink(tmp);
+}
+
+/* caller holds s->lk */
+static void stream_flush_locked(pa_stream *s, unsigned long generation, const char *reason)
+{
+    size_t discarded = s->fill;
+    s->fill = 0;
+    s->rd = 0;
+    s->clock_on = 0;
+    s->force_start = 1;
+    s->rs_pos = 0;
+    s->rs_last[0] = s->rs_last[1] = 0;
+    s->generation = generation;
+    s->requested = s->attr.tlength;
+    stream_post_write(s);
+    LOG(1, "generation flush: generation=%lu reason=%s discarded=%zu bytes (%.1f ms)",
+        generation, reason ? reason : "unknown", discarded,
+        pa_bytes_to_usec(discarded, &s->ss) / 1000.0);
+}
+
+/* caller holds s->lk */
+static void control_check_locked(pa_stream *s)
+{
+    FILE *f;
+    unsigned long generation;
+    char reason[96] = "external";
+    if (!cfg.control[0]) return;
+    f = fopen(cfg.control, "r");
+    if (!f) return;
+    if (fscanf(f, "%lu %95s", &generation, reason) < 1) {
+        fclose(f);
+        return;
+    }
+    fclose(f);
+    if (generation == s->control_seen) return;
+    s->control_seen = generation;
+    stream_flush_locked(s, generation, reason);
+    control_ack(generation, reason);
 }
 
 /* stream events */
@@ -1001,12 +1174,15 @@ static void *writer_main(void *arg)
     for (;;) {
         size_t n = 0, avail;
         int underflow = 0, drained = 0;
+        unsigned long chunk_generation = 0;
         struct timespec nap = { 0, 5000000 };
         uint64_t t;
 
         nanosleep(&nap, NULL);
         pthread_mutex_lock(&s->lk);
         if (s->quit) { pthread_mutex_unlock(&s->lk); break; }
+        control_check_locked(s);
+        stream_log_drops_locked(s);
         t = now_ns();
         avail = s->fill / fs;
 
@@ -1043,6 +1219,7 @@ static void *writer_main(void *arg)
                     if (n > maxf) n = maxf;
                     if (n) {
                         ring_get(s, raw, n * fs);
+                        chunk_generation = s->generation;
                         base += n;
                         s->consumed_bytes += n * fs;
                         s->requested += n * fs;
@@ -1063,7 +1240,12 @@ static void *writer_main(void *arg)
         if (underflow) ml_post(s->c->ml, ev_stream_underflow_fn, pa_stream_ref(s));
         if (n) {
             size_t bytes = convert_chunk(s, raw, n, dec, obuf, rout);
-            if (bytes) out_write(obuf, bytes);
+            int current;
+            pthread_mutex_lock(&s->lk);
+            control_check_locked(s);
+            current = chunk_generation == s->generation;
+            pthread_mutex_unlock(&s->lk);
+            if (bytes && current) out_write(obuf, bytes, (size_t) cfg.bytes * 2);
         }
     }
     free(raw);
@@ -1090,6 +1272,14 @@ int pa_stream_connect_playback(pa_stream *s, const char *dev, const pa_buffer_at
     }
     CFG();
     fs = pa_frame_size(&s->ss);
+    s->cap = (size_t) pa_usec_to_bytes((pa_usec_t) cfg.ring_ms * 1000u, &s->ss);
+    s->cap -= s->cap % fs;
+    if (s->cap < fs) s->cap = fs;
+    s->ring = malloc(s->cap);
+    if (!s->ring) {
+        s->c->err = PA_ERR_INTERNAL;
+        return -1;
+    }
     s->flags = flags;
     memset(&s->attr, 0, sizeof s->attr);
     s->attr.tlength = (attr && attr->tlength != (uint32_t) -1) ? attr->tlength
@@ -1110,6 +1300,14 @@ int pa_stream_connect_playback(pa_stream *s, const char *dev, const pa_buffer_at
         if (s->attr.maxlength != (uint32_t) -1 && s->attr.maxlength < s->attr.tlength)
             s->attr.maxlength = s->attr.tlength;
     }
+    if (s->attr.tlength > s->cap)
+        s->attr.tlength = (uint32_t) s->cap;
+    if (s->attr.prebuf > s->attr.tlength)
+        s->attr.prebuf = s->attr.tlength;
+    if (s->attr.minreq > s->attr.tlength)
+        s->attr.minreq = s->attr.tlength;
+    if (s->attr.maxlength != (uint32_t) -1 && s->attr.maxlength < s->attr.tlength)
+        s->attr.maxlength = s->attr.tlength;
     s->prebuf = s->attr.prebuf;
     s->minreq = s->attr.minreq ? s->attr.minreq : fs;
     s->requested = s->attr.tlength;
@@ -1119,8 +1317,10 @@ int pa_stream_connect_playback(pa_stream *s, const char *dev, const pa_buffer_at
     s->thread_started = pthread_create(&s->th, NULL, writer_main, s) == 0;
     if (!s->thread_started) return -1;
 
-    LOG(1, "connect_playback: tlength=%u minreq=%u prebuf=%u max_tlength_ms=%d out=%s fmt=%dB rate=%d",
-        s->attr.tlength, s->attr.minreq, s->attr.prebuf, cfg.max_tlength_ms, cfg.out, cfg.bytes, cfg.rate);
+    LOG(1, "connect_playback: tlength=%u minreq=%u prebuf=%u ring=%zu bytes (%.1f ms) max_tlength_ms=%d out=%s fmt=%dB rate=%d",
+        s->attr.tlength, s->attr.minreq, s->attr.prebuf, s->cap,
+        pa_bytes_to_usec(s->cap, &s->ss) / 1000.0,
+        cfg.max_tlength_ms, cfg.out, cfg.bytes, cfg.rate);
     stream_post_state(s, PA_STREAM_CREATING);
     stream_post_state(s, PA_STREAM_READY);
     pthread_mutex_lock(&s->lk);
@@ -1202,7 +1402,6 @@ int pa_stream_write(pa_stream *s, const void *data, size_t nbytes, pa_free_cb_t 
                     int64_t offset, pa_seek_mode_t seek)
 {
     size_t fs = pa_frame_size(&s->ss), took;
-    int overflow;
     (void) offset; (void) seek;
 
     if (s->state != PA_STREAM_READY || !data || nbytes % fs) {
@@ -1211,13 +1410,12 @@ int pa_stream_write(pa_stream *s, const void *data, size_t nbytes, pa_free_cb_t 
     }
     pthread_mutex_lock(&s->lk);
     took = ring_put(s, data, nbytes);
-    overflow = took < nbytes;
-    s->written_bytes += took;
+    s->written_bytes += nbytes;
     s->requested = s->requested > nbytes ? s->requested - nbytes : 0;
     stream_post_write(s);
     pthread_mutex_unlock(&s->lk);
     if (free_cb && data != s->scratch) free_cb((void *) data);
-    if (overflow) LOG(1, "ring overflow: dropped %zu bytes", nbytes - took);
+    (void) took;
     return 0;
 }
 
@@ -1265,10 +1463,8 @@ pa_operation *pa_stream_drain(pa_stream *s, pa_stream_success_cb_t cb, void *ud)
 pa_operation *pa_stream_flush(pa_stream *s, pa_stream_success_cb_t cb, void *ud)
 {
     pthread_mutex_lock(&s->lk);
-    s->fill = 0;
-    s->rd = 0;
+    stream_flush_locked(s, s->generation + 1, "pulse-flush");
     s->requested = s->attr.tlength;
-    s->clock_on = 0;
     stream_post_write(s);
     pthread_mutex_unlock(&s->lk);
     return op_post(s->c, s, OP_STREAM_OK, cb, ud);

@@ -27,6 +27,9 @@ libpulse.so.0: pulse_shim.c
 test_client: test_client.c libpulse.so.0
 	$(CC) $(CFLAGS) -o $@ test_client.c -L. -l:libpulse.so.0 $(LIBS)
 
+marker_client: marker_client.c libpulse.so.0
+	$(CC) $(CFLAGS) -o $@ marker_client.c -L. -l:libpulse.so.0 $(LIBS)
+
 # Plays a 2s tone into /tmp/shim-test.raw (24-bit stereo, 44.1 kHz) and
 # prints its size -- should be ~2.0s worth of audio (264600 bytes).
 test: test_client
@@ -35,7 +38,7 @@ test: test_client
 	ls -l /tmp/shim-test.raw
 
 clean:
-	rm -f libpulse.so.0 test_client
+	rm -f libpulse.so.0 test_client marker_client
 
 .PHONY: all test clean
 

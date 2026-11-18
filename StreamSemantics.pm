@@ -250,4 +250,18 @@ sub applySongTiming {
 	};
 }
 
+sub shimGenerationCommand {
+	my ( $generation, $reason ) = @_;
+	return unless defined $generation && $generation =~ /^\d+\z/;
+	$reason = defined $reason ? $reason : 'timeline';
+	$reason =~ s/[^A-Za-z0-9_.-]+/-/g;
+	return "$generation $reason\n";
+}
+
+sub shimGenerationAcknowledged {
+	my ( $line, $generation ) = @_;
+	return 0 unless defined $line && defined $generation;
+	return $line =~ /^\Q$generation\E(?:\s|\z)/ ? 1 : 0;
+}
+
 1;

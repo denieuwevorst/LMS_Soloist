@@ -41,16 +41,19 @@ Spotify
 Spotify
   -> Soloist
   -> custom libpulse.so.0
-  -> per-player raw-PCM FIFO
-  -> direct forwarding (PCM/WAV) or ffmpeg (MP3/FLAC)
+  -> 200 ms bounded live-edge PCM ring
+  -> per-player LMS FIFO (PCM/WAV) or ffmpeg (MP3/FLAC)
   -> soloist:// protocol handler
   -> LMS conversion/streaming pipeline
   -> player
 ```
 
-PCM/WAV mode does not run ffmpeg. The protocol handler adds a streaming WAV
-header when LMS opens the FIFO and forwards the PCM unchanged. LMS may then use
-its own conversion rules when a player cannot consume WAV directly.
+PCM/WAV mode does not run ffmpeg or a forwarding `cat` process. The shim writes
+directly to the bridge-lifetime guarded LMS FIFO, and the protocol handler adds
+a streaming WAV header when LMS opens it. The shim's 200 ms live-edge ring
+never waits for a slow reader; it drops the oldest complete PCM frames so a
+temporary stall cannot turn into multi-second delayed playback. LMS may still
+use its own conversion rules when a player cannot consume WAV directly.
 
 The handler opens the FIFO nonblocking in read/write mode. Keeping one local
 writer open prevents a temporary capture-process exit from appearing as EOF to
@@ -169,8 +172,13 @@ In the plugin settings:
    should encode before LMS receives the stream.
 4. Save and restart the affected bridges.
 
-The bridge sets `LD_LIBRARY_PATH` only for the Soloist process, creates a
-per-player `pcm-shim.fifo`, and passes its path through `SOLOIST_SHIM_OUT`.
+The bridge sets `LD_LIBRARY_PATH` only for the Soloist process. PCM/WAV points
+`SOLOIST_SHIM_OUT` directly at the final per-player LMS FIFO; MP3/FLAC retain
+the intermediate `pcm-shim.fifo` consumed by ffmpeg. On Spotify URI changes or
+meaningful backward seeks, the plugin atomically publishes a generation command
+to the shim, waits up to 250 ms for its acknowledgement, and only then replaces
+the LMS handler. This orders upstream ring flushing before downstream FIFO and
+player-buffer replacement without restarting Soloist.
 
 For diagnostic logging, set `SOLOIST_PCM_SHIM_LOG=1` or `2` in the LMS service
 environment and restart LMS. The bridge passes that value to the shim as

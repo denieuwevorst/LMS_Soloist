@@ -9,6 +9,7 @@ on:
       - "ProtocolHandler.pm"
       - "Settings.pm"
       - "StreamSemantics.pm"
+      - "contrib/experimental-pcm-shim/**"
       - "HTML/EN/plugins/SpotifySoloist/settings/basic.html"
       - "strings.txt"
       - "repo.xml"
@@ -20,10 +21,52 @@ permissions:
   contents: read
 
 jobs:
+  build-pcm-shims:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        include:
+          - directory: X86_64
+            compiler: gcc
+            package: gcc
+            machine: "x86-64"
+          - directory: ARMv7
+            compiler: arm-linux-gnueabihf-gcc
+            package: gcc-arm-linux-gnueabihf
+            machine: "ARM"
+          - directory: ARMv8_Arch64
+            compiler: aarch64-linux-gnu-gcc
+            package: gcc-aarch64-linux-gnu
+            machine: "aarch64"
+    steps:
+      - uses: actions/checkout@v5
+      - name: Install shim compiler and headers
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq libpulse-dev ${{ matrix.package }}
+      - name: Build bounded PCM shim
+        run: |
+          make -C contrib/experimental-pcm-shim clean
+          make -C contrib/experimental-pcm-shim \
+            CC=${{ matrix.compiler }} \
+            CFLAGS="-O2 -Wall -Wextra -Werror"
+          file contrib/experimental-pcm-shim/libpulse.so.0
+          file contrib/experimental-pcm-shim/libpulse.so.0 | grep -q "${{ matrix.machine }}"
+      - name: Upload bundled shim candidate
+        uses: actions/upload-artifact@v4
+        with:
+          name: pcm-shim-${{ matrix.directory }}
+          path: contrib/experimental-pcm-shim/libpulse.so.0
+          if-no-files-found: error
+
   test-extractor:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
+      - name: Install PCM shim build dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq libpulse-dev
       - name: Check POSIX shell syntax
         run: |
           dash -n Bin/extract-soloist-update.sh
@@ -56,6 +99,7 @@ jobs:
             t/stale_catchup.t \
             t/direct_stream.t
           sh t/direct_fifo.sh
+          sh t/pcm_shim_live_ring.sh
       - name: Validate current official Soloist build
         run: |
           set -eu
