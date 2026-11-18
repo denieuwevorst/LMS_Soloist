@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Separate plugin flush request IDs from the shim's internal audio generation,
+  preventing Pulse flushes from colliding with Next/Previous commands.
+  Duplicate requests recreate lost acknowledgements, and acknowledgement
+  timeout/publication failure now degrades to LMS handler replacement without
+  terminating a healthy bridge.
 - Explicitly preload the selected PCM shim through bundled glibc loaders (or
   exact `LD_PRELOAD` on native runtimes), ensuring it is mapped before Soloist
   chooses an audio backend. Official x86_64, ARMv7, and ARM64 runtime tests now

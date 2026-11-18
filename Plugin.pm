@@ -1211,7 +1211,7 @@ sub _startBridge {
 	local $ENV{SOLOIST_PCM_SHIM_ACK} = $cfg->{pcmShimAck};
 	local $ENV{SOLOIST_PCM_SHIM_RING_MS} = 200;
 	local $ENV{SOLOIST_PCM_SHIM_LOG} = 1;
-	local $ENV{SOLOIST_PCM_SHIM_BUILD} = '2026-11-18.3-loadcheck';
+	local $ENV{SOLOIST_PCM_SHIM_BUILD} = '2026-11-18.4-requestid';
 	local $ENV{SOLOIST_PCM_SHIM_MODE} =
 		$cfg->{format} eq 'pcm' && !$cfg->{liveRing} ? 'compat' : 'live-ring';
 	local $ENV{SOLOIST_RUNTIME_LIB_DIR} = $cfg->{runtimeDir};
@@ -1262,6 +1262,7 @@ sub _startBridge {
 		traceHandle           => undef,
 		timelineTracker       => {},
 		streamGeneration      => 0,
+		shimRequestId         => 0,
 		traceBuffer           => '',
 		missingClientSince    => undef,
 		notPlayingSince       => undef,
@@ -1271,12 +1272,12 @@ sub _startBridge {
 }
 
 sub _writeShimGenerationCommand {
-	my ( $b, $generation, $reason ) = @_;
+	my ( $b, $requestId, $reason ) = @_;
 	my $path = $b->{pcmShimControl} or return;
 	my $tmp = "$path.tmp.$$";
 	my $command =
 		Plugins::SpotifySoloist::StreamSemantics::shimGenerationCommand(
-			$generation, $reason,
+			$requestId, $reason,
 		);
 	my $fh;
 	return unless defined $command;
@@ -1304,40 +1305,48 @@ sub _writeShimGenerationCommand {
 }
 
 sub _shimGenerationAcknowledged {
-	my ( $b, $generation ) = @_;
+	my ( $b, $requestId ) = @_;
 	my $path = $b->{pcmShimAck} or return;
 	return unless open( my $fh, '<', $path );
 	my $line = <$fh>;
 	close $fh;
 	return Plugins::SpotifySoloist::StreamSemantics::shimGenerationAcknowledged(
-		$line, $generation,
+		$line, $requestId,
 	);
 }
 
 sub _finishPcmTimelineResync {
-	my ( $playerId, $generation ) = @_;
+	my ( $playerId, $requestId ) = @_;
 	my $b = $bridges{$playerId} or return;
 	my $pending = $b->{pendingShimResync} or return;
-	return unless $pending->{generation} == $generation;
+	return unless $pending->{requestId} == $requestId;
 
-	my $acknowledged = _shimGenerationAcknowledged( $b, $generation );
+	my $acknowledged = _shimGenerationAcknowledged( $b, $requestId );
 	if ( !$acknowledged && time() < $pending->{deadline} ) {
+		if (
+			time() >= ( $pending->{nextRetryAt} || 0 )
+			&& ( $pending->{attempts} || 0 ) < 3
+		) {
+			$pending->{attempts}++;
+			$pending->{nextRetryAt} = time() + 0.2;
+			_writeShimGenerationCommand(
+				$b, $requestId, $pending->{transition}->{reason},
+			);
+		}
 		Slim::Utils::Timers::setTimer( undef, time() + 0.01, sub {
-			_finishPcmTimelineResync( $playerId, $generation );
+			_finishPcmTimelineResync( $playerId, $requestId );
 		} );
 		return;
 	}
 
 	delete $b->{pendingShimResync};
 	if ( !$acknowledged ) {
-		my $reason =
-			"PCM shim generation $generation acknowledgement timed out"
-			. " (control=$b->{pcmShimControl}, ack=$b->{pcmShimAck})";
-		$log->error(
-			"$reason; restarting only the affected bridge instead of replacing the handler across an unconfirmed flush boundary"
+		$log->warn(
+			"PCM shim request $requestId acknowledgement timed out after "
+			. ( $pending->{attempts} || 1 )
+			. " attempts (control=$b->{pcmShimControl}, ack=$b->{pcmShimAck}); "
+			. 'replacing the LMS handler without terminating the healthy bridge'
 		);
-		restartBridgeForPlayer( $playerId, $reason );
-		return;
 	}
 	my $client = Slim::Player::Client::getClient($playerId) or return;
 	return unless _clientIsOnOwnSoloistStream( $client, $pending->{url} );
@@ -1345,13 +1354,14 @@ sub _finishPcmTimelineResync {
 	$log->info(
 		sprintf(
 			'replacing %s direct PCM handler for %s at monotonic %.3f '
-			. '(generation=%d, shim_ack=%s, transition_to_replace_ms=%.0f); '
+			. '(generation=%d, shim_request=%d, shim_ack=%s, transition_to_replace_ms=%.0f); '
 			. 'capture remains connected',
 			$client->name,
 			$pending->{transition}->{reason},
 			$now,
-			$generation,
-			'yes',
+			$pending->{generation},
+			$requestId,
+			$acknowledged ? 'yes' : 'timeout-degraded',
 			( $now - $pending->{requestedAt} ) * 1000,
 		)
 	);
@@ -1950,40 +1960,41 @@ sub _applySpotifyTransportEvents {
 	};
 	if ( $b->{backend} eq 'pcm-shim' && $b->{format} eq 'pcm' ) {
 		my $generation = $b->{streamGeneration};
+		my $requestId = ++$b->{shimRequestId};
 		$log->info(
 			sprintf(
 				'requesting PCM shim generation flush for %s at monotonic %.3f '
-				. '(generation=%d, reason=%s, uri=%s, position_ms=%s, detection_to_flush_ms=%.0f)',
+				. '(generation=%d, request=%d, reason=%s, uri=%s, position_ms=%s, detection_to_flush_ms=%.0f)',
 				$client->name,
 				$now,
 				$generation,
+				$requestId,
 				$transition->{reason},
 				$transition->{toUri} // '',
 				defined $position ? $position : 'unknown',
 				( $now - ( $transition->{detectedAt} || $now ) ) * 1000,
 			)
 		);
-		if ( _writeShimGenerationCommand( $b, $generation, $transition->{reason} ) ) {
+		if ( _writeShimGenerationCommand( $b, $requestId, $transition->{reason} ) ) {
 			$b->{pendingShimResync} = {
 				generation => $generation,
+				requestId  => $requestId,
 				transition => $transition,
 				url        => $url,
 				requestedAt => $now,
 				deadline   => time() + 1,
+				attempts   => 1,
+				nextRetryAt => time() + 0.2,
 			};
 			Slim::Utils::Timers::setTimer( undef, time() + 0.01, sub {
-				_finishPcmTimelineResync( $b->{playerId}, $generation );
+				_finishPcmTimelineResync( $b->{playerId}, $requestId );
 			} );
 			return;
 		}
-		$log->error(
-			"PCM shim generation $generation could not be published; restarting only the affected bridge instead of replacing the handler across an unconfirmed flush boundary"
+		$log->warn(
+			"PCM shim request $requestId for generation $generation could not be published; "
+			. 'replacing the LMS handler without terminating the healthy bridge'
 		);
-		restartBridgeForPlayer(
-			$b->{playerId},
-			"PCM shim generation $generation command publication failed",
-		);
-		return;
 	}
 
 	$log->info(

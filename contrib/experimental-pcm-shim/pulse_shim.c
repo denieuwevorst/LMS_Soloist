@@ -85,7 +85,7 @@ __attribute__((constructor))
 static void shim_loaded(void)
 {
     CFG();
-    fprintf(stderr, "[soloist-shim] loaded build 2026-11-18.3-loadcheck: mode=%s out=%s format=%dB rate=%d ring_ms=%d max_tlength_ms=%d control=%s\n",
+    fprintf(stderr, "[soloist-shim] loaded build 2026-11-18.4-requestid: mode=%s out=%s format=%dB rate=%d ring_ms=%d max_tlength_ms=%d control=%s\n",
         cfg.compat ? "compat" : "live-ring",
         cfg.out, cfg.bytes, cfg.rate, cfg.ring_ms, cfg.max_tlength_ms,
         cfg.control[0] ? cfg.control : "off");
@@ -1123,7 +1123,8 @@ static uint64_t stream_queued_usec(pa_stream *s)
 
 static void stream_post_write(pa_stream *s);
 
-static void control_ack(unsigned long generation, const char *reason)
+static void control_ack(unsigned long request_id, unsigned long generation,
+                        const char *reason)
 {
     char tmp[560];
     FILE *f;
@@ -1131,7 +1132,8 @@ static void control_ack(unsigned long generation, const char *reason)
     snprintf(tmp, sizeof tmp, "%s.tmp.%ld", cfg.ack, (long) getpid());
     f = fopen(tmp, "w");
     if (!f) return;
-    fprintf(f, "%lu %s\n", generation, reason ? reason : "unknown");
+    fprintf(f, "%lu %lu %s\n", request_id, generation,
+            reason ? reason : "unknown");
     if (fclose(f) == 0) rename(tmp, cfg.ack);
     else unlink(tmp);
 }
@@ -1159,22 +1161,25 @@ static void stream_flush_locked(pa_stream *s, unsigned long generation, const ch
 static void control_check_locked(pa_stream *s)
 {
     FILE *f;
-    unsigned long generation;
+    unsigned long request_id;
     char reason[96] = "external";
     if (!cfg.control[0]) return;
     if (now_ns() < s->control_next_check_ns) return;
     s->control_next_check_ns = now_ns() + 20000000ull;
     f = fopen(cfg.control, "r");
     if (!f) return;
-    if (fscanf(f, "%lu %95s", &generation, reason) < 1) {
+    if (fscanf(f, "%lu %95s", &request_id, reason) < 1) {
         fclose(f);
         return;
     }
     fclose(f);
-    if (generation == s->control_seen) return;
-    s->control_seen = generation;
-    stream_flush_locked(s, generation, reason);
-    control_ack(generation, reason);
+    if (request_id == s->control_seen) {
+        control_ack(request_id, s->generation, reason);
+        return;
+    }
+    s->control_seen = request_id;
+    stream_flush_locked(s, s->generation + 1, reason);
+    control_ack(request_id, s->generation, reason);
 }
 
 /* stream events */

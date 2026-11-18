@@ -308,19 +308,19 @@ is(
 		7, 'backward seek',
 	),
 	"7 backward-seek\n",
-	'formats a safe atomic shim generation command',
+	'formats a safe atomic shim request command',
 );
 ok(
 	Plugins::SpotifySoloist::StreamSemantics::shimGenerationAcknowledged(
-		"7 backward-seek\n", 7,
+		"7 12 backward-seek\n", 7,
 	),
-	'accepts the matching shim generation acknowledgement',
+	'accepts a matching request acknowledgement with an independent audio generation',
 );
 ok(
 	!Plugins::SpotifySoloist::StreamSemantics::shimGenerationAcknowledged(
-		"8 track\n", 7,
+		"8 12 track\n", 7,
 	),
-	'rejects a stale or superseding acknowledgement',
+	'rejects an acknowledgement for another request',
 );
 
 done_testing;

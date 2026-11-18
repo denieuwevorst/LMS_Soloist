@@ -66,10 +66,10 @@ PY
 printf '1 track\n' >"$control.tmp"
 mv "$control.tmp" "$control"
 for _try in $(seq 1 50); do
-	[ -f "$ack" ] && grep -q '^1 track' "$ack" && break
+	[ -f "$ack" ] && grep -q '^1 [0-9][0-9]* track' "$ack" && break
 	sleep 0.01
 done
-grep -q '^1 track' "$ack"
+grep -q '^1 [0-9][0-9]* track' "$ack"
 kill -0 "$client_pid"
 
 # Rapid skips supersede older generations; the latest generation must win.
@@ -78,10 +78,10 @@ mv "$control.tmp" "$control"
 printf '3 backward-seek\n' >"$control.tmp"
 mv "$control.tmp" "$control"
 for _try in $(seq 1 50); do
-	grep -q '^3 backward-seek' "$ack" 2>/dev/null && break
+	grep -q '^3 [0-9][0-9]* backward-seek' "$ack" 2>/dev/null && break
 	sleep 0.01
 done
-grep -q '^3 backward-seek' "$ack"
+grep -q '^3 [0-9][0-9]* backward-seek' "$ack"
 kill -0 "$client_pid"
 
 # Replacing the LMS reader leaves the same shim/Soloist capture process alive.

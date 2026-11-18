@@ -85,10 +85,11 @@ without gaps. If the reader remains slow beyond that budget, the in-flight
 oldest complete frames are discarded, keeping playback near the live edge and
 bounding total PCM buffering to approximately 300 ms with the bridge's FIFO.
 
-Generation command files contain `<generation> <reason>`. When the plugin
-atomically replaces the file, the writer clears queued old-generation frames,
-resets resampling state, and atomically writes the same generation to the
-acknowledgement file. The plugin waits for that acknowledgement before replacing
+Generation command files contain `<request-id> <reason>`. The request ID is
+independent from the shim's internal audio generation, so Pulse flushes cannot
+collide with track-change commands. The acknowledgement contains
+`<request-id> <resulting-generation> <reason>`. Repeating a processed request
+recreates a lost acknowledgement without flushing twice. The plugin waits for that acknowledgement before replacing
 the LMS protocol handler. Pulse `flush` requests clear the ring through the same
 internal generation path.
 
@@ -101,7 +102,7 @@ and inspect the player's `bridge.log`. The bridge maps this setting to
 A successfully loaded build logs its configured ring depth and control path:
 
 ```text
-[soloist-shim] loaded build 2026-11-18.3-loadcheck: mode=live-ring ... ring_ms=200 ...
+[soloist-shim] loaded build 2026-11-18.4-requestid: mode=live-ring ... ring_ms=200 ...
 ```
 
 Level `2` also logs Pulse API activity. A constructor/load marker without

@@ -179,10 +179,15 @@ In the plugin settings:
 The bridge sets `LD_LIBRARY_PATH` only for the Soloist process. PCM/WAV points
 `SOLOIST_SHIM_OUT` directly at the final per-player LMS FIFO; MP3/FLAC retain
 the intermediate `pcm-shim.fifo` consumed by ffmpeg. On Spotify URI changes or
-meaningful backward seeks, the plugin atomically publishes a generation command
-to the shim, waits up to one second for its acknowledgement, and only then replaces
+meaningful backward seeks, the plugin atomically publishes a flush request
+to the shim, waits up to one second for its request acknowledgement, and only then replaces
 the LMS handler. This orders upstream ring flushing before downstream FIFO and
 player-buffer replacement without restarting Soloist.
+
+Pulse-internal flushes and plugin track-change requests use separate namespaces.
+If a request acknowledgement is lost, the plugin retries the same idempotent
+request; after timeout it still replaces the LMS handler and keeps the bridge
+alive rather than terminating Soloist.
 
 ### Field A/B diagnostics
 
@@ -196,7 +201,7 @@ At bridge startup, `bridge.log` must show both:
 
 ```text
 [soloist-bridge] pcm-shim binary: .../libpulse.so.0 (... bytes sha1=...)
-[soloist-shim] loaded build 2026-11-18.3-loadcheck: mode=live-ring|compat ...
+[soloist-shim] loaded build 2026-11-18.4-requestid: mode=live-ring|compat ...
 ```
 
 The bridge also logs the exact matching `/proc/<soloist-pid>/maps` entry. It

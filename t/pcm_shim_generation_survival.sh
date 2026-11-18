@@ -28,11 +28,13 @@ run_mode() {
 	SOLOIST_SHIM_CONTROL="$control" \
 	SOLOIST_SHIM_ACK="$ack" \
 	SOLOIST_SHIM_LOG=1 \
+	MARKER_PULSE_FLUSH_AFTER_MS=300 \
 	"$shim/marker_client" 30 >"$log" 2>&1 &
 	client_pid=$!
 	original_pid="$client_pid"
 
 	sleep 1
+	grep -q 'reason=pulse-flush' "$log"
 	for generation in 1 2 3 4 5 6 7 8; do
 		printf '%s track\n' "$generation" >"$control.tmp"
 		mv "$control.tmp" "$control"
@@ -41,17 +43,27 @@ run_mode() {
 	done
 
 	for _try in $(seq 1 100); do
-		grep -q '^8 track' "$ack" 2>/dev/null && break
+		grep -q '^8 [0-9][0-9]* track' "$ack" 2>/dev/null && break
 		sleep 0.01
 	done
-	grep -q '^8 track' "$ack"
+	grep -q '^8 [0-9][0-9]* track' "$ack"
+	# Re-publishing an already processed request must recreate a lost ack
+	# without another flush or process restart.
+	rm -f "$ack"
+	printf '8 track\n' >"$control.tmp"
+	mv "$control.tmp" "$control"
+	for _try in $(seq 1 100); do
+		grep -q '^8 [0-9][0-9]* track' "$ack" 2>/dev/null && break
+		sleep 0.01
+	done
+	grep -q '^8 [0-9][0-9]* track' "$ack"
 	kill -0 "$original_pid"
 	[ "$client_pid" = "$original_pid" ]
 
 	kill "$client_pid"
 	wait "$client_pid" 2>/dev/null || true
 	client_pid=""
-	grep -q "loaded build 2026-11-18.3-loadcheck: mode=$mode" "$log"
+	grep -q "loaded build 2026-11-18.4-requestid: mode=$mode" "$log"
 	grep -q 'generation flush: generation=8 reason=track' "$log"
 	exec 9>&-
 }

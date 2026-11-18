@@ -251,17 +251,17 @@ sub applySongTiming {
 }
 
 sub shimGenerationCommand {
-	my ( $generation, $reason ) = @_;
-	return unless defined $generation && $generation =~ /^\d+\z/;
+	my ( $requestId, $reason ) = @_;
+	return unless defined $requestId && $requestId =~ /^\d+\z/;
 	$reason = defined $reason ? $reason : 'timeline';
 	$reason =~ s/[^A-Za-z0-9_.-]+/-/g;
-	return "$generation $reason\n";
+	return "$requestId $reason\n";
 }
 
 sub shimGenerationAcknowledged {
-	my ( $line, $generation ) = @_;
-	return 0 unless defined $line && defined $generation;
-	return $line =~ /^\Q$generation\E(?:\s|\z)/ ? 1 : 0;
+	my ( $line, $requestId ) = @_;
+	return 0 unless defined $line && defined $requestId;
+	return $line =~ /^\Q$requestId\E\s+\d+(?:\s|\z)/ ? 1 : 0;
 }
 
 1;
