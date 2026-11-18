@@ -28,7 +28,7 @@ run_mode() {
 	SOLOIST_SHIM_CONTROL="$control" \
 	SOLOIST_SHIM_ACK="$ack" \
 	SOLOIST_SHIM_LOG=1 \
-	MARKER_PULSE_FLUSH_AFTER_MS=300 \
+	MARKER_PULSE_FLUSH_ON_START=1 \
 	"$shim/marker_client" 30 >"$log" 2>&1 &
 	client_pid=$!
 	original_pid="$client_pid"

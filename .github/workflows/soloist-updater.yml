@@ -104,12 +104,12 @@ jobs:
             t/normalization.t \
             t/stale_catchup.t \
             t/direct_stream.t
-          sh t/direct_fifo.sh
-          sh t/pcm_shim_cadence.sh
-          sh t/pcm_shim_smooth_soak.sh
-          sh t/pcm_shim_live_ring.sh
-          sh t/pcm_shim_generation_survival.sh
-          sh t/private_loader_preload.sh
+          timeout 30 sh t/direct_fifo.sh
+          timeout 30 sh t/pcm_shim_cadence.sh
+          timeout 30 sh t/pcm_shim_smooth_soak.sh
+          timeout 30 sh t/pcm_shim_live_ring.sh
+          timeout 30 sh t/pcm_shim_generation_survival.sh
+          timeout 30 sh t/private_loader_preload.sh
       - name: Validate current official Soloist build
         run: |
           set -eu
