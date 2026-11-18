@@ -47,11 +47,12 @@ SOLOIST_CACHE_DIR="${SOLOIST_CACHE_DIR:-$HOME/.cache/soloist-lyrion}"
 FIFO_PATH="${FIFO_PATH:-/tmp/soloist-audio.fifo}"
 SOLOIST_PCM_SHIM_DIR="${SOLOIST_PCM_SHIM_DIR:-}"
 SOLOIST_PCM_SHIM_FIFO="${SOLOIST_PCM_SHIM_FIFO:-}"
-SOLOIST_PCM_SHIM_LOG="${SOLOIST_PCM_SHIM_LOG:-0}"
+SOLOIST_PCM_SHIM_LOG="${SOLOIST_PCM_SHIM_LOG:-1}"
 SOLOIST_PCM_SHIM_RING_MS="${SOLOIST_PCM_SHIM_RING_MS:-200}"
 SOLOIST_PCM_SHIM_MODE="${SOLOIST_PCM_SHIM_MODE:-live-ring}"
 SOLOIST_PCM_SHIM_CONTROL="${SOLOIST_PCM_SHIM_CONTROL:-${SOLOIST_CACHE_DIR}/pcm-shim.control}"
 SOLOIST_PCM_SHIM_ACK="${SOLOIST_PCM_SHIM_ACK:-${SOLOIST_CACHE_DIR}/pcm-shim.ack}"
+SOLOIST_PCM_SHIM_BUILD="${SOLOIST_PCM_SHIM_BUILD:-2026-11-18.3-loadcheck}"
 SOLOIST_RUNTIME_LIB_DIR="${SOLOIST_RUNTIME_LIB_DIR:-}"
 SOLOIST_RUNTIME_LOADER="${SOLOIST_RUNTIME_LOADER:-}"
 WS_ENDPOINT="127.0.0.1:${WS_PORT}"
@@ -97,6 +98,7 @@ echo "HOME=${HOME} XDG_CONFIG_HOME=${XDG_CONFIG_HOME}"
 # separate SSH round-trip to grep/diff/sha1sum it by hand.
 _SELF_PATH="$(readlink -f "$0" 2>/dev/null || echo "$0")"
 echo "[soloist-bridge] running script: ${_SELF_PATH} (size=$(wc -c < "${_SELF_PATH}" 2>/dev/null || echo unknown) bytes, lines=$(wc -l < "${_SELF_PATH}" 2>/dev/null || echo unknown))"
+echo "[soloist-bridge] bridge process: pid=$$ parent=${PPID:-unknown}"
 
 SOLOIST_PID=""
 SILENCE_PID=""
@@ -104,15 +106,20 @@ FFMPEG_SUP_PID=""
 SINK_ROUTER_PID=""
 
 cleanup() {
+	reason="${1:-unspecified cleanup}"
+	status="${2:-0}"
 	trap - EXIT TERM INT
+	echo "[soloist-bridge] cleanup reason: ${reason} (bridge_pid=$$ soloist_pid=${SOLOIST_PID:-none})" >&2
 	[ -n "$SINK_ROUTER_PID" ] && kill "$SINK_ROUTER_PID" 2>/dev/null
 	[ -n "$FFMPEG_SUP_PID" ] && kill "$FFMPEG_SUP_PID" 2>/dev/null
 	[ -n "$SILENCE_PID" ]    && kill "$SILENCE_PID"    2>/dev/null
 	[ -n "$SOLOIST_PID" ]    && kill "$SOLOIST_PID"    2>/dev/null
 	wait 2>/dev/null
-	exit 0
+	exit "$status"
 }
-trap cleanup EXIT TERM INT
+trap 'status=$?; cleanup "shell EXIT status $status" "$status"' EXIT
+trap 'cleanup "received TERM" 143' TERM
+trap 'cleanup "received INT" 130' INT
 
 log() { echo "[soloist-bridge] $*" >&2; }
 
@@ -227,7 +234,12 @@ elif [ "$SOLOIST_AUDIO_BACKEND" = "pcm-shim" ]; then
 		SHIM_FINGERPRINT="$(wc -c < "$SOLOIST_PCM_SHIM_LIB") bytes"
 	fi
 	log "pcm-shim binary: ${SOLOIST_PCM_SHIM_LIB} (${SHIM_FINGERPRINT})"
-	log "pcm-shim settings: mode=${SOLOIST_PCM_SHIM_MODE} ring=${SOLOIST_PCM_SHIM_RING_MS}ms control=${SOLOIST_PCM_SHIM_CONTROL} ack=${SOLOIST_PCM_SHIM_ACK} log=${SOLOIST_PCM_SHIM_LOG} max_tlength=${SOLOIST_SHIM_MAX_TLENGTH_MS:-300}ms"
+	if ! LC_ALL=C grep -F "$SOLOIST_PCM_SHIM_BUILD" "$SOLOIST_PCM_SHIM_LIB" >/dev/null 2>&1; then
+		log "ERROR: pcm-shim binary does not contain expected build marker '${SOLOIST_PCM_SHIM_BUILD}'; refusing stale or mismatched deployment"
+		exit 1
+	fi
+	log "pcm-shim build marker verified in binary: ${SOLOIST_PCM_SHIM_BUILD}"
+	log "pcm-shim settings: mode=${SOLOIST_PCM_SHIM_MODE} ring=${SOLOIST_PCM_SHIM_RING_MS}ms control=${SOLOIST_PCM_SHIM_CONTROL} ack=${SOLOIST_PCM_SHIM_ACK} log=${SOLOIST_PCM_SHIM_LOG} max_tlength=${SOLOIST_SHIM_MAX_TLENGTH_MS:-0}ms"
 fi
 
 # ---------------------------------------------------------------------------
@@ -254,7 +266,7 @@ else
 fi
 
 if [ "$SOLOIST_AUDIO_BACKEND" = "pcm-shim" ]; then
-	SOLOIST_SHIM_MAX_TLENGTH_MS="${SOLOIST_SHIM_MAX_TLENGTH_MS:-300}"
+	SOLOIST_SHIM_MAX_TLENGTH_MS="${SOLOIST_SHIM_MAX_TLENGTH_MS:-0}"
 	# The shim defaults to s24 (packed) output if SOLOIST_SHIM_FORMAT is
 	# unset, but the capture side below assumes s16le/44100 -- so this
 	# must force s16 explicitly, or audio would be garbled/wrong-speed.
@@ -307,6 +319,21 @@ if [ "$READY" = "1" ]; then
 	log "soloist ready after ~${ELAPSED_MS}ms"
 else
 	log "soloist exited immediately or wasn't ready within 2s -- check API key / binary path / glibc compatibility"
+fi
+
+if [ "$SOLOIST_AUDIO_BACKEND" = "pcm-shim" ] && [ "$READY" = "1" ]; then
+	SHIM_REAL_PATH="$(readlink -f "$SOLOIST_PCM_SHIM_LIB" 2>/dev/null || echo "$SOLOIST_PCM_SHIM_LIB")"
+	if [ ! -r "/proc/${SOLOIST_PID}/maps" ]; then
+		log "ERROR: cannot inspect /proc/${SOLOIST_PID}/maps to verify the loaded PCM shim"
+		cleanup "PCM shim load verification unavailable" 1
+	fi
+	SHIM_MAP="$(grep -F "$SHIM_REAL_PATH" "/proc/${SOLOIST_PID}/maps" 2>/dev/null | head -n 1 || true)"
+	if [ -z "$SHIM_MAP" ]; then
+		log "ERROR: Soloist pid ${SOLOIST_PID} did not map expected pcm-shim '${SHIM_REAL_PATH}'"
+		log "loaded libpulse mappings: $(grep 'libpulse[^/]*\.so' "/proc/${SOLOIST_PID}/maps" 2>/dev/null | awk '{print $NF}' | sort -u | tr '\n' ' ' || true)"
+		cleanup "expected PCM shim was not loaded" 1
+	fi
+	log "pcm-shim mapped by Soloist pid ${SOLOIST_PID}: ${SHIM_MAP}"
 fi
 
 # Explicitly route Soloist's PulseAudio stream to our sink, safe under
@@ -507,4 +534,4 @@ else
 fi
 
 log "shutting down bridge"
-cleanup
+cleanup "Soloist process exited with code $code" 0

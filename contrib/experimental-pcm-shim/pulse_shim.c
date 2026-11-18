@@ -20,8 +20,9 @@
  *                     clock close to real drained audio              (0=off)
  *
  * Playback is paced against the wall clock, so the reader sees real-time PCM
- * no matter how fast the application writes. If nobody is reading, audio is
- * discarded at the same pace (the application keeps playing silently).
+ * no matter how fast the application writes. Live-ring mode preserves the
+ * application's normal Pulse buffering contract, but discards PCM whose
+ * scheduled presentation time is older than the configured live-edge budget.
  */
 #define _GNU_SOURCE
 #include <pulse/pulseaudio.h>
@@ -83,7 +84,8 @@ static void cfg_init(void)
 __attribute__((constructor))
 static void shim_loaded(void)
 {
-    LOG(1, "loaded build 2026-11-18.2-fielddiag: mode=%s out=%s format=%dB rate=%d ring_ms=%d max_tlength_ms=%d control=%s",
+    CFG();
+    fprintf(stderr, "[soloist-shim] loaded build 2026-11-18.3-loadcheck: mode=%s out=%s format=%dB rate=%d ring_ms=%d max_tlength_ms=%d control=%s\n",
         cfg.compat ? "compat" : "live-ring",
         cfg.out, cfg.bytes, cfg.rate, cfg.ring_ms, cfg.max_tlength_ms,
         cfg.control[0] ? cfg.control : "off");
@@ -936,6 +938,7 @@ struct pa_stream {
     uint64_t consumed_bytes, written_bytes, dropped_bytes, summary_dropped_bytes;
     uint64_t last_drop_log_ns;
     uint64_t overflow_serial, control_next_check_ns;
+    uint64_t queue_start_ns;
     uint64_t write_calls, callback_calls, underflow_count, writer_iterations;
     uint64_t last_summary_ns, last_iteration_ns, max_iteration_gap_ns;
     unsigned long generation, control_seen;
@@ -993,13 +996,13 @@ pa_stream *pa_stream_new(pa_context *c, const char *name, const pa_sample_spec *
     return pa_stream_new_with_proplist(c, name, ss, map, NULL);
 }
 
-/* bounded live-edge ring buffer (caller holds s->lk) */
+/* Application-facing Pulse buffer (caller holds s->lk). */
 #define COMPAT_RING_MAX (8u << 20)
 static size_t ring_put(pa_stream *s, const unsigned char *d, size_t n)
 {
     size_t fs = pa_frame_size(&s->ss), dropped = 0;
     n -= n % fs;
-    if (cfg.compat && s->fill + n > s->cap) {
+    if (s->fill + n > s->cap) {
         size_t want = s->cap ? s->cap : 65536;
         while (want < s->fill + n && want < COMPAT_RING_MAX) want *= 2;
         if (want > COMPAT_RING_MAX) want = COMPAT_RING_MAX;
@@ -1015,7 +1018,7 @@ static size_t ring_put(pa_stream *s, const unsigned char *d, size_t n)
             s->cap = want;
             s->rd = 0;
         }
-        if (n > s->cap - s->fill) {
+        if (cfg.compat && n > s->cap - s->fill) {
             dropped = n - (s->cap - s->fill);
             n = s->cap - s->fill;
         }
@@ -1033,6 +1036,7 @@ static size_t ring_put(pa_stream *s, const unsigned char *d, size_t n)
         s->fill -= remove;
         dropped += remove;
     }
+    if (!s->fill && n) s->queue_start_ns = now_ns();
     {
         size_t wr = (s->rd + s->fill) % s->cap, first = s->cap - wr < n ? s->cap - wr : n;
         memcpy(s->ring + wr, d, first);
@@ -1051,6 +1055,36 @@ static void ring_get(pa_stream *s, unsigned char *d, size_t n)
     memcpy(d + first, s->ring, n - first);
     s->rd = (s->rd + n) % s->cap;
     s->fill -= n;
+    if (s->fill) {
+        s->queue_start_ns += pa_bytes_to_usec(n, &s->ss) * 1000ull;
+    } else {
+        s->queue_start_ns = 0;
+    }
+}
+
+/* Keep Pulse's original producer contract, but discard audio whose scheduled
+ * presentation time has fallen behind the configured live-edge budget. */
+static void ring_trim_stale_locked(pa_stream *s, uint64_t now)
+{
+    uint64_t budget_ns, cutoff, stale_ns;
+    size_t fs, remove;
+    if (cfg.compat || !s->fill || !s->queue_start_ns) return;
+    budget_ns = (uint64_t) cfg.ring_ms * 1000000ull;
+    cutoff = now > budget_ns ? now - budget_ns : 0;
+    if (s->queue_start_ns >= cutoff) return;
+    stale_ns = cutoff - s->queue_start_ns;
+    fs = pa_frame_size(&s->ss);
+    remove = (size_t) ((long double) stale_ns * s->ss.rate / 1000000000.0L) * fs;
+    remove -= remove % fs;
+    if (remove > s->fill) remove = s->fill;
+    if (!remove) return;
+    s->rd = (s->rd + remove) % s->cap;
+    s->fill -= remove;
+    s->queue_start_ns += pa_bytes_to_usec(remove, &s->ss) * 1000ull;
+    if (!s->fill) s->queue_start_ns = 0;
+    s->dropped_bytes += remove;
+    s->summary_dropped_bytes += remove;
+    s->overflow_serial++;
 }
 
 static void stream_log_drops_locked(pa_stream *s)
@@ -1108,6 +1142,7 @@ static void stream_flush_locked(pa_stream *s, unsigned long generation, const ch
     size_t discarded = s->fill;
     s->fill = 0;
     s->rd = 0;
+    s->queue_start_ns = 0;
     s->clock_on = 0;
     s->force_start = 1;
     s->rs_pos = 0;
@@ -1319,6 +1354,7 @@ static void *writer_main(void *arg)
             s->max_iteration_gap_ns = t - s->last_iteration_ns;
         s->last_iteration_ns = t;
         control_check_locked(s);
+        ring_trim_stale_locked(s, t);
         stream_log_drops_locked(s);
         avail = s->fill / fs;
 
@@ -1372,10 +1408,13 @@ static void *writer_main(void *arg)
         }
         if (!s->last_summary_ns) s->last_summary_ns = t;
         if (t - s->last_summary_ns >= 5000000000ull) {
-            LOG(1, "runtime summary: mode=%s queued=%.1f ms writes=%llu callbacks=%llu "
+            double oldest_age_ms = s->queue_start_ns && t > s->queue_start_ns
+                ? (t - s->queue_start_ns) / 1000000.0 : 0.0;
+            LOG(1, "runtime summary: mode=%s queued=%.1f ms oldest_age=%.1f ms writes=%llu callbacks=%llu "
                 "underflows=%llu drops=%.1f ms writer_gap_max=%.1f ms requested=%.1f ms",
                 cfg.compat ? "compat" : "live-ring",
                 pa_bytes_to_usec(s->fill, &s->ss) / 1000.0,
+                oldest_age_ms,
                 (unsigned long long) s->write_calls,
                 (unsigned long long) s->callback_calls,
                 (unsigned long long) s->underflow_count,
@@ -1433,8 +1472,7 @@ int pa_stream_connect_playback(pa_stream *s, const char *dev, const pa_buffer_at
     }
     CFG();
     fs = pa_frame_size(&s->ss);
-    s->cap = cfg.compat ? 65536 :
-        (size_t) pa_usec_to_bytes((pa_usec_t) cfg.ring_ms * 1000u, &s->ss);
+    s->cap = 65536;
     s->cap -= s->cap % fs;
     if (s->cap < fs) s->cap = fs;
     s->ring = malloc(s->cap);
@@ -1462,15 +1500,9 @@ int pa_stream_connect_playback(pa_stream *s, const char *dev, const pa_buffer_at
         if (s->attr.maxlength != (uint32_t) -1 && s->attr.maxlength < s->attr.tlength)
             s->attr.maxlength = s->attr.tlength;
     }
-    if (!cfg.compat && s->attr.tlength > s->cap)
-        s->attr.tlength = (uint32_t) s->cap;
-    if (s->attr.prebuf > s->attr.tlength)
-        s->attr.prebuf = s->attr.tlength;
-    if (s->attr.minreq > s->attr.tlength)
-        s->attr.minreq = s->attr.tlength;
     if (s->attr.maxlength != (uint32_t) -1 && s->attr.maxlength < s->attr.tlength)
         s->attr.maxlength = s->attr.tlength;
-    s->prebuf = s->attr.prebuf;
+    s->prebuf = cfg.compat ? s->attr.prebuf : fs;
     s->minreq = s->attr.minreq ? s->attr.minreq : fs;
     s->requested = s->attr.tlength;
     s->corked = (flags & PA_STREAM_START_CORKED) ? 1 : 0;
@@ -1479,10 +1511,10 @@ int pa_stream_connect_playback(pa_stream *s, const char *dev, const pa_buffer_at
     s->thread_started = pthread_create(&s->th, NULL, writer_main, s) == 0;
     if (!s->thread_started) return -1;
 
-    LOG(1, "connect_playback: mode=%s tlength=%u minreq=%u prebuf=%u ring=%zu bytes (%.1f ms) max_tlength_ms=%d out=%s fmt=%dB rate=%d",
+    LOG(1, "connect_playback: mode=%s tlength=%u minreq=%u prebuf=%u initial_ring=%zu bytes live_edge_ms=%d max_tlength_ms=%d out=%s fmt=%dB rate=%d",
         cfg.compat ? "compat" : "live-ring",
         s->attr.tlength, s->attr.minreq, s->attr.prebuf, s->cap,
-        pa_bytes_to_usec(s->cap, &s->ss) / 1000.0,
+        cfg.ring_ms,
         cfg.max_tlength_ms, cfg.out, cfg.bytes, cfg.rate);
     stream_post_state(s, PA_STREAM_CREATING);
     stream_post_state(s, PA_STREAM_READY);

@@ -1210,6 +1210,8 @@ sub _startBridge {
 	local $ENV{SOLOIST_PCM_SHIM_CONTROL} = $cfg->{pcmShimControl};
 	local $ENV{SOLOIST_PCM_SHIM_ACK} = $cfg->{pcmShimAck};
 	local $ENV{SOLOIST_PCM_SHIM_RING_MS} = 200;
+	local $ENV{SOLOIST_PCM_SHIM_LOG} = 1;
+	local $ENV{SOLOIST_PCM_SHIM_BUILD} = '2026-11-18.3-loadcheck';
 	local $ENV{SOLOIST_PCM_SHIM_MODE} =
 		$cfg->{format} eq 'pcm' && !$cfg->{liveRing} ? 'compat' : 'live-ring';
 	local $ENV{SOLOIST_RUNTIME_LIB_DIR} = $cfg->{runtimeDir};
@@ -1328,10 +1330,13 @@ sub _finishPcmTimelineResync {
 
 	delete $b->{pendingShimResync};
 	if ( !$acknowledged ) {
+		my $reason =
+			"PCM shim generation $generation acknowledgement timed out"
+			. " (control=$b->{pcmShimControl}, ack=$b->{pcmShimAck})";
 		$log->error(
-			"PCM shim did not acknowledge generation $generation; restarting only the affected bridge instead of replacing the handler across an unconfirmed flush boundary"
+			"$reason; restarting only the affected bridge instead of replacing the handler across an unconfirmed flush boundary"
 		);
-		restartBridgeForPlayer($playerId);
+		restartBridgeForPlayer( $playerId, $reason );
 		return;
 	}
 	my $client = Slim::Player::Client::getClient($playerId) or return;
@@ -1409,18 +1414,19 @@ sub reconcileBridges {
 }
 
 sub restartBridgeForPlayer {
-	my ($playerId) = @_;
+	my ( $playerId, $reason ) = @_;
 	unless ( _isSelectedPlayer($playerId) ) {
 		$log->debug("not restarting idle Soloist bridge for deselected player $playerId");
 		return;
 	}
 
-	$log->info("restarting idle Soloist bridge for player $playerId");
+	$reason ||= 'requested restart';
+	$log->info("restarting Soloist bridge for player $playerId ($reason)");
 	_ensureBridgeState(
 		$playerId,
 		shouldRun  => 1,
 		restart    => 1,
-		stopReason => 'restarting idle'
+		stopReason => "restarting: $reason"
 	);
 }
 
@@ -1963,7 +1969,7 @@ sub _applySpotifyTransportEvents {
 				transition => $transition,
 				url        => $url,
 				requestedAt => $now,
-				deadline   => time() + 0.25,
+				deadline   => time() + 1,
 			};
 			Slim::Utils::Timers::setTimer( undef, time() + 0.01, sub {
 				_finishPcmTimelineResync( $b->{playerId}, $generation );
@@ -1973,7 +1979,10 @@ sub _applySpotifyTransportEvents {
 		$log->error(
 			"PCM shim generation $generation could not be published; restarting only the affected bridge instead of replacing the handler across an unconfirmed flush boundary"
 		);
-		restartBridgeForPlayer( $b->{playerId} );
+		restartBridgeForPlayer(
+			$b->{playerId},
+			"PCM shim generation $generation command publication failed",
+		);
 		return;
 	}
 

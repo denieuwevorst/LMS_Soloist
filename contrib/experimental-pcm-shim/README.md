@@ -98,7 +98,7 @@ and inspect the player's `bridge.log`. The bridge maps this setting to
 A successfully loaded build logs its configured ring depth and control path:
 
 ```text
-[soloist-shim] loaded build 2026-11-18.2-fielddiag: mode=live-ring ... ring_ms=200 ...
+[soloist-shim] loaded build 2026-11-18.3-loadcheck: mode=live-ring ... ring_ms=200 ...
 ```
 
 Level `2` also logs Pulse API activity. A constructor/load marker without
@@ -111,6 +111,7 @@ Normal backpressure may produce pressure summaries, but uninterrupted playback
 should not produce `live-edge drop` or `stream underflow`.
 
 Every five seconds the shim also logs a `runtime summary` with queued audio,
+oldest scheduled audio age,
 producer writes/callbacks, underflows, dropped milliseconds, maximum writer
 scheduling gap, and requested writable time. These counters distinguish
 producer starvation or bursty Pulse timing from downstream FIFO pressure.

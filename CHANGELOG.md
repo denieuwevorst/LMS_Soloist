@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+- Preserve Soloist's compatibility-mode Pulse writable-size, callback, and
+  prebuffer contract in live-edge mode while independently discarding audio
+  only when its wall-clock presentation age exceeds the configured budget.
+  This combines the smooth field behavior of compatibility mode with bounded
+  stale latency.
+- Verify the selected PCM shim build marker and Soloist's actual mapped
+  `libpulse.so.0` before playback, enable diagnostic summaries by default, and
+  log the exact cause of every bridge shutdown or safety restart. Repeated
+  rapid generation flushes now assert same-process survival in both modes.
 - Add a per-player PCM compatibility switch for same-host A/B testing. It
   restores the pre-ring Pulse buffering and sink-wait contract while preserving
   direct final-FIFO delivery, generation flushes, and handler replacement.

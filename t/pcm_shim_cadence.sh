@@ -68,7 +68,7 @@ if maximum > 0.080:
     raise SystemExit(f"{sys.argv[2]} wall-clock PCM gap was {maximum * 1000:.1f} ms")
 print(f"{sys.argv[2]} wall-clock output max gap={maximum * 1000:.1f} ms")
 PY
-	grep -q "loaded build 2026-11-18.2-fielddiag: mode=$mode" "$log"
+	grep -q "loaded build 2026-11-18.3-loadcheck: mode=$mode" "$log"
 	grep -q "runtime summary: mode=$mode" "$log"
 	if grep -Eq 'live-edge drop|stream underflow' "$log"; then
 		cat "$log" >&2
@@ -79,4 +79,11 @@ PY
 
 run_mode live-ring
 run_mode compat
+live_contract="$(grep 'connect_playback:' "$tmp/live-ring.log" | sed 's/mode=live-ring/mode=MODE/')"
+compat_contract="$(grep 'connect_playback:' "$tmp/compat.log" | sed 's/mode=compat/mode=MODE/')"
+[ "$live_contract" = "$compat_contract" ] || {
+	echo "live-ring changed the Pulse producer contract:" >&2
+	printf '%s\n%s\n' "$live_contract" "$compat_contract" >&2
+	exit 1
+}
 echo "live-ring and compatibility modes maintained continuous wall-clock PCM cadence"

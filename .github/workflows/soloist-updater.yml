@@ -108,6 +108,7 @@ jobs:
           sh t/pcm_shim_cadence.sh
           sh t/pcm_shim_smooth_soak.sh
           sh t/pcm_shim_live_ring.sh
+          sh t/pcm_shim_generation_survival.sh
       - name: Validate current official Soloist build
         run: |
           set -eu

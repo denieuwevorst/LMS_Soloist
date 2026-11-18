@@ -180,7 +180,7 @@ The bridge sets `LD_LIBRARY_PATH` only for the Soloist process. PCM/WAV points
 `SOLOIST_SHIM_OUT` directly at the final per-player LMS FIFO; MP3/FLAC retain
 the intermediate `pcm-shim.fifo` consumed by ffmpeg. On Spotify URI changes or
 meaningful backward seeks, the plugin atomically publishes a generation command
-to the shim, waits up to 250 ms for its acknowledgement, and only then replaces
+to the shim, waits up to one second for its acknowledgement, and only then replaces
 the LMS handler. This orders upstream ring flushing before downstream FIFO and
 player-buffer replacement without restarting Soloist.
 
@@ -196,19 +196,21 @@ At bridge startup, `bridge.log` must show both:
 
 ```text
 [soloist-bridge] pcm-shim binary: .../libpulse.so.0 (... bytes sha1=...)
-[soloist-shim] loaded build 2026-11-18.2-fielddiag: mode=live-ring|compat ...
+[soloist-shim] loaded build 2026-11-18.3-loadcheck: mode=live-ring|compat ...
 ```
 
-If those lines are missing, the running bridge is stale or resolving a
-different shim. At normal shim log level `1`, copy 15-20 seconds containing the
+The bridge also logs the exact matching `/proc/<soloist-pid>/maps` entry. It
+refuses playback if either the binary build marker or mapped library differs,
+so a stale package or system Pulse library cannot first surface as a
+generation-acknowledgement timeout on track skip. At normal shim log level `1`,
+copy 15-20 seconds containing the
 startup lines plus `runtime summary`, `output pressure`, `LMS read summary`,
 `stream underflow`, `live-edge drop`, generation, or FIFO reconnect messages.
 Compare the same Spotify passage first with the checkbox enabled and then
 disabled for that player.
 
-For diagnostic logging, set `SOLOIST_PCM_SHIM_LOG=1` or `2` in the LMS service
-environment and restart LMS. The bridge passes that value to the shim as
-`SOLOIST_SHIM_LOG`.
+Diagnostic level `1` is now the default. Set `SOLOIST_PCM_SHIM_LOG=2` in the
+LMS service environment only when trace-level Pulse API calls are needed.
 
 See `contrib/experimental-pcm-shim/README.md` for build details, supported
 environment variables, and limitations.
