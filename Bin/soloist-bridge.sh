@@ -26,6 +26,8 @@
 #                     SOLOIST_AUDIO_BACKEND PIPEWIRE_SINK FFMPEG_BIN
 #                     SOLOIST_PCM_SHIM_DIR
 #                     SOLOIST_PCM_SHIM_FIFO SOLOIST_PCM_SHIM_LOG
+#                     SOLOIST_PCM_SHIM_RING_MS SOLOIST_PCM_SHIM_CONTROL
+#                     SOLOIST_PCM_SHIM_ACK
 #                     SOLOIST_RUNTIME_LIB_DIR SOLOIST_RUNTIME_LOADER
 
 set -u
@@ -46,6 +48,9 @@ FIFO_PATH="${FIFO_PATH:-/tmp/soloist-audio.fifo}"
 SOLOIST_PCM_SHIM_DIR="${SOLOIST_PCM_SHIM_DIR:-}"
 SOLOIST_PCM_SHIM_FIFO="${SOLOIST_PCM_SHIM_FIFO:-}"
 SOLOIST_PCM_SHIM_LOG="${SOLOIST_PCM_SHIM_LOG:-0}"
+SOLOIST_PCM_SHIM_RING_MS="${SOLOIST_PCM_SHIM_RING_MS:-200}"
+SOLOIST_PCM_SHIM_CONTROL="${SOLOIST_PCM_SHIM_CONTROL:-${SOLOIST_CACHE_DIR}/pcm-shim.control}"
+SOLOIST_PCM_SHIM_ACK="${SOLOIST_PCM_SHIM_ACK:-${SOLOIST_CACHE_DIR}/pcm-shim.ack}"
 SOLOIST_RUNTIME_LIB_DIR="${SOLOIST_RUNTIME_LIB_DIR:-}"
 SOLOIST_RUNTIME_LOADER="${SOLOIST_RUNTIME_LOADER:-}"
 WS_ENDPOINT="127.0.0.1:${WS_PORT}"
@@ -201,10 +206,21 @@ elif [ "$SOLOIST_AUDIO_BACKEND" = "pcm-shim" ]; then
 	# of the real one on its library path).
 	SOLOIST_LD_LIBRARY_PATH="${SOLOIST_PCM_SHIM_DIR}${LD_LIBRARY_PATH:+:${LD_LIBRARY_PATH}}"
 	SOLOIST_PCM_SHIM_FIFO="${SOLOIST_PCM_SHIM_FIFO:-${SOLOIST_CACHE_DIR}/pcm-shim.fifo}"
-	[ -p "$SOLOIST_PCM_SHIM_FIFO" ] || { rm -f "$SOLOIST_PCM_SHIM_FIFO"; mkfifo "$SOLOIST_PCM_SHIM_FIFO"; }
-	SOLOIST_AUDIO_TARGET_DESC="experimental pcm-shim FIFO ${SOLOIST_PCM_SHIM_FIFO}"
-	log "using experimental pcm-shim backend from '${SOLOIST_PCM_SHIM_DIR}', raw PCM FIFO=${SOLOIST_PCM_SHIM_FIFO}"
-	log "pcm-shim settings: SOLOIST_PCM_SHIM_LOG=${SOLOIST_PCM_SHIM_LOG} (passed to Soloist as SOLOIST_SHIM_LOG), SOLOIST_SHIM_MAX_TLENGTH_MS=${SOLOIST_SHIM_MAX_TLENGTH_MS:-300}"
+	if [ "$FORMAT" = "pcm" ]; then
+		[ -p "$FIFO_PATH" ] || { rm -f "$FIFO_PATH"; mkfifo "$FIFO_PATH"; }
+		exec 3<> "$FIFO_PATH"
+		SOLOIST_SHIM_OUTPUT="$FIFO_PATH"
+		CAPTURE_MODE="pcm-shim-direct"
+		SOLOIST_AUDIO_TARGET_DESC="experimental pcm-shim direct FIFO ${FIFO_PATH}"
+		log "holding PCM direct FIFO read/write guard on fd 3 for bridge lifetime"
+	else
+		[ -p "$SOLOIST_PCM_SHIM_FIFO" ] || { rm -f "$SOLOIST_PCM_SHIM_FIFO"; mkfifo "$SOLOIST_PCM_SHIM_FIFO"; }
+		SOLOIST_SHIM_OUTPUT="$SOLOIST_PCM_SHIM_FIFO"
+		SOLOIST_AUDIO_TARGET_DESC="experimental pcm-shim encoder FIFO ${SOLOIST_PCM_SHIM_FIFO}"
+	fi
+	rm -f "$SOLOIST_PCM_SHIM_ACK"
+	log "using experimental pcm-shim backend from '${SOLOIST_PCM_SHIM_DIR}', raw PCM output=${SOLOIST_SHIM_OUTPUT}"
+	log "pcm-shim settings: ring=${SOLOIST_PCM_SHIM_RING_MS}ms control=${SOLOIST_PCM_SHIM_CONTROL} ack=${SOLOIST_PCM_SHIM_ACK} log=${SOLOIST_PCM_SHIM_LOG} max_tlength=${SOLOIST_SHIM_MAX_TLENGTH_MS:-300}ms"
 fi
 
 # ---------------------------------------------------------------------------
@@ -237,10 +253,13 @@ if [ "$SOLOIST_AUDIO_BACKEND" = "pcm-shim" ]; then
 	# must force s16 explicitly, or audio would be garbled/wrong-speed.
 	env \
 		LD_LIBRARY_PATH="$SOLOIST_LD_LIBRARY_PATH" \
-		SOLOIST_SHIM_OUT="$SOLOIST_PCM_SHIM_FIFO" \
+		SOLOIST_SHIM_OUT="$SOLOIST_SHIM_OUTPUT" \
 		SOLOIST_SHIM_FORMAT=s16 \
 		SOLOIST_SHIM_RATE=44100 \
 		SOLOIST_SHIM_LOG="$SOLOIST_PCM_SHIM_LOG" \
+		SOLOIST_SHIM_RING_MS="$SOLOIST_PCM_SHIM_RING_MS" \
+		SOLOIST_SHIM_CONTROL="$SOLOIST_PCM_SHIM_CONTROL" \
+		SOLOIST_SHIM_ACK="$SOLOIST_PCM_SHIM_ACK" \
 		SOLOIST_SHIM_MAX_TLENGTH_MS="$SOLOIST_SHIM_MAX_TLENGTH_MS" \
 		"$@" \
 		--device-name "$DEVICE_NAME" \
@@ -363,7 +382,9 @@ case "$FORMAT" in
 		STREAM_EXTENSION="flac"
 		;;
 	pcm)
-		CAPTURE_MODE="pcm-direct"
+		if [ "$CAPTURE_MODE" != "pcm-shim-direct" ]; then
+			CAPTURE_MODE="pcm-direct"
+		fi
 		STREAM_EXTENSION="wav"
 		if [ "$SOLOIST_AUDIO_BACKEND" = "pulse" ]; then
 			if ! command -v parec >/dev/null 2>&1; then
@@ -462,10 +483,15 @@ capture_supervisor() {
 }
 
 log "direct LMS stream ready: ${FIFO_PATH} (${STREAM_EXTENSION})"
-capture_supervisor
-
-wait "$SOLOIST_PID" 2>/dev/null
-code=$?
+if [ "$CAPTURE_MODE" = "pcm-shim-direct" ]; then
+	log "pcm-shim writes directly to ${FIFO_PATH}; monitoring Soloist process"
+	wait "$SOLOIST_PID" 2>/dev/null
+	code=$?
+else
+	capture_supervisor
+	wait "$SOLOIST_PID" 2>/dev/null
+	code=$?
+fi
 if [ "$code" = "10" ]; then
 	log "soloist build expired (exit code 10) -- install a newer build"
 else

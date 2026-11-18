@@ -1,5 +1,18 @@
 # Changelog
 
+## Unreleased
+
+- Bound the direct PCM shim to a configurable 200 ms live-edge ring. Slow or
+  absent LMS readers now discard the oldest complete frames instead of
+  accumulating seconds of stale audio or blocking Soloist.
+- Route PCM/WAV from the shim directly into the bridge-lifetime guarded LMS
+  FIFO. Logical track changes and backward seeks publish an explicit shim
+  generation flush, wait briefly for acknowledgement, and then replace the LMS
+  handler so upstream and downstream old-generation audio are cleared in order.
+- Add rate-limited diagnostics for ring depth, dropped audio, generation
+  changes, FIFO reconnects, and flush acknowledgement latency. MP3/FLAC
+  encoding remains on the existing intermediate-FIFO lifecycle.
+
 ## 0.3.70
 
 - Detect logical Spotify URI changes from both pushed events and full playback

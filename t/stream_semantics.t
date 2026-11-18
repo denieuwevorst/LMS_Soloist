@@ -303,4 +303,24 @@ ok(
 	'backward seeks request an immediate live-edge resync',
 );
 
+is(
+	Plugins::SpotifySoloist::StreamSemantics::shimGenerationCommand(
+		7, 'backward seek',
+	),
+	"7 backward-seek\n",
+	'formats a safe atomic shim generation command',
+);
+ok(
+	Plugins::SpotifySoloist::StreamSemantics::shimGenerationAcknowledged(
+		"7 backward-seek\n", 7,
+	),
+	'accepts the matching shim generation acknowledgement',
+);
+ok(
+	!Plugins::SpotifySoloist::StreamSemantics::shimGenerationAcknowledged(
+		"8 track\n", 7,
+	),
+	'rejects a stale or superseding acknowledgement',
+);
+
 done_testing;
