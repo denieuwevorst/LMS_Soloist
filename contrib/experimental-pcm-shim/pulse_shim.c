@@ -1658,12 +1658,13 @@ int pa_stream_get_time(pa_stream *s, pa_usec_t *r)
     pthread_mutex_unlock(&s->lk);
     return 0;
 }
-int64_t pa_stream_get_underflow_index(pa_stream *s)
+int64_t pa_stream_get_underflow_index(const pa_stream *s)
 {
     int64_t index;
-    pthread_mutex_lock(&s->lk);
+    pa_stream *m = (pa_stream *) s;
+    pthread_mutex_lock(&m->lk);
     index = s->underflow_index;
-    pthread_mutex_unlock(&s->lk);
+    pthread_mutex_unlock(&m->lk);
     return index;
 }
 const pa_timing_info *pa_stream_get_timing_info(pa_stream *s)
