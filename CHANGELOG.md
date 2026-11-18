@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- Fix stuttering under ordinary scheduler jitter by retaining and retrying the
+  current PCM chunk while the 200 ms live-edge ring still has budget. Temporary
+  FIFO backpressure no longer drops audio immediately; oldest audio is dropped
+  only after the bounded budget is actually exhausted or superseded.
+- Reduce steady-state control-file polling and add pressure diagnostics for
+  `EAGAIN`, partial writes, maximum sink wait, and peak queued milliseconds.
+  A five-second intermittent-reader soak now verifies zero drops and zero
+  underruns while repeatedly pausing the reader longer than the FIFO capacity.
 - Bound the direct PCM shim to a configurable 200 ms live-edge ring. Slow or
   absent LMS readers now discard the oldest complete frames instead of
   accumulating seconds of stale audio or blocking Soloist.

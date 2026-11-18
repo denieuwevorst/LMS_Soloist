@@ -73,9 +73,12 @@ For PCM/WAV, the protocol handler adds a streaming WAV header when LMS opens
 the FIFO; it does not encode or alter the PCM payload.
 
 `pa_stream_write` only copies complete frames into the bounded ring. The writer
-thread transmits available frames immediately with nonblocking FIFO writes. If
-the ring or FIFO is full, the oldest complete frames are discarded, keeping
-playback near the live edge and bounding memory independently of reader stalls.
+thread transmits available frames immediately with nonblocking FIFO writes.
+Temporary FIFO `EAGAIN` is retried while the ring's configured time budget has
+not been superseded, allowing ordinary scheduler and network-player read jitter
+without gaps. If the reader remains slow beyond that budget, the in-flight
+oldest complete frames are discarded, keeping playback near the live edge and
+bounding total PCM buffering to approximately 300 ms with the bridge's FIFO.
 
 Generation command files contain `<generation> <reason>`. When the plugin
 atomically replaces the file, the writer clears queued old-generation frames,
@@ -99,6 +102,11 @@ A successfully loaded build logs its configured ring depth and control path:
 Level `2` also logs Pulse API activity. A constructor/load marker without
 subsequent API calls can mean Soloist rejected the library during its initial
 symbol probe.
+
+Level `1` rate-limits output-pressure summaries containing the number of
+`EAGAIN` and partial writes plus maximum sink wait and queued milliseconds.
+Normal backpressure may produce pressure summaries, but uninterrupted playback
+should not produce `live-edge drop` or `stream underflow`.
 
 Soloist currently requires compatibility exports including:
 
