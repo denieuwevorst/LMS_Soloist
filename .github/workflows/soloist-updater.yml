@@ -52,6 +52,9 @@ jobs:
             CFLAGS="-O2 -Wall -Wextra -Werror"
           file contrib/experimental-pcm-shim/libpulse.so.0
           file contrib/experimental-pcm-shim/libpulse.so.0 | grep -q "${{ matrix.machine }}"
+          cmp \
+            contrib/experimental-pcm-shim/libpulse.so.0 \
+            "Bin/${{ matrix.directory }}/libpulse.so.0"
       - name: Upload bundled shim candidate
         uses: actions/upload-artifact@v4
         with:
