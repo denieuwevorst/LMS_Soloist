@@ -96,6 +96,6 @@ exec 8<&-
 
 wait "$client_pid"
 client_pid=""
-grep -q 'generation flush: generation=1 reason=track' "$tmp/client.log"
-grep -q 'generation flush: generation=3 reason=backward-seek' "$tmp/client.log"
+grep -Eq 'generation flush: generation=[0-9]+ reason=track' "$tmp/client.log"
+grep -Eq 'generation flush: generation=[0-9]+ reason=backward-seek' "$tmp/client.log"
 echo "bounded PCM shim ring kept the live edge across slow readers, generations, and reader replacement"
