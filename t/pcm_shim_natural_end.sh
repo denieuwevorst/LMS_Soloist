@@ -35,7 +35,7 @@ run_mode() {
 
 	[ "$(grep -c 'stream drain requested:' "$log")" -eq 3 ]
 	[ "$(grep -c 'stream drain complete:' "$log")" -eq 3 ]
-	[ "$(grep -c '\\[marker-client\\] track [123] drained' "$log")" -eq 3 ]
+	[ "$(grep -Ec '\[marker-client\] track (1|2|3) drained' "$log")" -eq 3 ]
 	if grep -q 'stream underflow:' "$log"; then
 		cat "$log" >&2
 		echo "$mode emitted a premature underflow across natural track endings" >&2
