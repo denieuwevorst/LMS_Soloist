@@ -79,8 +79,8 @@ PY
 
 run_mode live-ring
 run_mode compat
-live_contract="$(grep 'connect_playback:' "$tmp/live-ring.log" | sed 's/mode=live-ring/mode=MODE/')"
-compat_contract="$(grep 'connect_playback:' "$tmp/compat.log" | sed 's/mode=compat/mode=MODE/')"
+live_contract="$(grep 'connect_playback:' "$tmp/live-ring.log" | sed -e 's/mode=live-ring/mode=MODE/' -e 's#out=[^ ]*#out=OUTPUT#')"
+compat_contract="$(grep 'connect_playback:' "$tmp/compat.log" | sed -e 's/mode=compat/mode=MODE/' -e 's#out=[^ ]*#out=OUTPUT#')"
 [ "$live_contract" = "$compat_contract" ] || {
 	echo "live-ring changed the Pulse producer contract:" >&2
 	printf '%s\n%s\n' "$live_contract" "$compat_contract" >&2
