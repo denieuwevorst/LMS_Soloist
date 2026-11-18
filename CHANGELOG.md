@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Use 64-bit input frames as the canonical Pulse accounting unit, converting
+  to input bytes only for Pulse indexes and independently to output bytes for
+  the FIFO. This fixes float32-input to s16-output flush accounting that could
+  otherwise leave a 2:1 phantom buffered duration near track end.
 - Advance Pulse read-index accounting whenever queued PCM is flushed or
   discarded, preventing cumulative generation flushes from making Soloist
   believe several seconds remain buffered near natural track end. Drain

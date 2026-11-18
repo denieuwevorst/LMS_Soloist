@@ -50,7 +50,7 @@
 static struct {
     char out[512], control[512], ack[512];
     int bytes, rate, log, max_tlength_ms, ring_ms, compat;
-    uint64_t counter_base;
+    uint64_t counter_base_frames;
 } cfg;
 static pthread_once_t cfg_once = PTHREAD_ONCE_INIT;
 
@@ -77,7 +77,7 @@ static void cfg_init(void)
              (e = getenv("SOLOIST_SHIM_ACK")) && *e ? e : "");
     cfg.compat = (e = getenv("SOLOIST_SHIM_MODE")) &&
                  (!strcmp(e, "compat") || !strcmp(e, "legacy"));
-    cfg.counter_base = (e = getenv("SOLOIST_SHIM_TEST_COUNTER_BASE"))
+    cfg.counter_base_frames = (e = getenv("SOLOIST_SHIM_TEST_COUNTER_BASE_FRAMES"))
         ? strtoull(e, NULL, 10) : 0;
 }
 #define CFG() pthread_once(&cfg_once, cfg_init)
@@ -88,7 +88,7 @@ __attribute__((constructor))
 static void shim_loaded(void)
 {
     CFG();
-    fprintf(stderr, "[soloist-shim] loaded build 2026-11-18.5-naturalend: mode=%s out=%s format=%dB rate=%d ring_ms=%d max_tlength_ms=%d control=%s\n",
+    fprintf(stderr, "[soloist-shim] loaded build 2026-11-18.6-frameunits: mode=%s out=%s format=%dB rate=%d ring_ms=%d max_tlength_ms=%d control=%s\n",
         cfg.compat ? "compat" : "live-ring",
         cfg.out, cfg.bytes, cfg.rate, cfg.ring_ms, cfg.max_tlength_ms,
         cfg.control[0] ? cfg.control : "off");
@@ -938,7 +938,7 @@ struct pa_stream {
     unsigned char *ring;
     size_t cap, rd, fill;
     size_t requested, prebuf, minreq;
-    uint64_t consumed_bytes, written_bytes, dropped_bytes, summary_dropped_bytes;
+    uint64_t consumed_frames, written_frames, dropped_bytes, summary_dropped_bytes;
     int64_t underflow_index;
     uint64_t last_drop_log_ns;
     uint64_t overflow_serial, control_next_check_ns;
@@ -1050,7 +1050,7 @@ static size_t ring_put(pa_stream *s, const unsigned char *d, size_t n)
     s->dropped_bytes += dropped;
     s->summary_dropped_bytes += dropped;
     if (dropped) {
-        s->consumed_bytes += dropped;
+        s->consumed_frames += dropped / fs;
         s->overflow_serial++;
     }
     return n;
@@ -1091,7 +1091,7 @@ static void ring_trim_stale_locked(pa_stream *s, uint64_t now)
     if (!s->fill) s->queue_start_ns = 0;
     s->dropped_bytes += remove;
     s->summary_dropped_bytes += remove;
-    s->consumed_bytes += remove;
+    s->consumed_frames += remove / fs;
     s->overflow_serial++;
 }
 
@@ -1158,9 +1158,8 @@ static void stream_flush_locked(pa_stream *s, unsigned long generation, const ch
     s->rs_pos = 0;
     s->rs_last[0] = s->rs_last[1] = 0;
     s->generation = generation;
-    s->consumed_bytes += discarded;
+    s->consumed_frames += discarded / pa_frame_size(&s->ss);
     s->requested = s->attr.tlength;
-    s->consumed_bytes = s->written_bytes = cfg.counter_base;
     stream_post_write(s);
     LOG(1, "generation flush: generation=%lu reason=%s discarded=%zu bytes (%.1f ms)",
         generation, reason ? reason : "unknown", discarded,
@@ -1396,12 +1395,15 @@ static void *writer_main(void *arg)
                         underflow = s->drain_op ? 0 : 1;
                         if (underflow) {
                             s->underflow_count++;
-                            s->underflow_index = (int64_t) s->consumed_bytes;
+                            size_t input_fs = pa_frame_size(&s->ss);
+                            uint64_t consumed_bytes = s->consumed_frames * input_fs;
+                            uint64_t written_bytes = s->written_frames * input_fs;
+                            s->underflow_index = (int64_t) consumed_bytes;
                             LOG(1, "stream underflow: consumed=%llu written=%llu outstanding=%llu "
                                 "app_buffer=%zu requested=%zu prebuf=%zu minreq=%zu corked=%d",
-                                (unsigned long long) s->consumed_bytes,
-                                (unsigned long long) s->written_bytes,
-                                (unsigned long long) (s->written_bytes - s->consumed_bytes),
+                                (unsigned long long) consumed_bytes,
+                                (unsigned long long) written_bytes,
+                                (unsigned long long) ((s->written_frames - s->consumed_frames) * input_fs),
                                 s->fill,
                                 s->requested, s->prebuf, s->minreq, s->corked);
                         }
@@ -1416,7 +1418,7 @@ static void *writer_main(void *arg)
                         chunk_generation = s->generation;
                         chunk_overflow_serial = s->overflow_serial;
                         base += n;
-                        s->consumed_bytes += n * fs;
+                        s->consumed_frames += n;
                         s->requested += n * fs;
                         if (s->fill + s->requested > s->attr.tlength)
                             s->requested = s->attr.tlength > s->fill ? s->attr.tlength - s->fill : 0;
@@ -1453,9 +1455,9 @@ static void *writer_main(void *arg)
             s->requested = s->attr.tlength;
             LOG(1, "stream drain complete: consumed=%llu written=%llu outstanding=%llu "
                 "app_buffer=%zu requested=%zu",
-                (unsigned long long) s->consumed_bytes,
-                (unsigned long long) s->written_bytes,
-                (unsigned long long) (s->written_bytes - s->consumed_bytes),
+                (unsigned long long) (s->consumed_frames * fs),
+                (unsigned long long) (s->written_frames * fs),
+                (unsigned long long) ((s->written_frames - s->consumed_frames) * fs),
                 s->fill, s->requested);
             ml_post(s->c->ml, op_fire, o);            /* hands over our reference */
             stream_post_write(s);
@@ -1533,6 +1535,7 @@ int pa_stream_connect_playback(pa_stream *s, const char *dev, const pa_buffer_at
     s->prebuf = cfg.compat ? s->attr.prebuf : fs;
     s->minreq = s->attr.minreq ? s->attr.minreq : fs;
     s->requested = s->attr.tlength;
+    s->consumed_frames = s->written_frames = cfg.counter_base_frames;
     s->corked = (flags & PA_STREAM_START_CORKED) ? 1 : 0;
     s->state = PA_STREAM_CREATING;
 
@@ -1634,7 +1637,7 @@ int pa_stream_write(pa_stream *s, const void *data, size_t nbytes, pa_free_cb_t 
     pthread_mutex_lock(&s->lk);
     took = ring_put(s, data, nbytes);
     s->write_calls++;
-    s->written_bytes += nbytes;
+    s->written_frames += nbytes / fs;
     s->requested = s->requested > nbytes ? s->requested - nbytes : 0;
     stream_post_write(s);
     pthread_mutex_unlock(&s->lk);
@@ -1654,7 +1657,7 @@ int pa_stream_get_latency(pa_stream *s, pa_usec_t *r, int *negative)
 int pa_stream_get_time(pa_stream *s, pa_usec_t *r)
 {
     pthread_mutex_lock(&s->lk);
-    *r = pa_bytes_to_usec(s->consumed_bytes, &s->ss);
+    *r = (pa_usec_t) ((long double) s->consumed_frames * PA_USEC_PER_SEC / s->ss.rate);
     pthread_mutex_unlock(&s->lk);
     return 0;
 }
@@ -1674,8 +1677,8 @@ const pa_timing_info *pa_stream_get_timing_info(pa_stream *s)
     gettimeofday(&s->ti.timestamp, NULL);
     s->ti.synchronized_clocks = 1;
     s->ti.playing = !s->corked && s->clock_on;
-    s->ti.write_index = (int64_t) s->written_bytes;
-    s->ti.read_index = (int64_t) s->consumed_bytes;
+    s->ti.write_index = (int64_t) (s->written_frames * pa_frame_size(&s->ss));
+    s->ti.read_index = (int64_t) (s->consumed_frames * pa_frame_size(&s->ss));
     pthread_mutex_unlock(&s->lk);
     return &s->ti;
 }
@@ -1692,9 +1695,9 @@ pa_operation *pa_stream_drain(pa_stream *s, pa_stream_success_cb_t cb, void *ud)
     s->drain_op = o;
     LOG(1, "stream drain requested: consumed=%llu written=%llu outstanding=%llu "
         "app_buffer=%zu requested=%zu corked=%d",
-        (unsigned long long) s->consumed_bytes,
-        (unsigned long long) s->written_bytes,
-        (unsigned long long) (s->written_bytes - s->consumed_bytes),
+        (unsigned long long) (s->consumed_frames * pa_frame_size(&s->ss)),
+        (unsigned long long) (s->written_frames * pa_frame_size(&s->ss)),
+        (unsigned long long) ((s->written_frames - s->consumed_frames) * pa_frame_size(&s->ss)),
         s->fill, s->requested, s->corked);
     pthread_mutex_unlock(&s->lk);
     return o;

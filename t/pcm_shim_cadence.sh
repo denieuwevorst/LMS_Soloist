@@ -68,7 +68,7 @@ if maximum > 0.080:
     raise SystemExit(f"{sys.argv[2]} wall-clock PCM gap was {maximum * 1000:.1f} ms")
 print(f"{sys.argv[2]} wall-clock output max gap={maximum * 1000:.1f} ms")
 PY
-	grep -q "loaded build 2026-11-18.5-naturalend: mode=$mode" "$log"
+	grep -q "loaded build 2026-11-18.6-frameunits: mode=$mode" "$log"
 	grep -q "runtime summary: mode=$mode" "$log"
 	if grep -Eq 'live-edge drop|stream underflow' "$log"; then
 		cat "$log" >&2

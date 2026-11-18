@@ -102,7 +102,7 @@ and inspect the player's `bridge.log`. The bridge maps this setting to
 A successfully loaded build logs its configured ring depth and control path:
 
 ```text
-[soloist-shim] loaded build 2026-11-18.5-naturalend: mode=live-ring ... ring_ms=200 ...
+[soloist-shim] loaded build 2026-11-18.6-frameunits: mode=live-ring ... ring_ms=200 ...
 ```
 
 Level `2` also logs Pulse API activity. A constructor/load marker without
@@ -120,7 +120,9 @@ producer writes/callbacks, underflows, dropped milliseconds, maximum writer
 scheduling gap, and requested writable time. These counters distinguish
 producer starvation or bursty Pulse timing from downstream FIFO pressure.
 
-Drain requests and completions log 64-bit read/write indexes, outstanding
+Canonical accounting uses 64-bit input frames. Pulse read/write indexes are
+derived in the input stream's byte units, while FIFO diagnostics remain in
+output bytes. Drain requests and completions log read/write indexes, outstanding
 application bytes, queued bytes, and requested writable bytes. Discarded or
 generation-flushed PCM advances the virtual read index just like consumed
 audio, so the application never mistakes removed stale data for future sink
