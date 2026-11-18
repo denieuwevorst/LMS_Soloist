@@ -40,8 +40,11 @@ library. A directory below `/root` is normally unsuitable.
 
 ## Runtime interface
 
-The bridge starts Soloist with this directory prepended to `LD_LIBRARY_PATH`
-and sets:
+The bridge makes this directory available through `LD_LIBRARY_PATH` and
+explicitly preloads the exact shim. Bundled private-glibc starts use the
+loader's `--preload` option; native-runtime starts use the equivalent exact
+`LD_PRELOAD` path. This runs the constructor before Soloist chooses its audio
+backend. The bridge also sets:
 
 - `SOLOIST_SHIM_OUT` - FIFO path or Unix socket path
 - `SOLOIST_SHIM_FORMAT` - `s16` for the plugin integration
@@ -52,8 +55,8 @@ and sets:
   restores the pre-ring Pulse buffer growth and sink-wait behavior for A/B tests
 - `SOLOIST_SHIM_CONTROL` - optional atomic generation command file
 - `SOLOIST_SHIM_ACK` - optional generation acknowledgement file
-- `SOLOIST_SHIM_MAX_TLENGTH_MS` - playback buffer clamp; the bridge defaults
-  this to `300`
+- `SOLOIST_SHIM_MAX_TLENGTH_MS` - optional playback buffer clamp; the bridge
+  leaves this disabled so Soloist retains its native producer timing contract
 
 The plugin creates one FIFO per player and configures the shim independently
 for each Soloist process.

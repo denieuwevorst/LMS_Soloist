@@ -257,21 +257,31 @@ if [ -n "$SOLOIST_RUNTIME_LOADER" ]; then
 	fi
 	if [ "$SOLOIST_AUDIO_BACKEND" = "pcm-shim" ]; then
 		SOLOIST_LIBRARY_PATH="${SOLOIST_PCM_SHIM_DIR}:${SOLOIST_RUNTIME_LIB_DIR}"
+		set -- "$SOLOIST_RUNTIME_LOADER" \
+			--preload "$SOLOIST_PCM_SHIM_LIB" \
+			--library-path "$SOLOIST_LIBRARY_PATH" \
+			"$SOLOIST_BIN"
 	else
 		SOLOIST_LIBRARY_PATH="$SOLOIST_RUNTIME_LIB_DIR"
+		set -- "$SOLOIST_RUNTIME_LOADER" --library-path "$SOLOIST_LIBRARY_PATH" "$SOLOIST_BIN"
 	fi
-	set -- "$SOLOIST_RUNTIME_LOADER" --library-path "$SOLOIST_LIBRARY_PATH" "$SOLOIST_BIN"
 else
 	set -- "$SOLOIST_BIN"
 fi
 
 if [ "$SOLOIST_AUDIO_BACKEND" = "pcm-shim" ]; then
 	SOLOIST_SHIM_MAX_TLENGTH_MS="${SOLOIST_SHIM_MAX_TLENGTH_MS:-0}"
+	if [ -n "$SOLOIST_RUNTIME_LOADER" ]; then
+		SOLOIST_LD_PRELOAD=""
+	else
+		SOLOIST_LD_PRELOAD="$SOLOIST_PCM_SHIM_LIB${LD_PRELOAD:+:${LD_PRELOAD}}"
+	fi
 	# The shim defaults to s24 (packed) output if SOLOIST_SHIM_FORMAT is
 	# unset, but the capture side below assumes s16le/44100 -- so this
 	# must force s16 explicitly, or audio would be garbled/wrong-speed.
 	env \
 		LD_LIBRARY_PATH="$SOLOIST_LD_LIBRARY_PATH" \
+		LD_PRELOAD="$SOLOIST_LD_PRELOAD" \
 		SOLOIST_SHIM_OUT="$SOLOIST_SHIM_OUTPUT" \
 		SOLOIST_SHIM_FORMAT=s16 \
 		SOLOIST_SHIM_RATE=44100 \

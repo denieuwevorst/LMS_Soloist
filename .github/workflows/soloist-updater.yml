@@ -109,6 +109,7 @@ jobs:
           sh t/pcm_shim_smooth_soak.sh
           sh t/pcm_shim_live_ring.sh
           sh t/pcm_shim_generation_survival.sh
+          sh t/private_loader_preload.sh
       - name: Validate current official Soloist build
         run: |
           set -eu
@@ -119,10 +120,12 @@ jobs:
             https://soloist-builds.spotifycdn.com/soloist_release_x86_64.tar.gz
           Bin/extract-soloist-update.sh "$work/soloist.tar.gz" "$work/soloist"
           Bin/X86_64/glibc/ld-linux-x86-64.so.2 \
+            --preload "$PWD/Bin/X86_64/libpulse.so.0" \
             --library-path "$PWD/Bin/X86_64:$PWD/Bin/X86_64/glibc" \
             "$work/soloist" --version \
             >"$work/version.txt" 2>&1
           cat "$work/version.txt"
+          grep -q 'loaded build 2026-11-18.3-loadcheck' "$work/version.txt"
           grep -Eq 'build [0-9]{10}|[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z' \
             "$work/version.txt"
 
@@ -156,8 +159,10 @@ jobs:
           Bin/extract-soloist-update.sh "$work/soloist.tar.gz" "$work/soloist"
           "${{ matrix.emulator }}" \
             "Bin/${{ matrix.directory }}/glibc/${{ matrix.loader }}" \
+            --preload "$PWD/Bin/${{ matrix.directory }}/libpulse.so.0" \
             --library-path "$PWD/Bin/${{ matrix.directory }}:$PWD/Bin/${{ matrix.directory }}/glibc" \
             "$work/soloist" --version >"$work/version.txt" 2>&1
           cat "$work/version.txt"
+          grep -q 'loaded build 2026-11-18.3-loadcheck' "$work/version.txt"
           grep -Eq 'build [0-9]{10}|[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z' \
             "$work/version.txt"

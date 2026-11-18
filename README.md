@@ -209,6 +209,11 @@ startup lines plus `runtime summary`, `output pressure`, `LMS read summary`,
 Compare the same Spotify passage first with the checkbox enabled and then
 disabled for that player.
 
+Bundled private-glibc launches pass the selected shim through the loader's
+`--preload` option; native launches use the exact `LD_PRELOAD` path. The shim
+is therefore mapped before Soloist chooses its audio backend instead of merely
+being available for a later lazy lookup.
+
 Diagnostic level `1` is now the default. Set `SOLOIST_PCM_SHIM_LOG=2` in the
 LMS service environment only when trace-level Pulse API calls are needed.
 

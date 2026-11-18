@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Explicitly preload the selected PCM shim through bundled glibc loaders (or
+  exact `LD_PRELOAD` on native runtimes), ensuring it is mapped before Soloist
+  chooses an audio backend. Official x86_64, ARMv7, and ARM64 runtime tests now
+  require the constructor build marker.
 - Preserve Soloist's compatibility-mode Pulse writable-size, callback, and
   prebuffer contract in live-edge mode while independently discarding audio
   only when its wall-clock presentation age exceeds the configured budget.
