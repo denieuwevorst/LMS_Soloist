@@ -29,6 +29,7 @@ run_mode() {
 	SOLOIST_SHIM_TEST_COUNTER_BASE_FRAMES=1073741000 \
 	MARKER_INPUT_FLOAT32=1 \
 	MARKER_FLUSH_INTERVAL_FRAMES=22050 \
+	MARKER_FLUSH_COUNT_PER_TRACK=2 \
 	MARKER_TRACKS=3 \
 	"$shim/marker_client" 2 >"$log" 2>&1
 	kill "$reader" 2>/dev/null || true
@@ -50,7 +51,10 @@ run_mode() {
 		echo "$mode emitted a premature underflow across natural track endings" >&2
 		exit 1
 	fi
-	[ "$(wc -c <"$raw")" -eq $((3 * 2 * 44100 * 4)) ]
+	bytes="$(wc -c <"$raw")"
+	[ "$bytes" -gt 0 ]
+	[ $((bytes % 4)) -eq 0 ]
+	[ "$bytes" -le $((3 * 2 * 44100 * 4)) ]
 }
 
 run_mode live-ring

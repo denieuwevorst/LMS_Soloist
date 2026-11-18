@@ -13,6 +13,8 @@ static size_t input_frame_bytes;
 static pa_sample_format_t input_format;
 static uint64_t next_flush_frame;
 static uint64_t flush_interval_frames;
+static int flush_count_per_track;
+static int flushes_left;
 static int index_mismatches;
 
 static void signal_mainloop(pa_context *c, void *userdata)
@@ -76,9 +78,10 @@ static void write_markers(pa_stream *s, size_t nbytes, void *userdata)
     }
     pa_stream_write(s, buffer, frames * input_frame_bytes, free, 0, PA_SEEK_RELATIVE);
     frames_left -= (long) frames;
-    if (flush_interval_frames && frame_index >= next_flush_frame) {
+    if (flushes_left > 0 && frame_index >= next_flush_frame) {
         pa_operation *operation = pa_stream_flush(s, NULL, NULL);
         if (operation) pa_operation_unref(operation);
+        flushes_left--;
         next_flush_frame += flush_interval_frames;
     }
     pa_threaded_mainloop_signal(ml, 0);
@@ -94,7 +97,8 @@ int main(int argc, char **argv)
     int flush_on_start = getenv("MARKER_PULSE_FLUSH_ON_START") != NULL;
     flush_interval_frames = getenv("MARKER_FLUSH_INTERVAL_FRAMES")
         ? strtoull(getenv("MARKER_FLUSH_INTERVAL_FRAMES"), NULL, 10) : 0;
-    next_flush_frame = flush_interval_frames;
+    flush_count_per_track = getenv("MARKER_FLUSH_COUNT_PER_TRACK")
+        ? atoi(getenv("MARKER_FLUSH_COUNT_PER_TRACK")) : 0;
     if (getenv("MARKER_INPUT_FLOAT32")) sample.format = PA_SAMPLE_FLOAT32LE;
     input_format = sample.format;
     input_frame_bytes = pa_frame_size(&sample);
@@ -122,6 +126,8 @@ int main(int argc, char **argv)
     }
     for (int track = 1; track <= tracks; track++) {
         frames_left = 44100L * seconds;
+        flushes_left = flush_count_per_track;
+        next_flush_frame = frame_index + flush_interval_frames;
         finished = 0;
         operation = pa_stream_trigger(stream, NULL, NULL);
         if (operation) pa_operation_unref(operation);
