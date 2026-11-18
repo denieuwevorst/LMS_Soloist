@@ -51,9 +51,13 @@ Spotify
 PCM/WAV mode does not run ffmpeg or a forwarding `cat` process. The shim writes
 directly to the bridge-lifetime guarded LMS FIFO, and the protocol handler adds
 a streaming WAV header when LMS opens it. The shim's 200 ms live-edge ring
-never waits for a slow reader; it drops the oldest complete PCM frames so a
-temporary stall cannot turn into multi-second delayed playback. LMS may still
-use its own conversion rules when a player cannot consume WAV directly.
+isolates Soloist from the FIFO writer. Short reader scheduling gaps are retried
+inside that budget without dropping audio; a sustained slow reader drops the
+oldest complete PCM frames only after the budget is exhausted, so a stall
+cannot turn into multi-second delayed playback. Together with the deliberately
+small final FIFO, PCM buffering remains bounded to approximately 300 ms. LMS
+may still use its own conversion rules when a player cannot consume WAV
+directly.
 
 The handler opens the FIFO nonblocking in read/write mode. Keeping one local
 writer open prevents a temporary capture-process exit from appearing as EOF to

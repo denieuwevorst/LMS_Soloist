@@ -52,15 +52,17 @@ jobs:
             CFLAGS="-O2 -Wall -Wextra -Werror"
           file contrib/experimental-pcm-shim/libpulse.so.0
           file contrib/experimental-pcm-shim/libpulse.so.0 | grep -q "${{ matrix.machine }}"
-          cmp \
-            contrib/experimental-pcm-shim/libpulse.so.0 \
-            "Bin/${{ matrix.directory }}/libpulse.so.0"
       - name: Upload bundled shim candidate
         uses: actions/upload-artifact@v4
         with:
           name: pcm-shim-${{ matrix.directory }}
           path: contrib/experimental-pcm-shim/libpulse.so.0
           if-no-files-found: error
+      - name: Verify bundled shim is current
+        run: |
+          cmp \
+            contrib/experimental-pcm-shim/libpulse.so.0 \
+            "Bin/${{ matrix.directory }}/libpulse.so.0"
 
   test-extractor:
     runs-on: ubuntu-latest
@@ -102,6 +104,7 @@ jobs:
             t/stale_catchup.t \
             t/direct_stream.t
           sh t/direct_fifo.sh
+          sh t/pcm_shim_smooth_soak.sh
           sh t/pcm_shim_live_ring.sh
       - name: Validate current official Soloist build
         run: |

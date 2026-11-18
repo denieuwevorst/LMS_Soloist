@@ -29,6 +29,7 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <math.h>
+#include <poll.h>
 #include <pthread.h>
 #include <signal.h>
 #include <stdarg.h>
@@ -99,7 +100,8 @@ static uint64_t now_ns(void)
 static struct {
     pthread_mutex_t lk;
     int fd, is_sock;
-    uint64_t next_try_ns, dropped, last_drop_log_ns;
+    uint64_t next_try_ns, dropped, last_drop_log_ns, last_pressure_log_ns;
+    uint64_t eagain_count, partial_count, max_wait_ns, max_queued_usec;
     unsigned char pending[8];
     size_t pending_len;
 } out = {
@@ -164,7 +166,7 @@ static int out_open_locked(void)
     return 0;
 }
 
-static void out_log_drops_locked(void)
+static void out_log_activity_locked(void)
 {
     uint64_t t = now_ns();
     if (out.dropped && t - out.last_drop_log_ns >= 1000000000ull) {
@@ -173,16 +175,38 @@ static void out_log_drops_locked(void)
         out.dropped = 0;
         out.last_drop_log_ns = t;
     }
+    if ((out.eagain_count || out.partial_count) &&
+        t - out.last_pressure_log_ns >= 1000000000ull) {
+        LOG(1, "output pressure: eagain=%llu partial=%llu max_wait=%.1f ms max_queued=%.1f ms",
+            (unsigned long long) out.eagain_count,
+            (unsigned long long) out.partial_count,
+            out.max_wait_ns / 1000000.0,
+            out.max_queued_usec / 1000.0);
+        out.eagain_count = 0;
+        out.partial_count = 0;
+        out.max_wait_ns = 0;
+        out.max_queued_usec = 0;
+        out.last_pressure_log_ns = t;
+    }
 }
 
-static void out_write(const unsigned char *b, size_t len, size_t frame_size)
+static void control_check_locked(pa_stream *s);
+static int chunk_is_current(pa_stream *s, unsigned long generation,
+                            uint64_t overflow_serial);
+static uint64_t stream_queued_usec(pa_stream *s);
+
+static void out_write(pa_stream *s, const unsigned char *b, size_t len,
+                      size_t frame_size, unsigned long generation,
+                      uint64_t overflow_serial)
 {
     size_t off = 0;
+    uint64_t wait_started = 0;
+    uint64_t wait_limit_ns = (uint64_t) cfg.ring_ms * 1000000ull;
 
     pthread_mutex_lock(&out.lk);
     if (out_open_locked() < 0) {
         out.dropped += len;
-        out_log_drops_locked();
+        out_log_activity_locked();
         pthread_mutex_unlock(&out.lk);
         return;
     }
@@ -191,6 +215,7 @@ static void out_write(const unsigned char *b, size_t len, size_t frame_size)
             ? send(out.fd, out.pending, out.pending_len, MSG_NOSIGNAL)
             : write(out.fd, out.pending, out.pending_len);
         if (n > 0) {
+            if ((size_t) n < out.pending_len) out.partial_count++;
             out.pending_len -= (size_t) n;
             if (out.pending_len)
                 memmove(out.pending, out.pending + n, out.pending_len);
@@ -198,10 +223,26 @@ static void out_write(const unsigned char *b, size_t len, size_t frame_size)
         }
         if (n < 0 && errno == EINTR) continue;
         if (n < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) {
-            out.dropped += len;
-            out_log_drops_locked();
-            pthread_mutex_unlock(&out.lk);
-            return;
+            struct pollfd p = { out.fd, POLLOUT, 0 };
+            uint64_t t = now_ns();
+            if (!wait_started) wait_started = t;
+            out.eagain_count++;
+            {
+                uint64_t queued = stream_queued_usec(s);
+                if (queued > out.max_queued_usec) out.max_queued_usec = queued;
+            }
+            if (!chunk_is_current(s, generation, overflow_serial) ||
+                t - wait_started >= wait_limit_ns) {
+                out.dropped += len;
+                close(out.fd);
+                out.fd = -1;
+                out.pending_len = 0;
+                out_log_activity_locked();
+                pthread_mutex_unlock(&out.lk);
+                return;
+            }
+            poll(&p, 1, 5);
+            continue;
         }
         LOG(1, "output closed while completing a partial frame: %s", strerror(errno));
         close(out.fd);
@@ -220,6 +261,7 @@ static void out_write(const unsigned char *b, size_t len, size_t frame_size)
         n = out.is_sock ? send(out.fd, b + off, chunk, MSG_NOSIGNAL)
                         : write(out.fd, b + off, chunk);
         if (n > 0) {
+            if ((size_t) n < chunk) out.partial_count++;
             off += (size_t) n;
             if ((size_t) n % frame_size) {
                 size_t needed = frame_size - (size_t) n % frame_size;
@@ -238,10 +280,25 @@ static void out_write(const unsigned char *b, size_t len, size_t frame_size)
                     }
                     if (n < 0 && errno == EINTR) continue;
                     if (n < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) {
-                        out.dropped += len - off;
-                        out_log_drops_locked();
-                        off = len;
-                        break;
+                        struct pollfd p = { out.fd, POLLOUT, 0 };
+                        uint64_t t = now_ns();
+                        if (!wait_started) wait_started = t;
+                        out.eagain_count++;
+                        {
+                            uint64_t queued = stream_queued_usec(s);
+                            if (queued > out.max_queued_usec) out.max_queued_usec = queued;
+                        }
+                        if (!chunk_is_current(s, generation, overflow_serial) ||
+                            t - wait_started >= wait_limit_ns) {
+                            out.dropped += len - off;
+                            close(out.fd);
+                            out.fd = -1;
+                            out.pending_len = 0;
+                            off = len;
+                            break;
+                        }
+                        poll(&p, 1, 5);
+                        continue;
                     }
                     LOG(1, "output closed during partial frame: %s", strerror(errno));
                     close(out.fd);
@@ -256,9 +313,21 @@ static void out_write(const unsigned char *b, size_t len, size_t frame_size)
         }
         if (n < 0 && errno == EINTR) continue;
         if (n < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) {
-            out.dropped += len - off;
-            out_log_drops_locked();
-            break;
+            struct pollfd p = { out.fd, POLLOUT, 0 };
+            uint64_t t = now_ns();
+            if (!wait_started) wait_started = t;
+            out.eagain_count++;
+            {
+                uint64_t queued = stream_queued_usec(s);
+                if (queued > out.max_queued_usec) out.max_queued_usec = queued;
+            }
+            if (!chunk_is_current(s, generation, overflow_serial) ||
+                t - wait_started >= wait_limit_ns) {
+                out.dropped += len - off;
+                break;
+            }
+            poll(&p, 1, 5);
+            continue;
         }
         /* EPIPE (reader went away) or a hard error: close, reopen later */
         {
@@ -272,9 +341,14 @@ static void out_write(const unsigned char *b, size_t len, size_t frame_size)
         close(out.fd);
         out.fd = -1;
         out.dropped += len - off;
-        out_log_drops_locked();
+        out_log_activity_locked();
         break;
     }
+    if (wait_started) {
+        uint64_t waited = now_ns() - wait_started;
+        if (waited > out.max_wait_ns) out.max_wait_ns = waited;
+    }
+    out_log_activity_locked();
     pthread_mutex_unlock(&out.lk);
 }
 
@@ -855,6 +929,7 @@ struct pa_stream {
     size_t cap, rd, fill;
     size_t requested, prebuf, minreq;
     uint64_t consumed_bytes, written_bytes, dropped_bytes, last_drop_log_ns;
+    uint64_t overflow_serial, control_next_check_ns;
     unsigned long generation, control_seen;
     int corked, clock_on, force_start, started_once, write_pending, quit, thread_started;
     pa_operation *drain_op;
@@ -935,6 +1010,7 @@ static size_t ring_put(pa_stream *s, const unsigned char *d, size_t n)
     }
     s->fill += n;
     s->dropped_bytes += dropped;
+    if (dropped) s->overflow_serial++;
     return n;
 }
 static void ring_get(pa_stream *s, unsigned char *d, size_t n)
@@ -957,6 +1033,27 @@ static void stream_log_drops_locked(pa_stream *s)
         s->dropped_bytes = 0;
         s->last_drop_log_ns = t;
     }
+}
+
+static int chunk_is_current(pa_stream *s, unsigned long generation,
+                            uint64_t overflow_serial)
+{
+    int current;
+    pthread_mutex_lock(&s->lk);
+    control_check_locked(s);
+    current = !s->quit && s->generation == generation &&
+              s->overflow_serial == overflow_serial;
+    pthread_mutex_unlock(&s->lk);
+    return current;
+}
+
+static uint64_t stream_queued_usec(pa_stream *s)
+{
+    uint64_t queued;
+    pthread_mutex_lock(&s->lk);
+    queued = pa_bytes_to_usec(s->fill, &s->ss);
+    pthread_mutex_unlock(&s->lk);
+    return queued;
 }
 
 static void stream_post_write(pa_stream *s);
@@ -999,6 +1096,8 @@ static void control_check_locked(pa_stream *s)
     unsigned long generation;
     char reason[96] = "external";
     if (!cfg.control[0]) return;
+    if (now_ns() < s->control_next_check_ns) return;
+    s->control_next_check_ns = now_ns() + 20000000ull;
     f = fopen(cfg.control, "r");
     if (!f) return;
     if (fscanf(f, "%lu %95s", &generation, reason) < 1) {
@@ -1175,6 +1274,7 @@ static void *writer_main(void *arg)
         size_t n = 0, avail;
         int underflow = 0, drained = 0;
         unsigned long chunk_generation = 0;
+        uint64_t chunk_overflow_serial = 0;
         struct timespec nap = { 0, 5000000 };
         uint64_t t;
 
@@ -1206,11 +1306,13 @@ static void *writer_main(void *arg)
                 if (avail == 0) {
                     if (due > 0) {                    /* ran dry */
                         s->clock_on = 0;
-                        underflow = 1;
-                        LOG(1, "stream underflow: consumed=%llu written=%llu requested=%zu prebuf=%zu minreq=%zu",
-                            (unsigned long long) s->consumed_bytes,
-                            (unsigned long long) s->written_bytes,
-                            s->requested, s->prebuf, s->minreq);
+                        underflow = s->drain_op ? 0 : 1;
+                        if (underflow) {
+                            LOG(1, "stream underflow: consumed=%llu written=%llu requested=%zu prebuf=%zu minreq=%zu",
+                                (unsigned long long) s->consumed_bytes,
+                                (unsigned long long) s->written_bytes,
+                                s->requested, s->prebuf, s->minreq);
+                        }
                         stream_post_write(s);
                         if (s->drain_op) drained = 1;
                     }
@@ -1220,6 +1322,7 @@ static void *writer_main(void *arg)
                     if (n) {
                         ring_get(s, raw, n * fs);
                         chunk_generation = s->generation;
+                        chunk_overflow_serial = s->overflow_serial;
                         base += n;
                         s->consumed_bytes += n * fs;
                         s->requested += n * fs;
@@ -1245,7 +1348,10 @@ static void *writer_main(void *arg)
             control_check_locked(s);
             current = chunk_generation == s->generation;
             pthread_mutex_unlock(&s->lk);
-            if (bytes && current) out_write(obuf, bytes, (size_t) cfg.bytes * 2);
+            if (bytes && current) {
+                out_write(s, obuf, bytes, (size_t) cfg.bytes * 2,
+                          chunk_generation, chunk_overflow_serial);
+            }
         }
     }
     free(raw);
