@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Advance Pulse read-index accounting whenever queued PCM is flushed or
+  discarded, preventing cumulative generation flushes from making Soloist
+  believe several seconds remain buffered near natural track end. Drain
+  completion now logs indexes, requests the next write after the drain callback,
+  and resumes repeated tracks without a premature underflow.
 - Separate plugin flush request IDs from the shim's internal audio generation,
   preventing Pulse flushes from colliding with Next/Previous commands.
   Duplicate requests recreate lost acknowledgements, and acknowledgement

@@ -201,7 +201,7 @@ At bridge startup, `bridge.log` must show both:
 
 ```text
 [soloist-bridge] pcm-shim binary: .../libpulse.so.0 (... bytes sha1=...)
-[soloist-shim] loaded build 2026-11-18.4-requestid: mode=live-ring|compat ...
+[soloist-shim] loaded build 2026-11-18.5-naturalend: mode=live-ring|compat ...
 ```
 
 The bridge also logs the exact matching `/proc/<soloist-pid>/maps` entry. It
