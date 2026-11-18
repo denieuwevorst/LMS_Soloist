@@ -105,6 +105,7 @@ jobs:
             t/stale_catchup.t \
             t/direct_stream.t
           sh t/direct_fifo.sh
+          sh t/pcm_shim_cadence.sh
           sh t/pcm_shim_smooth_soak.sh
           sh t/pcm_shim_live_ring.sh
       - name: Validate current official Soloist build

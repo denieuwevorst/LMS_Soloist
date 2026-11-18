@@ -48,6 +48,8 @@ and sets:
 - `SOLOIST_SHIM_RATE` - `44100` for the plugin integration
 - `SOLOIST_SHIM_LOG` - diagnostic level (`0`, `1`, or `2`)
 - `SOLOIST_SHIM_RING_MS` - bounded live-edge ring depth; the bridge uses `200`
+- `SOLOIST_SHIM_MODE` - `live-ring` (default) or `compat`; compatibility mode
+  restores the pre-ring Pulse buffer growth and sink-wait behavior for A/B tests
 - `SOLOIST_SHIM_CONTROL` - optional atomic generation command file
 - `SOLOIST_SHIM_ACK` - optional generation acknowledgement file
 - `SOLOIST_SHIM_MAX_TLENGTH_MS` - playback buffer clamp; the bridge defaults
@@ -96,7 +98,7 @@ and inspect the player's `bridge.log`. The bridge maps this setting to
 A successfully loaded build logs its configured ring depth and control path:
 
 ```text
-[soloist-shim] loaded build 2026-11-18.1: ... ring_ms=200 ...
+[soloist-shim] loaded build 2026-11-18.2-fielddiag: mode=live-ring ... ring_ms=200 ...
 ```
 
 Level `2` also logs Pulse API activity. A constructor/load marker without
@@ -107,6 +109,11 @@ Level `1` rate-limits output-pressure summaries containing the number of
 `EAGAIN` and partial writes plus maximum sink wait and queued milliseconds.
 Normal backpressure may produce pressure summaries, but uninterrupted playback
 should not produce `live-edge drop` or `stream underflow`.
+
+Every five seconds the shim also logs a `runtime summary` with queued audio,
+producer writes/callbacks, underflows, dropped milliseconds, maximum writer
+scheduling gap, and requested writable time. These counters distinguish
+producer starvation or bursty Pulse timing from downstream FIFO pressure.
 
 Soloist currently requires compatibility exports including:
 

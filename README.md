@@ -184,6 +184,28 @@ to the shim, waits up to 250 ms for its acknowledgement, and only then replaces
 the LMS handler. This orders upstream ring flushing before downstream FIFO and
 player-buffer replacement without restarting Soloist.
 
+### Field A/B diagnostics
+
+The per-player **PCM live-edge ring** checkbox is enabled by default. Disable it
+and save to restart only that player's bridge in compatibility mode. This
+restores the pre-ring Pulse buffering/callback contract while retaining direct
+FIFO delivery and generation flushes, allowing the same player and host to
+isolate whether audible stutter originates in the ring/Pulse timing layer.
+
+At bridge startup, `bridge.log` must show both:
+
+```text
+[soloist-bridge] pcm-shim binary: .../libpulse.so.0 (... bytes sha1=...)
+[soloist-shim] loaded build 2026-11-18.2-fielddiag: mode=live-ring|compat ...
+```
+
+If those lines are missing, the running bridge is stale or resolving a
+different shim. At normal shim log level `1`, copy 15-20 seconds containing the
+startup lines plus `runtime summary`, `output pressure`, `LMS read summary`,
+`stream underflow`, `live-edge drop`, generation, or FIFO reconnect messages.
+Compare the same Spotify passage first with the checkbox enabled and then
+disabled for that player.
+
 For diagnostic logging, set `SOLOIST_PCM_SHIM_LOG=1` or `2` in the LMS service
 environment and restart LMS. The bridge passes that value to the shim as
 `SOLOIST_SHIM_LOG`.

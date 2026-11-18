@@ -12,6 +12,7 @@
  *   SOLOIST_SHIM_RATE    output rate in Hz, 0 = pass through       (44100)
  *   SOLOIST_SHIM_LOG     0 quiet, 1 info, 2 trace API calls         (0)
  *   SOLOIST_SHIM_RING_MS bounded live-edge ring depth               (200)
+ *   SOLOIST_SHIM_MODE    live-ring | compat                    (live-ring)
  *   SOLOIST_SHIM_CONTROL generation/flush command file              (unset)
  *   SOLOIST_SHIM_ACK     generation acknowledgement file            (unset)
  *   SOLOIST_SHIM_MAX_TLENGTH_MS  clamp requested tlength/prebuf/minreq
@@ -47,7 +48,7 @@
 
 static struct {
     char out[512], control[512], ack[512];
-    int bytes, rate, log, max_tlength_ms, ring_ms;
+    int bytes, rate, log, max_tlength_ms, ring_ms, compat;
 } cfg;
 static pthread_once_t cfg_once = PTHREAD_ONCE_INIT;
 
@@ -72,6 +73,8 @@ static void cfg_init(void)
              (e = getenv("SOLOIST_SHIM_CONTROL")) && *e ? e : "");
     snprintf(cfg.ack, sizeof cfg.ack, "%s",
              (e = getenv("SOLOIST_SHIM_ACK")) && *e ? e : "");
+    cfg.compat = (e = getenv("SOLOIST_SHIM_MODE")) &&
+                 (!strcmp(e, "compat") || !strcmp(e, "legacy"));
 }
 #define CFG() pthread_once(&cfg_once, cfg_init)
 #define LOG(l, ...) do { CFG(); if (cfg.log >= (l)) { \
@@ -80,7 +83,8 @@ static void cfg_init(void)
 __attribute__((constructor))
 static void shim_loaded(void)
 {
-    LOG(1, "loaded build 2026-11-18.1: out=%s format=%dB rate=%d ring_ms=%d max_tlength_ms=%d control=%s",
+    LOG(1, "loaded build 2026-11-18.2-fielddiag: mode=%s out=%s format=%dB rate=%d ring_ms=%d max_tlength_ms=%d control=%s",
+        cfg.compat ? "compat" : "live-ring",
         cfg.out, cfg.bytes, cfg.rate, cfg.ring_ms, cfg.max_tlength_ms,
         cfg.control[0] ? cfg.control : "off");
 }
@@ -202,6 +206,7 @@ static void out_write(pa_stream *s, const unsigned char *b, size_t len,
     size_t off = 0;
     uint64_t wait_started = 0;
     uint64_t wait_limit_ns = (uint64_t) cfg.ring_ms * 1000000ull;
+    if (cfg.compat) wait_limit_ns = 200000000ull;
 
     pthread_mutex_lock(&out.lk);
     if (out_open_locked() < 0) {
@@ -928,8 +933,11 @@ struct pa_stream {
     unsigned char *ring;
     size_t cap, rd, fill;
     size_t requested, prebuf, minreq;
-    uint64_t consumed_bytes, written_bytes, dropped_bytes, last_drop_log_ns;
+    uint64_t consumed_bytes, written_bytes, dropped_bytes, summary_dropped_bytes;
+    uint64_t last_drop_log_ns;
     uint64_t overflow_serial, control_next_check_ns;
+    uint64_t write_calls, callback_calls, underflow_count, writer_iterations;
+    uint64_t last_summary_ns, last_iteration_ns, max_iteration_gap_ns;
     unsigned long generation, control_seen;
     int corked, clock_on, force_start, started_once, write_pending, quit, thread_started;
     pa_operation *drain_op;
@@ -986,16 +994,38 @@ pa_stream *pa_stream_new(pa_context *c, const char *name, const pa_sample_spec *
 }
 
 /* bounded live-edge ring buffer (caller holds s->lk) */
+#define COMPAT_RING_MAX (8u << 20)
 static size_t ring_put(pa_stream *s, const unsigned char *d, size_t n)
 {
     size_t fs = pa_frame_size(&s->ss), dropped = 0;
     n -= n % fs;
+    if (cfg.compat && s->fill + n > s->cap) {
+        size_t want = s->cap ? s->cap : 65536;
+        while (want < s->fill + n && want < COMPAT_RING_MAX) want *= 2;
+        if (want > COMPAT_RING_MAX) want = COMPAT_RING_MAX;
+        if (want > s->cap) {
+            unsigned char *next = malloc(want);
+            size_t first = s->cap - s->rd < s->fill ? s->cap - s->rd : s->fill;
+            if (s->fill) {
+                memcpy(next, s->ring + s->rd, first);
+                memcpy(next + first, s->ring, s->fill - first);
+            }
+            free(s->ring);
+            s->ring = next;
+            s->cap = want;
+            s->rd = 0;
+        }
+        if (n > s->cap - s->fill) {
+            dropped = n - (s->cap - s->fill);
+            n = s->cap - s->fill;
+        }
+    }
     if (n > s->cap) {
         dropped += n - s->cap;
         d += n - s->cap;
         n = s->cap;
     }
-    if (s->fill + n > s->cap) {
+    if (!cfg.compat && s->fill + n > s->cap) {
         size_t remove = s->fill + n - s->cap;
         remove += (fs - remove % fs) % fs;
         if (remove > s->fill) remove = s->fill;
@@ -1010,6 +1040,7 @@ static size_t ring_put(pa_stream *s, const unsigned char *d, size_t n)
     }
     s->fill += n;
     s->dropped_bytes += dropped;
+    s->summary_dropped_bytes += dropped;
     if (dropped) s->overflow_serial++;
     return n;
 }
@@ -1042,7 +1073,7 @@ static int chunk_is_current(pa_stream *s, unsigned long generation,
     pthread_mutex_lock(&s->lk);
     control_check_locked(s);
     current = !s->quit && s->generation == generation &&
-              s->overflow_serial == overflow_serial;
+              (cfg.compat || s->overflow_serial == overflow_serial);
     pthread_mutex_unlock(&s->lk);
     return current;
 }
@@ -1137,6 +1168,7 @@ static void ev_stream_write_fn(void *a)
     size_t n;
     pthread_mutex_lock(&s->lk);
     s->write_pending = 0;
+    s->callback_calls++;
     n = s->requested;
     pthread_mutex_unlock(&s->lk);
     if (s->write_cb && n > 0 && s->state == PA_STREAM_READY) s->write_cb(s, n, s->write_ud);
@@ -1281,9 +1313,13 @@ static void *writer_main(void *arg)
         nanosleep(&nap, NULL);
         pthread_mutex_lock(&s->lk);
         if (s->quit) { pthread_mutex_unlock(&s->lk); break; }
+        t = now_ns();
+        s->writer_iterations++;
+        if (s->last_iteration_ns && t - s->last_iteration_ns > s->max_iteration_gap_ns)
+            s->max_iteration_gap_ns = t - s->last_iteration_ns;
+        s->last_iteration_ns = t;
         control_check_locked(s);
         stream_log_drops_locked(s);
-        t = now_ns();
         avail = s->fill / fs;
 
         if (s->state != PA_STREAM_READY || s->corked) {
@@ -1308,6 +1344,7 @@ static void *writer_main(void *arg)
                         s->clock_on = 0;
                         underflow = s->drain_op ? 0 : 1;
                         if (underflow) {
+                            s->underflow_count++;
                             LOG(1, "stream underflow: consumed=%llu written=%llu requested=%zu prebuf=%zu minreq=%zu",
                                 (unsigned long long) s->consumed_bytes,
                                 (unsigned long long) s->written_bytes,
@@ -1332,6 +1369,24 @@ static void *writer_main(void *arg)
                     }
                 }
             }
+        }
+        if (!s->last_summary_ns) s->last_summary_ns = t;
+        if (t - s->last_summary_ns >= 5000000000ull) {
+            LOG(1, "runtime summary: mode=%s queued=%.1f ms writes=%llu callbacks=%llu "
+                "underflows=%llu drops=%.1f ms writer_gap_max=%.1f ms requested=%.1f ms",
+                cfg.compat ? "compat" : "live-ring",
+                pa_bytes_to_usec(s->fill, &s->ss) / 1000.0,
+                (unsigned long long) s->write_calls,
+                (unsigned long long) s->callback_calls,
+                (unsigned long long) s->underflow_count,
+                pa_bytes_to_usec(s->summary_dropped_bytes, &s->ss) / 1000.0,
+                s->max_iteration_gap_ns / 1000000.0,
+                pa_bytes_to_usec(s->requested, &s->ss) / 1000.0);
+            s->write_calls = s->callback_calls = s->underflow_count = 0;
+            s->summary_dropped_bytes = 0;
+            s->writer_iterations = 0;
+            s->max_iteration_gap_ns = 0;
+            s->last_summary_ns = t;
         }
         if (drained && s->drain_op) {
             pa_operation *o = s->drain_op;
@@ -1378,7 +1433,8 @@ int pa_stream_connect_playback(pa_stream *s, const char *dev, const pa_buffer_at
     }
     CFG();
     fs = pa_frame_size(&s->ss);
-    s->cap = (size_t) pa_usec_to_bytes((pa_usec_t) cfg.ring_ms * 1000u, &s->ss);
+    s->cap = cfg.compat ? 65536 :
+        (size_t) pa_usec_to_bytes((pa_usec_t) cfg.ring_ms * 1000u, &s->ss);
     s->cap -= s->cap % fs;
     if (s->cap < fs) s->cap = fs;
     s->ring = malloc(s->cap);
@@ -1406,7 +1462,7 @@ int pa_stream_connect_playback(pa_stream *s, const char *dev, const pa_buffer_at
         if (s->attr.maxlength != (uint32_t) -1 && s->attr.maxlength < s->attr.tlength)
             s->attr.maxlength = s->attr.tlength;
     }
-    if (s->attr.tlength > s->cap)
+    if (!cfg.compat && s->attr.tlength > s->cap)
         s->attr.tlength = (uint32_t) s->cap;
     if (s->attr.prebuf > s->attr.tlength)
         s->attr.prebuf = s->attr.tlength;
@@ -1423,7 +1479,8 @@ int pa_stream_connect_playback(pa_stream *s, const char *dev, const pa_buffer_at
     s->thread_started = pthread_create(&s->th, NULL, writer_main, s) == 0;
     if (!s->thread_started) return -1;
 
-    LOG(1, "connect_playback: tlength=%u minreq=%u prebuf=%u ring=%zu bytes (%.1f ms) max_tlength_ms=%d out=%s fmt=%dB rate=%d",
+    LOG(1, "connect_playback: mode=%s tlength=%u minreq=%u prebuf=%u ring=%zu bytes (%.1f ms) max_tlength_ms=%d out=%s fmt=%dB rate=%d",
+        cfg.compat ? "compat" : "live-ring",
         s->attr.tlength, s->attr.minreq, s->attr.prebuf, s->cap,
         pa_bytes_to_usec(s->cap, &s->ss) / 1000.0,
         cfg.max_tlength_ms, cfg.out, cfg.bytes, cfg.rate);
@@ -1516,6 +1573,7 @@ int pa_stream_write(pa_stream *s, const void *data, size_t nbytes, pa_free_cb_t 
     }
     pthread_mutex_lock(&s->lk);
     took = ring_put(s, data, nbytes);
+    s->write_calls++;
     s->written_bytes += nbytes;
     s->requested = s->requested > nbytes ? s->requested - nbytes : 0;
     stream_post_write(s);

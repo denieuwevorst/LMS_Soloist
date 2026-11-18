@@ -45,6 +45,7 @@ use Proc::Background;
 use Time::HiRes ();
 use Time::Local qw(timegm);
 use POSIX qw(dup2 WNOHANG uname);
+use Digest::SHA qw(sha1_hex);
 
 use Slim::Utils::Log;
 use Slim::Utils::Prefs;
@@ -100,6 +101,7 @@ $prefs->init({
 	selectedPlayers => {},                # { playerID => 1, ... }
 	playerFormatOverrides => {},          # { playerID => mp3|flac|pcm } (missing = global format)
 	playerNormalization => {},            # { playerID => 0|1 } (missing = enabled for compatibility)
+	playerLiveRing => {},                 # { playerID => 0|1 } (missing = live ring enabled)
 	playerSlots     => {},                # { playerID => slot int }, stable across restarts
 });
 
@@ -202,6 +204,23 @@ sub normalizationForPlayer {
 	);
 }
 
+sub liveRingForPlayer {
+	my ($playerId) = @_;
+	return Plugins::SpotifySoloist::SoloistPrefs::liveRingForPlayer(
+		$prefs->get('playerLiveRing'),
+		$playerId,
+	);
+}
+
+sub _fileFingerprint {
+	my ($path) = @_;
+	return 'missing' unless defined $path && -f $path;
+	open my $fh, '<:raw', $path or return "unreadable:$!";
+	local $/;
+	my $content = <$fh>;
+	close $fh;
+	return sprintf( 'size=%d sha1=%s', length($content), sha1_hex($content) );
+}
 sub disableDSTM {
 	my ( $class, $client ) = @_;
 	return 0 unless $client;
@@ -949,6 +968,7 @@ sub _configFor {
 			)
 		],
 		normalization => normalizationForPlayer($playerId),
+		liveRing => liveRingForPlayer($playerId),
 		deviceName => $playerName . $prefs->get('deviceNameSuffix'),
 	};
 }
@@ -1190,6 +1210,8 @@ sub _startBridge {
 	local $ENV{SOLOIST_PCM_SHIM_CONTROL} = $cfg->{pcmShimControl};
 	local $ENV{SOLOIST_PCM_SHIM_ACK} = $cfg->{pcmShimAck};
 	local $ENV{SOLOIST_PCM_SHIM_RING_MS} = 200;
+	local $ENV{SOLOIST_PCM_SHIM_MODE} =
+		$cfg->{format} eq 'pcm' && !$cfg->{liveRing} ? 'compat' : 'live-ring';
 	local $ENV{SOLOIST_RUNTIME_LIB_DIR} = $cfg->{runtimeDir};
 	local $ENV{SOLOIST_RUNTIME_LOADER}  = $cfg->{runtimeLoader};
 
@@ -1197,6 +1219,10 @@ sub _startBridge {
 		"starting soloist bridge for player '" . $client->name
 		. "' (device='$cfg->{deviceName}', slot=$cfg->{slot}, normalization="
 		. ( $cfg->{normalization} ? 'on' : 'off' )
+		. ', pcm_mode='
+		. ( $cfg->{format} eq 'pcm' && !$cfg->{liveRing} ? 'compat' : 'live-ring' )
+		. ', shim=' . catfile( $cfg->{pcmShimDir}, 'libpulse.so.0' )
+		. ' ' . _fileFingerprint( catfile( $cfg->{pcmShimDir}, 'libpulse.so.0' ) )
 		. ', prefs=' . scalar(@$normalizationFiles) . ')'
 	);
 	if ( $cfg->{format} eq 'mp3' && !$cfg->{formatSpec}->{bitrateValid} ) {

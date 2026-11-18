@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- Add a per-player PCM compatibility switch for same-host A/B testing. It
+  restores the pre-ring Pulse buffering and sink-wait contract while preserving
+  direct final-FIFO delivery, generation flushes, and handler replacement.
+- Identify the exact shim build, mode, path, size, and SHA-1 at startup. Add
+  five-second summaries for Pulse producer callbacks/writes, underflows, ring
+  fill/drops, writer scheduling gaps, sink pressure, and LMS read cadence.
+- Add continuous wall-clock cadence tests for both live-ring and compatibility
+  modes; byte-completeness alone is no longer treated as proof of smooth audio.
 - Fix stuttering under ordinary scheduler jitter by retaining and retrying the
   current PCM chunk while the 200 ms live-edge ring still has budget. Temporary
   FIFO backpressure no longer drops audio immediately; oldest audio is dropped
