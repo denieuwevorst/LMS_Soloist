@@ -24,6 +24,7 @@ jobs:
   build-pcm-shims:
     runs-on: ubuntu-latest
     strategy:
+      fail-fast: false
       matrix:
         include:
           - directory: X86_64

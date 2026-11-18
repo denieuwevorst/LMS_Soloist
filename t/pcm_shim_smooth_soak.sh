@@ -70,8 +70,8 @@ if grep -Eq 'live-edge drop|stream underflow' "$tmp/client.log"; then
 fi
 grep -q 'output pressure: eagain=' "$tmp/client.log"
 
-python3 - "$raw" <<'PY'
-import struct, sys
+python3 - "$raw" "$tmp/client.log" <<'PY'
+import re, struct, sys
 raw = open(sys.argv[1], "rb").read()
 frames = struct.iter_unpack("<hh", raw)
 last = -1
@@ -83,6 +83,24 @@ for left, right in frames:
     if left > last + 1 and last >= 0:
         raise SystemExit(f"steady-state PCM frames were dropped: {last} -> {left}")
     last = left
+log = open(sys.argv[2], encoding="utf-8").read()
+pressure = re.findall(
+    r"output pressure: eagain=(\d+) partial=(\d+) "
+    r"max_wait=([0-9.]+) ms max_queued=([0-9.]+) ms",
+    log,
+)
+if not pressure:
+    raise SystemExit("reader jitter did not exercise FIFO backpressure")
+max_wait = max(float(row[2]) for row in pressure)
+max_queued = max(float(row[3]) for row in pressure)
+if max_wait > 200.0:
+    raise SystemExit(f"sink wait exceeded ring budget: {max_wait} ms")
+if max_queued > 200.0:
+    raise SystemExit(f"queued audio exceeded ring budget: {max_queued} ms")
+print(
+    f"steady-state pressure stayed bounded: "
+    f"max_wait={max_wait:.1f} ms max_queued={max_queued:.1f} ms"
+)
 PY
 
 echo "five-second intermittent-reader PCM soak completed with zero drops and zero underruns"
