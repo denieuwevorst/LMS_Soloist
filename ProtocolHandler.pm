@@ -89,6 +89,11 @@ sub new {
 	${*$self}{lastAudioReadAt} = undef;
 	${*$self}{staleDrainUntil} = undef;
 	${*$self}{staleBytesDiscarded} = 0;
+	${*$self}{readSummaryAt} = Time::HiRes::time();
+	${*$self}{readCalls} = 0;
+	${*$self}{readBytes} = 0;
+	${*$self}{wouldBlockReads} = 0;
+	${*$self}{maxReadGap} = 0;
 
 	my $song = $args->{song};
 	Plugins::SpotifySoloist::StreamSemantics::applySongFormat( $song, $format );
@@ -119,8 +124,11 @@ sub sysread {
 	}
 
 	my $now = Time::HiRes::time();
+	${*$self}{readCalls}++;
 	if ( my $lastRead = ${*$self}{lastAudioReadAt} ) {
 		my $gap = $now - $lastRead;
+		${*$self}{maxReadGap} = $gap
+			if $gap > ( ${*$self}{maxReadGap} || 0 );
 		if ( $gap >= STALE_READ_GAP_SECONDS && !${*$self}{staleDrainUntil} ) {
 			my $discarded = _drainFifo($self);
 			if ($discarded) {
@@ -172,10 +180,13 @@ sub sysread {
 
 	my $read = CORE::sysread( $self, $_[1], $length, $offset || 0 );
 	if ( !defined $read && ( $! == EAGAIN || $! == EWOULDBLOCK ) ) {
+		${*$self}{wouldBlockReads}++;
+		_logReadSummary( $self, $now );
 		$! = EWOULDBLOCK;
 		return;
 	}
 	if ($read) {
+		${*$self}{readBytes} += $read;
 		${*$self}{lastAudioReadAt} = $now;
 		if (
 			!${*$self}{firstAudioReadLogged}
@@ -199,7 +210,29 @@ sub sysread {
 			);
 		}
 	}
+	_logReadSummary( $self, $now );
 	return $read;
+}
+
+sub _logReadSummary {
+	my ( $self, $now ) = @_;
+	return unless ( ${*$self}{formatKey} || '' ) eq 'pcm';
+	return if $now - ( ${*$self}{readSummaryAt} || $now ) < 5;
+	$log->info(
+		sprintf(
+			'LMS read summary for %s: calls=%d bytes=%d would_block=%d max_gap_ms=%.1f',
+			${*$self}{url} || 'unknown',
+			${*$self}{readCalls} || 0,
+			${*$self}{readBytes} || 0,
+			${*$self}{wouldBlockReads} || 0,
+			1000 * ( ${*$self}{maxReadGap} || 0 ),
+		)
+	);
+	${*$self}{readSummaryAt} = $now;
+	${*$self}{readCalls} = 0;
+	${*$self}{readBytes} = 0;
+	${*$self}{wouldBlockReads} = 0;
+	${*$self}{maxReadGap} = 0;
 }
 
 sub close {

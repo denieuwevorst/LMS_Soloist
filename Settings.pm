@@ -54,6 +54,10 @@ sub handler {
 		my $newPlayerNormalization = {
 			%{ ref $oldPlayerNormalization eq 'HASH' ? $oldPlayerNormalization : {} }
 		};
+		my $oldPlayerLiveRing = $prefs->get('playerLiveRing') || {};
+		my $newPlayerLiveRing = {
+			%{ ref $oldPlayerLiveRing eq 'HASH' ? $oldPlayerLiveRing : {} }
+		};
 		my $oldGlobalFormat = $prefs->get('format')  || 'mp3';
 		my $newGlobalFormat = $params->{pref_format} || $oldGlobalFormat;
 		my $oldBitrate      = $prefs->get('bitrate') || '320k';
@@ -86,9 +90,16 @@ sub handler {
 				Plugins::SpotifySoloist::Plugin::normalizationForPlayer($id);
 			my $normalizationParam = 'normalization.' . $id;
 			my $newNormalization = $params->{$normalizationParam} ? 1 : 0;
+			my $oldLiveRing =
+				Plugins::SpotifySoloist::Plugin::liveRingForPlayer($id);
+			my $liveRingParam = 'liveRing.' . $id;
+			my $newLiveRing = $newFormat eq 'pcm'
+				? ( $params->{$liveRingParam} ? 1 : 0 )
+				: $oldLiveRing;
 
 			$newSelected->{$id} = 1 if $isOn;
 			$newPlayerNormalization->{$id} = $newNormalization;
+			$newPlayerLiveRing->{$id} = $newLiveRing;
 			if ( exists $params->{$formatParam} ) {
 				if ($newOverride) {
 					$newPlayerFormats->{$id} = $newOverride;
@@ -111,6 +122,10 @@ sub handler {
 					$oldBackend ne $newBackend ||
 					$oldPcmShimDir ne $newPcmShimDir ||
 					$oldNormalization != $newNormalization ||
+					(
+						$newFormat eq 'pcm' &&
+						$oldLiveRing != $newLiveRing
+					) ||
 					( $oldManagedUpdates && !$newManagedUpdates ) ||
 					(
 						$newFormat eq 'mp3' &&
@@ -125,6 +140,7 @@ sub handler {
 		$prefs->set( 'selectedPlayers', $newSelected );
 		$prefs->set( 'playerFormatOverrides', $newPlayerFormats );
 		$prefs->set( 'playerNormalization', $newPlayerNormalization );
+		$prefs->set( 'playerLiveRing', $newPlayerLiveRing );
 		$prefs->set( 'format',  $newGlobalFormat );
 		$prefs->set( 'bitrate', $newBitrate );
 		$prefs->set( 'managedSoloistUpdates', $newManagedUpdates );
@@ -164,8 +180,12 @@ sub handler {
 		$player->{running}   = Plugins::SpotifySoloist::Plugin::bridgeRunning($id);
 		$player->{streamUrl} = Plugins::SpotifySoloist::Plugin::bridgeStreamUrlFor($id);
 		$player->{formatOverride} = ref $playerFormats eq 'HASH' ? ( $playerFormats->{$id} || '' ) : '';
+		$player->{effectiveFormat} =
+			Plugins::SpotifySoloist::Plugin::formatForPlayer($id);
 		$player->{normalization} =
 			Plugins::SpotifySoloist::Plugin::normalizationForPlayer($id);
+		$player->{liveRing} =
+			Plugins::SpotifySoloist::Plugin::liveRingForPlayer($id);
 	}
 	$params->{players} = \@players;
 	$params->{soloistBinaryStatus} = Plugins::SpotifySoloist::Plugin::soloistBinaryStatus();

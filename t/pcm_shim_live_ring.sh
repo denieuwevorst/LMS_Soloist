@@ -66,10 +66,10 @@ PY
 printf '1 track\n' >"$control.tmp"
 mv "$control.tmp" "$control"
 for _try in $(seq 1 50); do
-	[ -f "$ack" ] && grep -q '^1 track' "$ack" && break
+	[ -f "$ack" ] && grep -q '^1 [0-9][0-9]* track' "$ack" && break
 	sleep 0.01
 done
-grep -q '^1 track' "$ack"
+grep -q '^1 [0-9][0-9]* track' "$ack"
 kill -0 "$client_pid"
 
 # Rapid skips supersede older generations; the latest generation must win.
@@ -78,10 +78,10 @@ mv "$control.tmp" "$control"
 printf '3 backward-seek\n' >"$control.tmp"
 mv "$control.tmp" "$control"
 for _try in $(seq 1 50); do
-	grep -q '^3 backward-seek' "$ack" 2>/dev/null && break
+	grep -q '^3 [0-9][0-9]* backward-seek' "$ack" 2>/dev/null && break
 	sleep 0.01
 done
-grep -q '^3 backward-seek' "$ack"
+grep -q '^3 [0-9][0-9]* backward-seek' "$ack"
 kill -0 "$client_pid"
 
 # Replacing the LMS reader leaves the same shim/Soloist capture process alive.
@@ -96,6 +96,6 @@ exec 8<&-
 
 wait "$client_pid"
 client_pid=""
-grep -q 'generation flush: generation=1 reason=track' "$tmp/client.log"
-grep -q 'generation flush: generation=3 reason=backward-seek' "$tmp/client.log"
+grep -Eq 'generation flush: generation=[0-9]+ reason=track' "$tmp/client.log"
+grep -Eq 'generation flush: generation=[0-9]+ reason=backward-seek' "$tmp/client.log"
 echo "bounded PCM shim ring kept the live edge across slow readers, generations, and reader replacement"

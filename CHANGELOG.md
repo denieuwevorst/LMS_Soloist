@@ -2,6 +2,47 @@
 
 ## Unreleased
 
+- Qualify PCM playback URLs with a monotonically increasing `?g=` token for
+  manual track/playlist changes, Next/Previous, meaningful backward seeks, and
+  stale-stream recovery. LMS can no longer optimize the same-URL replay into a
+  no-op, so it closes the old handler and flushes downstream player buffers.
+  Canonical per-player identity and metadata remain stable, while expected
+  natural gapless transitions retain the current URL and handler.
+- Use 64-bit input frames as the canonical Pulse accounting unit, converting
+  to input bytes only for Pulse indexes and independently to output bytes for
+  the FIFO. This fixes float32-input to s16-output flush accounting that could
+  otherwise leave a 2:1 phantom buffered duration near track end.
+- Advance Pulse read-index accounting whenever queued PCM is flushed or
+  discarded, preventing cumulative generation flushes from making Soloist
+  believe several seconds remain buffered near natural track end. Drain
+  completion now logs indexes, requests the next write after the drain callback,
+  and resumes repeated tracks without a premature underflow.
+- Separate plugin flush request IDs from the shim's internal audio generation,
+  preventing Pulse flushes from colliding with Next/Previous commands.
+  Duplicate requests recreate lost acknowledgements, and acknowledgement
+  timeout/publication failure now degrades to LMS handler replacement without
+  terminating a healthy bridge.
+- Explicitly preload the selected PCM shim through bundled glibc loaders (or
+  exact `LD_PRELOAD` on native runtimes), ensuring it is mapped before Soloist
+  chooses an audio backend. Official x86_64, ARMv7, and ARM64 runtime tests now
+  require the constructor build marker.
+- Preserve Soloist's compatibility-mode Pulse writable-size, callback, and
+  prebuffer contract in live-edge mode while independently discarding audio
+  only when its wall-clock presentation age exceeds the configured budget.
+  This combines the smooth field behavior of compatibility mode with bounded
+  stale latency.
+- Verify the selected PCM shim build marker and Soloist's actual mapped
+  `libpulse.so.0` before playback, enable diagnostic summaries by default, and
+  log the exact cause of every bridge shutdown or safety restart. Repeated
+  rapid generation flushes now assert same-process survival in both modes.
+- Add a per-player PCM compatibility switch for same-host A/B testing. It
+  restores the pre-ring Pulse buffering and sink-wait contract while preserving
+  direct final-FIFO delivery, generation flushes, and handler replacement.
+- Identify the exact shim build, mode, path, size, and SHA-1 at startup. Add
+  five-second summaries for Pulse producer callbacks/writes, underflows, ring
+  fill/drops, writer scheduling gaps, sink pressure, and LMS read cadence.
+- Add continuous wall-clock cadence tests for both live-ring and compatibility
+  modes; byte-completeness alone is no longer treated as proof of smooth audio.
 - Fix stuttering under ordinary scheduler jitter by retaining and retrying the
   current PCM chunk while the 200 ms live-edge ring still has budget. Temporary
   FIFO backpressure no longer drops audio immediately; oldest audio is dropped

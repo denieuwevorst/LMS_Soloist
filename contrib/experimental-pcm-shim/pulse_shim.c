@@ -12,6 +12,7 @@
  *   SOLOIST_SHIM_RATE    output rate in Hz, 0 = pass through       (44100)
  *   SOLOIST_SHIM_LOG     0 quiet, 1 info, 2 trace API calls         (0)
  *   SOLOIST_SHIM_RING_MS bounded live-edge ring depth               (200)
+ *   SOLOIST_SHIM_MODE    live-ring | compat                    (live-ring)
  *   SOLOIST_SHIM_CONTROL generation/flush command file              (unset)
  *   SOLOIST_SHIM_ACK     generation acknowledgement file            (unset)
  *   SOLOIST_SHIM_MAX_TLENGTH_MS  clamp requested tlength/prebuf/minreq
@@ -19,8 +20,9 @@
  *                     clock close to real drained audio              (0=off)
  *
  * Playback is paced against the wall clock, so the reader sees real-time PCM
- * no matter how fast the application writes. If nobody is reading, audio is
- * discarded at the same pace (the application keeps playing silently).
+ * no matter how fast the application writes. Live-ring mode preserves the
+ * application's normal Pulse buffering contract, but discards PCM whose
+ * scheduled presentation time is older than the configured live-edge budget.
  */
 #define _GNU_SOURCE
 #include <pulse/pulseaudio.h>
@@ -47,7 +49,8 @@
 
 static struct {
     char out[512], control[512], ack[512];
-    int bytes, rate, log, max_tlength_ms, ring_ms;
+    int bytes, rate, log, max_tlength_ms, ring_ms, compat;
+    uint64_t counter_base_frames;
 } cfg;
 static pthread_once_t cfg_once = PTHREAD_ONCE_INIT;
 
@@ -72,6 +75,10 @@ static void cfg_init(void)
              (e = getenv("SOLOIST_SHIM_CONTROL")) && *e ? e : "");
     snprintf(cfg.ack, sizeof cfg.ack, "%s",
              (e = getenv("SOLOIST_SHIM_ACK")) && *e ? e : "");
+    cfg.compat = (e = getenv("SOLOIST_SHIM_MODE")) &&
+                 (!strcmp(e, "compat") || !strcmp(e, "legacy"));
+    cfg.counter_base_frames = (e = getenv("SOLOIST_SHIM_TEST_COUNTER_BASE_FRAMES"))
+        ? strtoull(e, NULL, 10) : 0;
 }
 #define CFG() pthread_once(&cfg_once, cfg_init)
 #define LOG(l, ...) do { CFG(); if (cfg.log >= (l)) { \
@@ -80,7 +87,9 @@ static void cfg_init(void)
 __attribute__((constructor))
 static void shim_loaded(void)
 {
-    LOG(1, "loaded build 2026-11-18.1: out=%s format=%dB rate=%d ring_ms=%d max_tlength_ms=%d control=%s",
+    CFG();
+    fprintf(stderr, "[soloist-shim] loaded build 2026-11-18.6-frameunits: mode=%s out=%s format=%dB rate=%d ring_ms=%d max_tlength_ms=%d control=%s\n",
+        cfg.compat ? "compat" : "live-ring",
         cfg.out, cfg.bytes, cfg.rate, cfg.ring_ms, cfg.max_tlength_ms,
         cfg.control[0] ? cfg.control : "off");
 }
@@ -202,6 +211,7 @@ static void out_write(pa_stream *s, const unsigned char *b, size_t len,
     size_t off = 0;
     uint64_t wait_started = 0;
     uint64_t wait_limit_ns = (uint64_t) cfg.ring_ms * 1000000ull;
+    if (cfg.compat) wait_limit_ns = 200000000ull;
 
     pthread_mutex_lock(&out.lk);
     if (out_open_locked() < 0) {
@@ -928,8 +938,13 @@ struct pa_stream {
     unsigned char *ring;
     size_t cap, rd, fill;
     size_t requested, prebuf, minreq;
-    uint64_t consumed_bytes, written_bytes, dropped_bytes, last_drop_log_ns;
+    uint64_t consumed_frames, written_frames, dropped_bytes, summary_dropped_bytes;
+    int64_t underflow_index;
+    uint64_t last_drop_log_ns;
     uint64_t overflow_serial, control_next_check_ns;
+    uint64_t queue_start_ns;
+    uint64_t write_calls, callback_calls, underflow_count, writer_iterations;
+    uint64_t last_summary_ns, last_iteration_ns, max_iteration_gap_ns;
     unsigned long generation, control_seen;
     int corked, clock_on, force_start, started_once, write_pending, quit, thread_started;
     pa_operation *drain_op;
@@ -985,17 +1000,39 @@ pa_stream *pa_stream_new(pa_context *c, const char *name, const pa_sample_spec *
     return pa_stream_new_with_proplist(c, name, ss, map, NULL);
 }
 
-/* bounded live-edge ring buffer (caller holds s->lk) */
+/* Application-facing Pulse buffer (caller holds s->lk). */
+#define COMPAT_RING_MAX (8u << 20)
 static size_t ring_put(pa_stream *s, const unsigned char *d, size_t n)
 {
     size_t fs = pa_frame_size(&s->ss), dropped = 0;
     n -= n % fs;
+    if (s->fill + n > s->cap) {
+        size_t want = s->cap ? s->cap : 65536;
+        while (want < s->fill + n && want < COMPAT_RING_MAX) want *= 2;
+        if (want > COMPAT_RING_MAX) want = COMPAT_RING_MAX;
+        if (want > s->cap) {
+            unsigned char *next = malloc(want);
+            size_t first = s->cap - s->rd < s->fill ? s->cap - s->rd : s->fill;
+            if (s->fill) {
+                memcpy(next, s->ring + s->rd, first);
+                memcpy(next + first, s->ring, s->fill - first);
+            }
+            free(s->ring);
+            s->ring = next;
+            s->cap = want;
+            s->rd = 0;
+        }
+        if (cfg.compat && n > s->cap - s->fill) {
+            dropped = n - (s->cap - s->fill);
+            n = s->cap - s->fill;
+        }
+    }
     if (n > s->cap) {
         dropped += n - s->cap;
         d += n - s->cap;
         n = s->cap;
     }
-    if (s->fill + n > s->cap) {
+    if (!cfg.compat && s->fill + n > s->cap) {
         size_t remove = s->fill + n - s->cap;
         remove += (fs - remove % fs) % fs;
         if (remove > s->fill) remove = s->fill;
@@ -1003,6 +1040,7 @@ static size_t ring_put(pa_stream *s, const unsigned char *d, size_t n)
         s->fill -= remove;
         dropped += remove;
     }
+    if (!s->fill && n) s->queue_start_ns = now_ns();
     {
         size_t wr = (s->rd + s->fill) % s->cap, first = s->cap - wr < n ? s->cap - wr : n;
         memcpy(s->ring + wr, d, first);
@@ -1010,7 +1048,11 @@ static size_t ring_put(pa_stream *s, const unsigned char *d, size_t n)
     }
     s->fill += n;
     s->dropped_bytes += dropped;
-    if (dropped) s->overflow_serial++;
+    s->summary_dropped_bytes += dropped;
+    if (dropped) {
+        s->consumed_frames += dropped / fs;
+        s->overflow_serial++;
+    }
     return n;
 }
 static void ring_get(pa_stream *s, unsigned char *d, size_t n)
@@ -1020,6 +1062,37 @@ static void ring_get(pa_stream *s, unsigned char *d, size_t n)
     memcpy(d + first, s->ring, n - first);
     s->rd = (s->rd + n) % s->cap;
     s->fill -= n;
+    if (s->fill) {
+        s->queue_start_ns += pa_bytes_to_usec(n, &s->ss) * 1000ull;
+    } else {
+        s->queue_start_ns = 0;
+    }
+}
+
+/* Keep Pulse's original producer contract, but discard audio whose scheduled
+ * presentation time has fallen behind the configured live-edge budget. */
+static void ring_trim_stale_locked(pa_stream *s, uint64_t now)
+{
+    uint64_t budget_ns, cutoff, stale_ns;
+    size_t fs, remove;
+    if (cfg.compat || !s->fill || !s->queue_start_ns) return;
+    budget_ns = (uint64_t) cfg.ring_ms * 1000000ull;
+    cutoff = now > budget_ns ? now - budget_ns : 0;
+    if (s->queue_start_ns >= cutoff) return;
+    stale_ns = cutoff - s->queue_start_ns;
+    fs = pa_frame_size(&s->ss);
+    remove = (size_t) ((long double) stale_ns * s->ss.rate / 1000000000.0L) * fs;
+    remove -= remove % fs;
+    if (remove > s->fill) remove = s->fill;
+    if (!remove) return;
+    s->rd = (s->rd + remove) % s->cap;
+    s->fill -= remove;
+    s->queue_start_ns += pa_bytes_to_usec(remove, &s->ss) * 1000ull;
+    if (!s->fill) s->queue_start_ns = 0;
+    s->dropped_bytes += remove;
+    s->summary_dropped_bytes += remove;
+    s->consumed_frames += remove / fs;
+    s->overflow_serial++;
 }
 
 static void stream_log_drops_locked(pa_stream *s)
@@ -1042,7 +1115,7 @@ static int chunk_is_current(pa_stream *s, unsigned long generation,
     pthread_mutex_lock(&s->lk);
     control_check_locked(s);
     current = !s->quit && s->generation == generation &&
-              s->overflow_serial == overflow_serial;
+              (cfg.compat || s->overflow_serial == overflow_serial);
     pthread_mutex_unlock(&s->lk);
     return current;
 }
@@ -1058,7 +1131,8 @@ static uint64_t stream_queued_usec(pa_stream *s)
 
 static void stream_post_write(pa_stream *s);
 
-static void control_ack(unsigned long generation, const char *reason)
+static void control_ack(unsigned long request_id, unsigned long generation,
+                        const char *reason)
 {
     char tmp[560];
     FILE *f;
@@ -1066,7 +1140,8 @@ static void control_ack(unsigned long generation, const char *reason)
     snprintf(tmp, sizeof tmp, "%s.tmp.%ld", cfg.ack, (long) getpid());
     f = fopen(tmp, "w");
     if (!f) return;
-    fprintf(f, "%lu %s\n", generation, reason ? reason : "unknown");
+    fprintf(f, "%lu %lu %s\n", request_id, generation,
+            reason ? reason : "unknown");
     if (fclose(f) == 0) rename(tmp, cfg.ack);
     else unlink(tmp);
 }
@@ -1077,11 +1152,13 @@ static void stream_flush_locked(pa_stream *s, unsigned long generation, const ch
     size_t discarded = s->fill;
     s->fill = 0;
     s->rd = 0;
+    s->queue_start_ns = 0;
     s->clock_on = 0;
     s->force_start = 1;
     s->rs_pos = 0;
     s->rs_last[0] = s->rs_last[1] = 0;
     s->generation = generation;
+    s->consumed_frames += discarded / pa_frame_size(&s->ss);
     s->requested = s->attr.tlength;
     stream_post_write(s);
     LOG(1, "generation flush: generation=%lu reason=%s discarded=%zu bytes (%.1f ms)",
@@ -1093,22 +1170,25 @@ static void stream_flush_locked(pa_stream *s, unsigned long generation, const ch
 static void control_check_locked(pa_stream *s)
 {
     FILE *f;
-    unsigned long generation;
+    unsigned long request_id;
     char reason[96] = "external";
     if (!cfg.control[0]) return;
     if (now_ns() < s->control_next_check_ns) return;
     s->control_next_check_ns = now_ns() + 20000000ull;
     f = fopen(cfg.control, "r");
     if (!f) return;
-    if (fscanf(f, "%lu %95s", &generation, reason) < 1) {
+    if (fscanf(f, "%lu %95s", &request_id, reason) < 1) {
         fclose(f);
         return;
     }
     fclose(f);
-    if (generation == s->control_seen) return;
-    s->control_seen = generation;
-    stream_flush_locked(s, generation, reason);
-    control_ack(generation, reason);
+    if (request_id == s->control_seen) {
+        control_ack(request_id, s->generation, reason);
+        return;
+    }
+    s->control_seen = request_id;
+    stream_flush_locked(s, s->generation + 1, reason);
+    control_ack(request_id, s->generation, reason);
 }
 
 /* stream events */
@@ -1137,6 +1217,7 @@ static void ev_stream_write_fn(void *a)
     size_t n;
     pthread_mutex_lock(&s->lk);
     s->write_pending = 0;
+    s->callback_calls++;
     n = s->requested;
     pthread_mutex_unlock(&s->lk);
     if (s->write_cb && n > 0 && s->state == PA_STREAM_READY) s->write_cb(s, n, s->write_ud);
@@ -1281,9 +1362,14 @@ static void *writer_main(void *arg)
         nanosleep(&nap, NULL);
         pthread_mutex_lock(&s->lk);
         if (s->quit) { pthread_mutex_unlock(&s->lk); break; }
-        control_check_locked(s);
-        stream_log_drops_locked(s);
         t = now_ns();
+        s->writer_iterations++;
+        if (s->last_iteration_ns && t - s->last_iteration_ns > s->max_iteration_gap_ns)
+            s->max_iteration_gap_ns = t - s->last_iteration_ns;
+        s->last_iteration_ns = t;
+        control_check_locked(s);
+        ring_trim_stale_locked(s, t);
+        stream_log_drops_locked(s);
         avail = s->fill / fs;
 
         if (s->state != PA_STREAM_READY || s->corked) {
@@ -1308,10 +1394,18 @@ static void *writer_main(void *arg)
                         s->clock_on = 0;
                         underflow = s->drain_op ? 0 : 1;
                         if (underflow) {
-                            LOG(1, "stream underflow: consumed=%llu written=%llu requested=%zu prebuf=%zu minreq=%zu",
-                                (unsigned long long) s->consumed_bytes,
-                                (unsigned long long) s->written_bytes,
-                                s->requested, s->prebuf, s->minreq);
+                            s->underflow_count++;
+                            size_t input_fs = pa_frame_size(&s->ss);
+                            uint64_t consumed_bytes = s->consumed_frames * input_fs;
+                            uint64_t written_bytes = s->written_frames * input_fs;
+                            s->underflow_index = (int64_t) consumed_bytes;
+                            LOG(1, "stream underflow: consumed=%llu written=%llu outstanding=%llu "
+                                "app_buffer=%zu requested=%zu prebuf=%zu minreq=%zu corked=%d",
+                                (unsigned long long) consumed_bytes,
+                                (unsigned long long) written_bytes,
+                                (unsigned long long) ((s->written_frames - s->consumed_frames) * input_fs),
+                                s->fill,
+                                s->requested, s->prebuf, s->minreq, s->corked);
                         }
                         stream_post_write(s);
                         if (s->drain_op) drained = 1;
@@ -1324,7 +1418,7 @@ static void *writer_main(void *arg)
                         chunk_generation = s->generation;
                         chunk_overflow_serial = s->overflow_serial;
                         base += n;
-                        s->consumed_bytes += n * fs;
+                        s->consumed_frames += n;
                         s->requested += n * fs;
                         if (s->fill + s->requested > s->attr.tlength)
                             s->requested = s->attr.tlength > s->fill ? s->attr.tlength - s->fill : 0;
@@ -1333,10 +1427,40 @@ static void *writer_main(void *arg)
                 }
             }
         }
+        if (!s->last_summary_ns) s->last_summary_ns = t;
+        if (t - s->last_summary_ns >= 5000000000ull) {
+            double oldest_age_ms = s->queue_start_ns && t > s->queue_start_ns
+                ? (t - s->queue_start_ns) / 1000000.0 : 0.0;
+            LOG(1, "runtime summary: mode=%s queued=%.1f ms oldest_age=%.1f ms writes=%llu callbacks=%llu "
+                "underflows=%llu drops=%.1f ms writer_gap_max=%.1f ms requested=%.1f ms",
+                cfg.compat ? "compat" : "live-ring",
+                pa_bytes_to_usec(s->fill, &s->ss) / 1000.0,
+                oldest_age_ms,
+                (unsigned long long) s->write_calls,
+                (unsigned long long) s->callback_calls,
+                (unsigned long long) s->underflow_count,
+                pa_bytes_to_usec(s->summary_dropped_bytes, &s->ss) / 1000.0,
+                s->max_iteration_gap_ns / 1000000.0,
+                pa_bytes_to_usec(s->requested, &s->ss) / 1000.0);
+            s->write_calls = s->callback_calls = s->underflow_count = 0;
+            s->summary_dropped_bytes = 0;
+            s->writer_iterations = 0;
+            s->max_iteration_gap_ns = 0;
+            s->last_summary_ns = t;
+        }
         if (drained && s->drain_op) {
             pa_operation *o = s->drain_op;
             s->drain_op = NULL;
+            s->force_start = 1;
+            s->requested = s->attr.tlength;
+            LOG(1, "stream drain complete: consumed=%llu written=%llu outstanding=%llu "
+                "app_buffer=%zu requested=%zu",
+                (unsigned long long) (s->consumed_frames * fs),
+                (unsigned long long) (s->written_frames * fs),
+                (unsigned long long) ((s->written_frames - s->consumed_frames) * fs),
+                s->fill, s->requested);
             ml_post(s->c->ml, op_fire, o);            /* hands over our reference */
+            stream_post_write(s);
         }
         pthread_mutex_unlock(&s->lk);
 
@@ -1378,7 +1502,7 @@ int pa_stream_connect_playback(pa_stream *s, const char *dev, const pa_buffer_at
     }
     CFG();
     fs = pa_frame_size(&s->ss);
-    s->cap = (size_t) pa_usec_to_bytes((pa_usec_t) cfg.ring_ms * 1000u, &s->ss);
+    s->cap = 65536;
     s->cap -= s->cap % fs;
     if (s->cap < fs) s->cap = fs;
     s->ring = malloc(s->cap);
@@ -1406,26 +1530,22 @@ int pa_stream_connect_playback(pa_stream *s, const char *dev, const pa_buffer_at
         if (s->attr.maxlength != (uint32_t) -1 && s->attr.maxlength < s->attr.tlength)
             s->attr.maxlength = s->attr.tlength;
     }
-    if (s->attr.tlength > s->cap)
-        s->attr.tlength = (uint32_t) s->cap;
-    if (s->attr.prebuf > s->attr.tlength)
-        s->attr.prebuf = s->attr.tlength;
-    if (s->attr.minreq > s->attr.tlength)
-        s->attr.minreq = s->attr.tlength;
     if (s->attr.maxlength != (uint32_t) -1 && s->attr.maxlength < s->attr.tlength)
         s->attr.maxlength = s->attr.tlength;
-    s->prebuf = s->attr.prebuf;
+    s->prebuf = cfg.compat ? s->attr.prebuf : fs;
     s->minreq = s->attr.minreq ? s->attr.minreq : fs;
     s->requested = s->attr.tlength;
+    s->consumed_frames = s->written_frames = cfg.counter_base_frames;
     s->corked = (flags & PA_STREAM_START_CORKED) ? 1 : 0;
     s->state = PA_STREAM_CREATING;
 
     s->thread_started = pthread_create(&s->th, NULL, writer_main, s) == 0;
     if (!s->thread_started) return -1;
 
-    LOG(1, "connect_playback: tlength=%u minreq=%u prebuf=%u ring=%zu bytes (%.1f ms) max_tlength_ms=%d out=%s fmt=%dB rate=%d",
+    LOG(1, "connect_playback: mode=%s tlength=%u minreq=%u prebuf=%u initial_ring=%zu bytes live_edge_ms=%d max_tlength_ms=%d out=%s fmt=%dB rate=%d",
+        cfg.compat ? "compat" : "live-ring",
         s->attr.tlength, s->attr.minreq, s->attr.prebuf, s->cap,
-        pa_bytes_to_usec(s->cap, &s->ss) / 1000.0,
+        cfg.ring_ms,
         cfg.max_tlength_ms, cfg.out, cfg.bytes, cfg.rate);
     stream_post_state(s, PA_STREAM_CREATING);
     stream_post_state(s, PA_STREAM_READY);
@@ -1516,7 +1636,8 @@ int pa_stream_write(pa_stream *s, const void *data, size_t nbytes, pa_free_cb_t 
     }
     pthread_mutex_lock(&s->lk);
     took = ring_put(s, data, nbytes);
-    s->written_bytes += nbytes;
+    s->write_calls++;
+    s->written_frames += nbytes / fs;
     s->requested = s->requested > nbytes ? s->requested - nbytes : 0;
     stream_post_write(s);
     pthread_mutex_unlock(&s->lk);
@@ -1536,9 +1657,18 @@ int pa_stream_get_latency(pa_stream *s, pa_usec_t *r, int *negative)
 int pa_stream_get_time(pa_stream *s, pa_usec_t *r)
 {
     pthread_mutex_lock(&s->lk);
-    *r = pa_bytes_to_usec(s->consumed_bytes, &s->ss);
+    *r = (pa_usec_t) ((long double) s->consumed_frames * PA_USEC_PER_SEC / s->ss.rate);
     pthread_mutex_unlock(&s->lk);
     return 0;
+}
+int64_t pa_stream_get_underflow_index(const pa_stream *s)
+{
+    int64_t index;
+    pa_stream *m = (pa_stream *) s;
+    pthread_mutex_lock(&m->lk);
+    index = s->underflow_index;
+    pthread_mutex_unlock(&m->lk);
+    return index;
 }
 const pa_timing_info *pa_stream_get_timing_info(pa_stream *s)
 {
@@ -1547,8 +1677,8 @@ const pa_timing_info *pa_stream_get_timing_info(pa_stream *s)
     gettimeofday(&s->ti.timestamp, NULL);
     s->ti.synchronized_clocks = 1;
     s->ti.playing = !s->corked && s->clock_on;
-    s->ti.write_index = (int64_t) s->written_bytes;
-    s->ti.read_index = (int64_t) s->consumed_bytes;
+    s->ti.write_index = (int64_t) (s->written_frames * pa_frame_size(&s->ss));
+    s->ti.read_index = (int64_t) (s->consumed_frames * pa_frame_size(&s->ss));
     pthread_mutex_unlock(&s->lk);
     return &s->ti;
 }
@@ -1563,6 +1693,12 @@ pa_operation *pa_stream_drain(pa_stream *s, pa_stream_success_cb_t cb, void *ud)
     pthread_mutex_lock(&s->lk);
     if (s->drain_op) pa_operation_unref(s->drain_op);
     s->drain_op = o;
+    LOG(1, "stream drain requested: consumed=%llu written=%llu outstanding=%llu "
+        "app_buffer=%zu requested=%zu corked=%d",
+        (unsigned long long) (s->consumed_frames * pa_frame_size(&s->ss)),
+        (unsigned long long) (s->written_frames * pa_frame_size(&s->ss)),
+        (unsigned long long) ((s->written_frames - s->consumed_frames) * pa_frame_size(&s->ss)),
+        s->fill, s->requested, s->corked);
     pthread_mutex_unlock(&s->lk);
     return o;
 }
@@ -1580,6 +1716,8 @@ pa_operation *pa_stream_trigger(pa_stream *s, pa_stream_success_cb_t cb, void *u
 {
     pthread_mutex_lock(&s->lk);
     s->force_start = 1;
+    if (s->requested == 0) s->requested = s->attr.tlength;
+    stream_post_write(s);
     pthread_mutex_unlock(&s->lk);
     return op_post(s->c, s, OP_STREAM_OK, cb, ud);
 }

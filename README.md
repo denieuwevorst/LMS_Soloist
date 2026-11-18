@@ -62,6 +62,11 @@ directly.
 The handler opens the FIFO nonblocking in read/write mode. Keeping one local
 writer open prevents a temporary capture-process exit from appearing as EOF to
 LMS; the bridge can restart capture and continue through the same stream.
+For discontinuous PCM changes, LMS reopens a generation-qualified playback URL
+such as `soloist://player-0/soloist.wav?g=4`. The canonical per-player URL stays
+stable for metadata and settings, while the token forces LMS to replace the
+old handler and flush downstream decoder/player buffers. Expected natural
+gapless transitions retain the current URL and handler.
 
 ## Requirements
 
@@ -178,15 +183,51 @@ In the plugin settings:
 
 The bridge sets `LD_LIBRARY_PATH` only for the Soloist process. PCM/WAV points
 `SOLOIST_SHIM_OUT` directly at the final per-player LMS FIFO; MP3/FLAC retain
-the intermediate `pcm-shim.fifo` consumed by ffmpeg. On Spotify URI changes or
-meaningful backward seeks, the plugin atomically publishes a generation command
-to the shim, waits up to 250 ms for its acknowledgement, and only then replaces
-the LMS handler. This orders upstream ring flushing before downstream FIFO and
-player-buffer replacement without restarting Soloist.
+the intermediate `pcm-shim.fifo` consumed by ffmpeg. On discontinuous Spotify
+URI changes or meaningful backward seeks, the plugin atomically publishes a
+flush request to the shim, waits up to one second for its request
+acknowledgement, and only then plays a new generation-qualified URL so LMS
+replaces the handler. This orders upstream ring flushing before downstream FIFO
+and player-buffer replacement without restarting Soloist. Expected natural
+end-of-track changes remain on the current handler for gapless playback.
 
-For diagnostic logging, set `SOLOIST_PCM_SHIM_LOG=1` or `2` in the LMS service
-environment and restart LMS. The bridge passes that value to the shim as
-`SOLOIST_SHIM_LOG`.
+Pulse-internal flushes and plugin track-change requests use separate namespaces.
+If a request acknowledgement is lost, the plugin retries the same idempotent
+request; after timeout it still replaces the LMS handler and keeps the bridge
+alive rather than terminating Soloist.
+
+### Field A/B diagnostics
+
+The per-player **PCM live-edge ring** checkbox is enabled by default. Disable it
+and save to restart only that player's bridge in compatibility mode. This
+restores the pre-ring Pulse buffering/callback contract while retaining direct
+FIFO delivery and generation flushes, allowing the same player and host to
+isolate whether audible stutter originates in the ring/Pulse timing layer.
+
+At bridge startup, `bridge.log` must show both:
+
+```text
+[soloist-bridge] pcm-shim binary: .../libpulse.so.0 (... bytes sha1=...)
+[soloist-shim] loaded build 2026-11-18.6-frameunits: mode=live-ring|compat ...
+```
+
+The bridge also logs the exact matching `/proc/<soloist-pid>/maps` entry. It
+refuses playback if either the binary build marker or mapped library differs,
+so a stale package or system Pulse library cannot first surface as a
+generation-acknowledgement timeout on track skip. At normal shim log level `1`,
+copy 15-20 seconds containing the
+startup lines plus `runtime summary`, `output pressure`, `LMS read summary`,
+`stream underflow`, `live-edge drop`, generation, or FIFO reconnect messages.
+Compare the same Spotify passage first with the checkbox enabled and then
+disabled for that player.
+
+Bundled private-glibc launches pass the selected shim through the loader's
+`--preload` option; native launches use the exact `LD_PRELOAD` path. The shim
+is therefore mapped before Soloist chooses its audio backend instead of merely
+being available for a later lazy lookup.
+
+Diagnostic level `1` is now the default. Set `SOLOIST_PCM_SHIM_LOG=2` in the
+LMS service environment only when trace-level Pulse API calls are needed.
 
 See `contrib/experimental-pcm-shim/README.md` for build details, supported
 environment variables, and limitations.

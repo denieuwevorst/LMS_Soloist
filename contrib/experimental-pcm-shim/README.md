@@ -40,18 +40,23 @@ library. A directory below `/root` is normally unsuitable.
 
 ## Runtime interface
 
-The bridge starts Soloist with this directory prepended to `LD_LIBRARY_PATH`
-and sets:
+The bridge makes this directory available through `LD_LIBRARY_PATH` and
+explicitly preloads the exact shim. Bundled private-glibc starts use the
+loader's `--preload` option; native-runtime starts use the equivalent exact
+`LD_PRELOAD` path. This runs the constructor before Soloist chooses its audio
+backend. The bridge also sets:
 
 - `SOLOIST_SHIM_OUT` - FIFO path or Unix socket path
 - `SOLOIST_SHIM_FORMAT` - `s16` for the plugin integration
 - `SOLOIST_SHIM_RATE` - `44100` for the plugin integration
 - `SOLOIST_SHIM_LOG` - diagnostic level (`0`, `1`, or `2`)
 - `SOLOIST_SHIM_RING_MS` - bounded live-edge ring depth; the bridge uses `200`
+- `SOLOIST_SHIM_MODE` - `live-ring` (default) or `compat`; compatibility mode
+  restores the pre-ring Pulse buffer growth and sink-wait behavior for A/B tests
 - `SOLOIST_SHIM_CONTROL` - optional atomic generation command file
 - `SOLOIST_SHIM_ACK` - optional generation acknowledgement file
-- `SOLOIST_SHIM_MAX_TLENGTH_MS` - playback buffer clamp; the bridge defaults
-  this to `300`
+- `SOLOIST_SHIM_MAX_TLENGTH_MS` - optional playback buffer clamp; the bridge
+  leaves this disabled so Soloist retains its native producer timing contract
 
 The plugin creates one FIFO per player and configures the shim independently
 for each Soloist process.
@@ -80,10 +85,11 @@ without gaps. If the reader remains slow beyond that budget, the in-flight
 oldest complete frames are discarded, keeping playback near the live edge and
 bounding total PCM buffering to approximately 300 ms with the bridge's FIFO.
 
-Generation command files contain `<generation> <reason>`. When the plugin
-atomically replaces the file, the writer clears queued old-generation frames,
-resets resampling state, and atomically writes the same generation to the
-acknowledgement file. The plugin waits for that acknowledgement before replacing
+Generation command files contain `<request-id> <reason>`. The request ID is
+independent from the shim's internal audio generation, so Pulse flushes cannot
+collide with track-change commands. The acknowledgement contains
+`<request-id> <resulting-generation> <reason>`. Repeating a processed request
+recreates a lost acknowledgement without flushing twice. The plugin waits for that acknowledgement before replacing
 the LMS protocol handler. Pulse `flush` requests clear the ring through the same
 internal generation path.
 
@@ -96,7 +102,7 @@ and inspect the player's `bridge.log`. The bridge maps this setting to
 A successfully loaded build logs its configured ring depth and control path:
 
 ```text
-[soloist-shim] loaded build 2026-11-18.1: ... ring_ms=200 ...
+[soloist-shim] loaded build 2026-11-18.6-frameunits: mode=live-ring ... ring_ms=200 ...
 ```
 
 Level `2` also logs Pulse API activity. A constructor/load marker without
@@ -107,6 +113,20 @@ Level `1` rate-limits output-pressure summaries containing the number of
 `EAGAIN` and partial writes plus maximum sink wait and queued milliseconds.
 Normal backpressure may produce pressure summaries, but uninterrupted playback
 should not produce `live-edge drop` or `stream underflow`.
+
+Every five seconds the shim also logs a `runtime summary` with queued audio,
+oldest scheduled audio age,
+producer writes/callbacks, underflows, dropped milliseconds, maximum writer
+scheduling gap, and requested writable time. These counters distinguish
+producer starvation or bursty Pulse timing from downstream FIFO pressure.
+
+Canonical accounting uses 64-bit input frames. Pulse read/write indexes are
+derived in the input stream's byte units, while FIFO diagnostics remain in
+output bytes. Drain requests and completions log read/write indexes, outstanding
+application bytes, queued bytes, and requested writable bytes. Discarded or
+generation-flushed PCM advances the virtual read index just like consumed
+audio, so the application never mistakes removed stale data for future sink
+latency.
 
 Soloist currently requires compatibility exports including:
 

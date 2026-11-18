@@ -51,6 +51,7 @@
 		<th align="left">Status</th>
 		<th align="left">Format</th>
 		<th align="left">Spotify normalization</th>
+		<th align="left">PCM live-edge ring</th>
 		<th align="left">Stream</th>
 	</tr>
 	[% FOREACH player IN players %]
@@ -79,6 +80,16 @@
 				<input type="checkbox" name="normalization.[% player.id %]"
 					id="normalization.[% player.id %]" [% IF player.normalization %]checked[% END %]>
 				<label for="normalization.[% player.id %]">[% "PLUGIN_SPOTIFYSOLOIST_NORMALIZATION_ENABLED" | string %]</label>
+			</td>
+			<td>
+				[% IF player.effectiveFormat == 'pcm' %]
+					<input type="checkbox" name="liveRing.[% player.id %]"
+						id="liveRing.[% player.id %]" [% IF player.liveRing %]checked[% END %]>
+					<label for="liveRing.[% player.id %]">Enabled</label>
+					<br><small>Disable for compatibility A/B testing.</small>
+				[% ELSE %]
+					<small>PCM only</small>
+				[% END %]
 			</td>
 			<td><small>[% player.streamUrl %]</small></td>
 		</tr>
