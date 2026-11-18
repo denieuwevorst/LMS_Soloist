@@ -62,6 +62,11 @@ directly.
 The handler opens the FIFO nonblocking in read/write mode. Keeping one local
 writer open prevents a temporary capture-process exit from appearing as EOF to
 LMS; the bridge can restart capture and continue through the same stream.
+For discontinuous PCM changes, LMS reopens a generation-qualified playback URL
+such as `soloist://player-0/soloist.wav?g=4`. The canonical per-player URL stays
+stable for metadata and settings, while the token forces LMS to replace the
+old handler and flush downstream decoder/player buffers. Expected natural
+gapless transitions retain the current URL and handler.
 
 ## Requirements
 
@@ -178,11 +183,13 @@ In the plugin settings:
 
 The bridge sets `LD_LIBRARY_PATH` only for the Soloist process. PCM/WAV points
 `SOLOIST_SHIM_OUT` directly at the final per-player LMS FIFO; MP3/FLAC retain
-the intermediate `pcm-shim.fifo` consumed by ffmpeg. On Spotify URI changes or
-meaningful backward seeks, the plugin atomically publishes a flush request
-to the shim, waits up to one second for its request acknowledgement, and only then replaces
-the LMS handler. This orders upstream ring flushing before downstream FIFO and
-player-buffer replacement without restarting Soloist.
+the intermediate `pcm-shim.fifo` consumed by ffmpeg. On discontinuous Spotify
+URI changes or meaningful backward seeks, the plugin atomically publishes a
+flush request to the shim, waits up to one second for its request
+acknowledgement, and only then plays a new generation-qualified URL so LMS
+replaces the handler. This orders upstream ring flushing before downstream FIFO
+and player-buffer replacement without restarting Soloist. Expected natural
+end-of-track changes remain on the current handler for gapless playback.
 
 Pulse-internal flushes and plugin track-change requests use separate namespaces.
 If a request acknowledgement is lost, the plugin retries the same idempotent

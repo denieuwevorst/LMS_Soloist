@@ -203,6 +203,71 @@ ok(
 	'DSTM suppression recognizes a Soloist stream',
 );
 ok(
+	Plugins::SpotifySoloist::StreamSemantics::isSoloistUrl(
+		'soloist://player-3/soloist.wav?g=17'
+	),
+	'DSTM suppression recognizes a generation-qualified Soloist stream',
+);
+is(
+	Plugins::SpotifySoloist::StreamSemantics::canonicalSoloistUrl(
+		'soloist://player-3/soloist.wav?g=17'
+	),
+	'soloist://player-3/soloist.wav',
+	'canonicalizes generation-qualified playback URLs for metadata identity',
+);
+is(
+	Plugins::SpotifySoloist::StreamSemantics::generationSoloistUrl(
+		'soloist://player-3/soloist.wav', 17,
+	),
+	'soloist://player-3/soloist.wav?g=17',
+	'builds a deterministic generation-qualified playback URL',
+);
+is(
+	Plugins::SpotifySoloist::StreamSemantics::generationSoloistUrl(
+		'soloist://player-3/soloist.wav?g=16', 17,
+	),
+	'soloist://player-3/soloist.wav?g=17',
+	'retrying a generation replaces rather than stacks the token',
+);
+ok(
+	Plugins::SpotifySoloist::StreamSemantics::sameSoloistStream(
+		'soloist://player-3/soloist.wav?g=16',
+		'soloist://player-3/soloist.wav?g=17',
+	),
+	'generation URLs retain one canonical per-player stream identity',
+);
+ok(
+	!Plugins::SpotifySoloist::StreamSemantics::sameSoloistStream(
+		'soloist://player-3/soloist.wav?g=17',
+		'soloist://player-4/soloist.wav?g=17',
+	),
+	'generation canonicalization does not cross player identities',
+);
+ok(
+	Plugins::SpotifySoloist::StreamSemantics::isCurrentSoloistPlaybackUrl(
+		'soloist://player-3/soloist.wav?g=17',
+		'soloist://player-3/soloist.wav',
+		17,
+	),
+	'current generation URL is accepted for its canonical stream',
+);
+ok(
+	!Plugins::SpotifySoloist::StreamSemantics::isCurrentSoloistPlaybackUrl(
+		'soloist://player-3/soloist.wav?g=16',
+		'soloist://player-3/soloist.wav',
+		17,
+	),
+	'stale generation URL cannot claim the current stream',
+);
+ok(
+	!Plugins::SpotifySoloist::StreamSemantics::isCurrentSoloistPlaybackUrl(
+		'soloist://player-3/soloist.wav',
+		'soloist://player-3/soloist.wav',
+		17,
+	),
+	'canonical startup URL cannot reopen an older active generation',
+);
+ok(
 	!Plugins::SpotifySoloist::StreamSemantics::isSoloistUrl(
 		'https://radio.example/stream.mp3'
 	),
@@ -302,6 +367,68 @@ ok(
 	),
 	'backward seeks request an immediate live-edge resync',
 );
+
+my $naturalTimeline = {};
+my $nearEnd = {
+	item => {
+		uri => 'spotify:track:natural-first',
+		decorations => { playback => { duration_ms => 180_000 } },
+	},
+	position => {
+		position_ms  => 500,
+		timestamp_ms => 1_000,
+		speed        => 1,
+	},
+};
+Plugins::SpotifySoloist::StreamSemantics::observeTimelineTransition(
+	$naturalTimeline, $nearEnd, 30, 179_000,
+);
+my $naturalNext = {
+	item => {
+		uri => 'spotify:track:natural-second',
+		decorations => { playback => { duration_ms => 200_000 } },
+	},
+	position => { position_ms => 100 },
+};
+my $naturalTransition =
+	Plugins::SpotifySoloist::StreamSemantics::observeTimelineTransition(
+		$naturalTimeline, $naturalNext, 30.5, 179_500,
+	);
+is(
+	$naturalTransition->{reason},
+	'natural-track',
+	'detects an expected end-of-track URI change',
+);
+ok(
+	!$naturalTransition->{requiresResync},
+	'natural gapless transitions retain the current playback URL and handler',
+);
+
+my $manualTimeline = {};
+my $midTrack = {
+	item => {
+		uri => 'spotify:track:manual-first',
+		decorations => { playback => { duration_ms => 240_000 } },
+	},
+	position => { position_ms => 90_000 },
+};
+Plugins::SpotifySoloist::StreamSemantics::observeTimelineTransition(
+	$manualTimeline, $midTrack, 40,
+);
+my $manualTransition =
+	Plugins::SpotifySoloist::StreamSemantics::observeTimelineTransition(
+		$manualTimeline,
+		{
+			item => {
+				uri => 'spotify:track:manual-second',
+				decorations => { playback => { duration_ms => 210_000 } },
+			},
+			position => { position_ms => 0 },
+		},
+		40.1,
+	);
+is( $manualTransition->{reason}, 'track', 'manual playlist changes remain discontinuous' );
+ok( $manualTransition->{requiresResync}, 'manual playlist changes require a new URL generation' );
 
 is(
 	Plugins::SpotifySoloist::StreamSemantics::shimGenerationCommand(

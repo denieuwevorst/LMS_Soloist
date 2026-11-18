@@ -9,10 +9,56 @@ use Time::HiRes ();
 use constant BACKWARD_SEEK_THRESHOLD_MS => 2_000;
 use constant TRACK_RESET_POSITION_MS     => 5_000;
 use constant TRACK_RESET_TIMEOUT_SECONDS => 0.75;
+use constant NATURAL_END_WINDOW_MS       => 3_000;
 
 sub isSoloistUrl {
 	my ($url) = @_;
-	return defined $url && $url =~ m{\Asoloist://player-\d+/soloist\.[A-Za-z0-9]+\z} ? 1 : 0;
+	return soloistUrlParts($url) ? 1 : 0;
+}
+
+sub soloistUrlParts {
+	my ($url) = @_;
+	return unless defined $url;
+	my ( $slot, $extension, $generation ) =
+		$url =~ m{\Asoloist://player-(\d+)/soloist\.([A-Za-z0-9]+)(?:\?g=(\d+))?\z};
+	return unless defined $slot;
+	return {
+		slot       => 0 + $slot,
+		extension  => $extension,
+		canonical  => "soloist://player-$slot/soloist.$extension",
+		( defined $generation ? ( generation => 0 + $generation ) : () ),
+	};
+}
+
+sub canonicalSoloistUrl {
+	my ($url) = @_;
+	my $parts = soloistUrlParts($url) or return;
+	return $parts->{canonical};
+}
+
+sub generationSoloistUrl {
+	my ( $url, $generation ) = @_;
+	my $canonical = canonicalSoloistUrl($url) or return;
+	return $canonical unless defined $generation && $generation > 0;
+	return "$canonical?g=$generation";
+}
+
+sub sameSoloistStream {
+	my ( $left, $right ) = @_;
+	my $leftCanonical = canonicalSoloistUrl($left);
+	my $rightCanonical = canonicalSoloistUrl($right);
+	return defined $leftCanonical && defined $rightCanonical
+		&& $leftCanonical eq $rightCanonical ? 1 : 0;
+}
+
+sub isCurrentSoloistPlaybackUrl {
+	my ( $url, $canonical, $generation ) = @_;
+	my $parts = soloistUrlParts($url) or return 0;
+	return 0 unless sameSoloistStream( $url, $canonical );
+	$generation ||= 0;
+	return $generation
+		? defined $parts->{generation} && $parts->{generation} == $generation
+		: !defined $parts->{generation};
 }
 
 sub monotonicNow {
@@ -134,25 +180,26 @@ sub positionSeconds {
 }
 
 sub timelineObservation {
-	my ($state) = @_;
+	my ( $state, $nowMs ) = @_;
 	return {} unless ref $state eq 'HASH';
 	my $item = $state->{item};
-	my $position = $state->{position};
+	my $duration = durationSeconds($state);
+	$nowMs = Time::HiRes::time() * 1000 unless defined $nowMs;
+	my $projectedPosition = positionSeconds( $state, $nowMs );
 
 	return {
 		( ref $item eq 'HASH' && defined $item->{uri}
 			? ( uri => $item->{uri} ) : () ),
-		( ref $position eq 'HASH'
-				&& defined $position->{position_ms}
-				&& looks_like_number( $position->{position_ms} )
-			? ( positionMs => 0 + $position->{position_ms} ) : () ),
+		( defined $projectedPosition
+			? ( positionMs => $projectedPosition * 1000 ) : () ),
+		( defined $duration ? ( durationMs => $duration * 1000 ) : () ),
 	};
 }
 
 sub observeTimelineTransition {
-	my ( $tracker, $state, $now ) = @_;
+	my ( $tracker, $state, $now, $wallNowMs ) = @_;
 	$tracker ||= {};
-	my $current = timelineObservation($state);
+	my $current = timelineObservation( $state, $wallNowMs );
 	my $previous = $tracker->{observation} || {};
 	return unless defined $current->{uri} && length $current->{uri};
 	$current->{positionMs} = $previous->{positionMs}
@@ -168,8 +215,15 @@ sub observeTimelineTransition {
 		&& defined $currentUri && length $currentUri
 		&& $previousUri ne $currentUri
 	) {
+		my $natural =
+			defined $previous->{positionMs}
+			&& defined $previous->{durationMs}
+			&& $previous->{durationMs} > 0
+			&& $previous->{positionMs}
+				>= $previous->{durationMs} - NATURAL_END_WINDOW_MS;
 		return {
-			reason             => 'track',
+			reason             => $natural ? 'natural-track' : 'track',
+			requiresResync     => $natural ? 0 : 1,
 			fromUri            => $previousUri,
 			toUri              => $currentUri,
 			detectedAt         => $now,
@@ -187,6 +241,7 @@ sub observeTimelineTransition {
 	) {
 		return {
 			reason             => 'backward-seek',
+			requiresResync     => 1,
 			fromUri            => $currentUri,
 			toUri              => $currentUri,
 			detectedAt         => $now,

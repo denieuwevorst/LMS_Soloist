@@ -34,8 +34,12 @@ BEGIN {
 
 	package Plugins::SpotifySoloist::Plugin;
 	our $stream;
+	our @transitionClaims;
 	sub directStreamInfoForUrl { return $stream }
-	sub claimDirectStreamTransitionForUrl { return }
+	sub claimDirectStreamTransitionForUrl {
+		push @transitionClaims, [@_];
+		return { reason => 'track', resyncAt => 1 };
+	}
 }
 
 require './StreamSemantics.pm';
@@ -138,6 +142,22 @@ is( $buffer, 'audio-two', 'forwards restarted capture audio unchanged' );
 
 close $writer;
 close $handler;
+
+$Plugins::SpotifySoloist::Plugin::stream->{streamGeneration} = 7;
+my $generationSong = TestSong->new;
+my $generationHandler = Plugins::SpotifySoloist::ProtocolHandler->new({
+	url  => 'soloist://player-0/soloist.wav?g=7',
+	song => $generationSong,
+});
+ok( $generationHandler, 'generation-qualified PCM URL opens the same player FIFO' );
+is_deeply(
+	$Plugins::SpotifySoloist::Plugin::transitionClaims[-1],
+	[ 'soloist://player-0/soloist.wav?g=7', 7 ],
+	'handler claims transition context only for its URL generation',
+);
+$buffer = '';
+is( $generationHandler->sysread( $buffer, 44 ), 44, 'new generation emits a fresh WAV header' );
+close $generationHandler;
 
 $Plugins::SpotifySoloist::Plugin::stream->{format} = {
 	key           => 'flac',

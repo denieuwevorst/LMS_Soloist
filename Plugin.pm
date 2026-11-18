@@ -974,23 +974,48 @@ sub _configFor {
 }
 
 sub streamUrlFor {
-	my ($cfg) = @_;
+	my ( $cfg, $generation ) = @_;
 	my $format = $cfg->{formatSpec} || currentFormatSpec( $cfg->{format} );
+	my $canonical =
+		'soloist://player-' . $cfg->{slot} . '/soloist.' . $format->{wireExt};
 
-	return 'soloist://player-' . $cfg->{slot} . '/soloist.' . $format->{wireExt};
+	return $format->{key} eq 'pcm'
+		? Plugins::SpotifySoloist::StreamSemantics::generationSoloistUrl(
+			$canonical, $generation,
+		)
+		: $canonical;
+}
+
+sub _playbackStreamUrlFor {
+	my ($b) = @_;
+	return streamUrlFor( $b, $b->{streamGeneration} || 0 );
 }
 
 sub directStreamInfoForUrl {
 	my ($url) = @_;
-	my ($slot) = ( $url || '' ) =~ m{\Asoloist://player-(\d+)/soloist\.[A-Za-z0-9]+\z};
-	return unless defined $slot;
+	my $parts =
+		Plugins::SpotifySoloist::StreamSemantics::soloistUrlParts($url)
+		or return;
 
 	for my $bridge ( values %bridges ) {
-		next unless defined $bridge->{slot} && $bridge->{slot} == $slot;
+		next unless defined $bridge->{slot} && $bridge->{slot} == $parts->{slot};
+		my $format =
+			$bridge->{formatSpec} || currentFormatSpec( $bridge->{format} );
+		return unless $parts->{extension} eq $format->{wireExt};
+		my $currentGeneration = $bridge->{streamGeneration} || 0;
+		if ( $format->{key} eq 'pcm' ) {
+			return unless
+				Plugins::SpotifySoloist::StreamSemantics::isCurrentSoloistPlaybackUrl(
+					$url, streamUrlFor($bridge), $currentGeneration,
+				);
+		}
+		else {
+			return if defined $parts->{generation};
+		}
 		return {
 			fifoPath        => $bridge->{fifoPath},
-			format          => $bridge->{formatSpec} || currentFormatSpec( $bridge->{format} ),
-			streamGeneration => $bridge->{streamGeneration} || 0,
+			format          => $format,
+			streamGeneration => $currentGeneration,
 		};
 	}
 	return;
@@ -998,11 +1023,15 @@ sub directStreamInfoForUrl {
 
 sub claimDirectStreamTransitionForUrl {
 	my ( $url, $generation ) = @_;
-	my ($slot) = ( $url || '' ) =~ m{\Asoloist://player-(\d+)/soloist\.[A-Za-z0-9]+\z};
-	return unless defined $slot && $generation;
+	my $parts =
+		Plugins::SpotifySoloist::StreamSemantics::soloistUrlParts($url)
+		or return;
+	return unless $generation
+		&& defined $parts->{generation}
+		&& $parts->{generation} == $generation;
 
 	for my $bridge ( values %bridges ) {
-		next unless defined $bridge->{slot} && $bridge->{slot} == $slot;
+		next unless defined $bridge->{slot} && $bridge->{slot} == $parts->{slot};
 		my $transition = $bridge->{lastStreamTransition};
 		return unless ref $transition eq 'HASH'
 			&& ( $transition->{generation} || 0 ) == $generation;
@@ -1024,10 +1053,11 @@ sub handleFeed {
 	for my $playerId ( selectedPlayerIds() ) {
 		my $pClient = Slim::Player::Client::getClient($playerId) or next;
 		my $cfg = _configFor( $playerId, $pClient->name );
+		my $bridge = $bridges{$playerId};
 		push @items, {
 			name => $cfg->{deviceName},
 			type => 'audio',
-			url  => streamUrlFor($cfg),
+			url  => $bridge ? _playbackStreamUrlFor($bridge) : streamUrlFor($cfg),
 		};
 	}
 
@@ -1340,6 +1370,7 @@ sub _finishPcmTimelineResync {
 	}
 
 	delete $b->{pendingShimResync};
+	return unless $pending->{generation} == ( $b->{streamGeneration} || 0 );
 	if ( !$acknowledged ) {
 		$log->warn(
 			"PCM shim request $requestId acknowledgement timed out after "
@@ -1355,7 +1386,7 @@ sub _finishPcmTimelineResync {
 		sprintf(
 			'replacing %s direct PCM handler for %s at monotonic %.3f '
 			. '(generation=%d, shim_request=%d, shim_ack=%s, transition_to_replace_ms=%.0f); '
-			. 'capture remains connected',
+			. 'capture remains connected; url=%s',
 			$client->name,
 			$pending->{transition}->{reason},
 			$now,
@@ -1363,6 +1394,7 @@ sub _finishPcmTimelineResync {
 			$requestId,
 			$acknowledged ? 'yes' : 'timeout-degraded',
 			( $now - $pending->{requestedAt} ) * 1000,
+			$pending->{url},
 		)
 	);
 	$b->{suppressLyrionTransportUntil} = time() + 1;
@@ -1446,7 +1478,9 @@ sub _bridgeForSoloistStream {
 	my $b = $bridges{ $master->id } or return;
 	my $playing = eval { Slim::Player::Playlist::url($master) };
 
-	return $playing && $playing eq streamUrlFor($b) ? $b : undef;
+	return Plugins::SpotifySoloist::StreamSemantics::sameSoloistStream(
+		$playing, streamUrlFor($b),
+	) ? $b : undef;
 }
 
 sub recoverDirectStreamAfterStall {
@@ -1455,8 +1489,8 @@ sub recoverDirectStreamAfterStall {
 	my $playerId = $master->id;
 	my $b = $bridges{$playerId} or return;
 
-	return unless $url eq streamUrlFor($b);
-	return unless _clientIsOnOwnSoloistStream( $master, $url );
+	return unless $url eq _playbackStreamUrlFor($b);
+	return unless _clientIsOnOwnSoloistStream( $master, streamUrlFor($b) );
 	return if $b->{stallRecoveryPending};
 
 	$b->{stallRecoveryPending} = 1;
@@ -1464,16 +1498,28 @@ sub recoverDirectStreamAfterStall {
 		my $liveBridge = $bridges{$playerId} or return;
 		$liveBridge->{stallRecoveryPending} = 0;
 		my $liveClient = Slim::Player::Client::getClient($playerId) or return;
-		return unless _clientIsOnOwnSoloistStream( $liveClient, $url );
+		return unless $url eq _playbackStreamUrlFor($liveBridge);
+		return unless _clientIsOnOwnSoloistStream(
+			$liveClient, streamUrlFor($liveBridge),
+		);
 
+		my $generation = ++$liveBridge->{streamGeneration};
+		my $replacementUrl = _playbackStreamUrlFor($liveBridge);
+		my $now = Plugins::SpotifySoloist::StreamSemantics::monotonicNow();
+		$liveBridge->{lastStreamTransition} = {
+			reason     => 'stale-catchup',
+			detectedAt => $now,
+			resyncAt   => $now,
+			generation => $generation,
+		};
 		$log->info(
 			'replacing ' . $liveClient->name
 			. ' direct Soloist protocol handler after a read stall discarded '
 			. ( $discarded || 0 )
-			. ' stale bytes'
+			. " stale bytes (generation=$generation, url=$replacementUrl)"
 		);
 		$liveBridge->{suppressLyrionTransportUntil} = time() + 1;
-		$liveClient->execute( [ 'playlist', 'play', $url ] );
+		$liveClient->execute( [ 'playlist', 'play', $replacementUrl ] );
 	} );
 }
 
@@ -1576,7 +1622,7 @@ sub bridgeStreamUrlFor {
 	my ($playerId) = @_;
 	return '' unless _bridgeRunning($playerId);
 	my $b = $bridges{$playerId} or return '';
-	return streamUrlFor($b);
+	return _playbackStreamUrlFor($b);
 }
 
 sub cliBridge {
@@ -1825,7 +1871,9 @@ sub _currentPlaybackStateForBridge {
 sub _clientIsOnOwnSoloistStream {
 	my ( $client, $url ) = @_;
 	my $playing = eval { Slim::Player::Playlist::url($client) };
-	return $playing && $playing eq $url;
+	return Plugins::SpotifySoloist::StreamSemantics::sameSoloistStream(
+		$playing, $url,
+	);
 }
 
 sub _clientIsActivelyPlayingOwnSoloistStream {
@@ -1885,6 +1933,15 @@ sub _observeSpotifyTimeline {
 			$now,
 		);
 	return unless $transition;
+	if ( !$transition->{requiresResync} ) {
+		$b->{pendingTimelineResync} = undef;
+		$log->info(
+			'keeping the current direct PCM handler for natural Spotify track '
+			. "transition on " . $client->name
+			. " ($transition->{fromUri} -> $transition->{toUri})"
+		);
+		return;
+	}
 
 	if ( my $pending = $b->{pendingTimelineResync} ) {
 		$log->info(
@@ -1980,7 +2037,7 @@ sub _applySpotifyTransportEvents {
 				generation => $generation,
 				requestId  => $requestId,
 				transition => $transition,
-				url        => $url,
+				url        => streamUrlFor( $b, $generation ),
 				requestedAt => $now,
 				deadline   => time() + 1,
 				attempts   => 1,
@@ -2012,7 +2069,9 @@ sub _applySpotifyTransportEvents {
 		)
 	);
 	$b->{suppressLyrionTransportUntil} = time() + 1;
-	$client->execute( [ 'playlist', 'play', $url ] );
+	my $replacementUrl = _playbackStreamUrlFor($b);
+	$log->info("opening generation-qualified PCM URL $replacementUrl");
+	$client->execute( [ 'playlist', 'play', $replacementUrl ] );
 }
 
 sub _applyPlaybackTransition {
@@ -2175,7 +2234,7 @@ sub _publishMetadataForPlayer {
 		( defined $duration ? ( duration => $duration ) : () ),
 	} );
 
-	Slim::Music::Info::setCurrentTitle( $url, $title, $client );
+	Slim::Music::Info::setCurrentTitle( streamUrlFor($b), $title, $client );
 	$master->currentPlaylistUpdateTime( Time::HiRes::time() );
 	Slim::Control::Request::notifyFromArray( $master, ['newmetadata'] );
 
@@ -2227,7 +2286,7 @@ sub pollMetadata {
 		}
 
 		$b->{missingClientSince} = undef;
-		my $url = streamUrlFor($b);
+		my $url = _playbackStreamUrlFor($b);
 		_clearMetadataForPlayer($client) unless _clientIsActivelyPlayingOwnSoloistStream( $client, $url );
 
 		my $state = _currentPlaybackStateForBridge($b);

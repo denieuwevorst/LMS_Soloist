@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- Qualify PCM playback URLs with a monotonically increasing `?g=` token for
+  manual track/playlist changes, Next/Previous, meaningful backward seeks, and
+  stale-stream recovery. LMS can no longer optimize the same-URL replay into a
+  no-op, so it closes the old handler and flushes downstream player buffers.
+  Canonical per-player identity and metadata remain stable, while expected
+  natural gapless transitions retain the current URL and handler.
 - Use 64-bit input frames as the canonical Pulse accounting unit, converting
   to input bytes only for Pulse indexes and independently to output bytes for
   the FIFO. This fixes float32-input to s16-output flush accounting that could
