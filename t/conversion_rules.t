@@ -48,6 +48,14 @@ for my $rule (qw(s32p-pcm s32f-flc)) {
 	like( $convert, qr/^\Q$source\E\s+\Q$dest\E\s+\*\s+\*$/m, "defines $source to $dest conversion" );
 }
 is( () = $convert =~ /\[ffmpeg\]/g, 8, 'all final formats use LMS dependency-checked ffmpeg rules' );
+my @commands = $convert =~ /^\s*\[ffmpeg\](.*)$/mg;
+for my $command (@commands) {
+	like(
+		$command,
+		qr/-blocksize 4096 -i \$FILE\$/,
+		'conversion command bounds streaming WAV input reads for realtime cadence',
+	);
+}
 unlike( $bridge, qr/ffmpeg/i, 'bridge never invokes or configures ffmpeg' );
 unlike( $bridge, qr/SOLOIST_SHIM_(?:FORMAT|MODE)|SOLOIST_PCM_SHIM_FIFO/, 'bridge exposes no obsolete shim mode or intermediate FIFO' );
 unlike( $settings . $html, qr/playerLiveRing|liveRing\./, 'settings expose no compatibility-mode preference' );

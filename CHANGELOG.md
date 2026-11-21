@@ -9,7 +9,8 @@
 - Add realtime cadence coverage using the exact LMS PCM/FLAC ffmpeg rules, plus
   a 120 ms converter-startup stall regression that requires zero FIFO pressure,
   drops, or underflows and bounded oldest-audio age. Flush PCM packets promptly
-  instead of relying on ffmpeg's default stdout batching.
+  and cap ffmpeg FIFO reads at 4096 bytes instead of accepting its roughly
+  100 ms default streaming-WAV batches.
 - Fix the S32 LMS conversion regression that allowed the PCM rule and cached
   track metadata to remain 32-bit. PCM now uses low-probe-latency triangular
   dithering to S16LE, FLAC is explicitly encoded at 16-bit, and the
