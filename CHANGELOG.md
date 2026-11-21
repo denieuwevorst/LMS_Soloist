@@ -10,8 +10,8 @@
   a 120 ms converter-startup stall regression that requires zero FIFO pressure,
   drops, or underflows and bounded oldest-audio age. Flush PCM packets promptly
   and cap ffmpeg FIFO reads at 4096 bytes instead of accepting its roughly
-  100 ms default streaming-WAV batches. Reframe converted PCM into 512-sample
-  packets (11.6 ms) without end padding for steady realtime delivery.
+  100 ms default streaming-WAV input batches. The exact-command cadence test
+  bounds PCM output gaps below 120 ms and FLAC output gaps below 180 ms.
 - Fix the S32 LMS conversion regression that allowed the PCM rule and cached
   track metadata to remain 32-bit. PCM now uses low-probe-latency triangular
   dithering to S16LE, FLAC is explicitly encoded at 16-bit, and the

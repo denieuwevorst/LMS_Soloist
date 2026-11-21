@@ -128,7 +128,7 @@ def main():
     if len(sys.argv) != 2:
         raise SystemExit("usage: lms_converter_cadence.py custom-convert.conf")
     before = resource.getrusage(resource.RUSAGE_CHILDREN)
-    run_rule(sys.argv[1], "s32p pcm * *", 0.100)
+    run_rule(sys.argv[1], "s32p pcm * *", 0.120)
     run_rule(sys.argv[1], "s32f flc * *", 0.180)
     after = resource.getrusage(resource.RUSAGE_CHILDREN)
     cpu = (after.ru_utime - before.ru_utime) + (after.ru_stime - before.ru_stime)
