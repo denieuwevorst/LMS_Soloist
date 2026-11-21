@@ -16,8 +16,8 @@ mkfifo "$fifo"
 make -C "$shim" clean marker_client >/dev/null
 
 # Match the bridge guard, then consume faster than real time in bursts with
-# deliberate 120 ms scheduler gaps. Those gaps exceed the 16 KiB FIFO alone,
-# but remain inside the 200 ms userspace live-edge budget.
+# deliberate 220 ms scheduler gaps. Those gaps exceed the 64 KiB FIFO alone,
+# but leave only about 34 ms for the 200 ms userspace retry budget to absorb.
 exec 9<>"$fifo"
 python3 - "$fifo" "$raw" <<'PY' &
 import os, sys, time
@@ -26,7 +26,7 @@ target = 5 * 44100 * 8
 fd = os.open(fifo, os.O_RDONLY | os.O_NONBLOCK)
 data = bytearray()
 next_pause = 44100 * 8 // 4
-deadline = time.monotonic() + 8
+deadline = time.monotonic() + 12
 while len(data) < target and time.monotonic() < deadline:
     try:
         chunk = os.read(fd, min(16384, target - len(data)))
@@ -38,7 +38,7 @@ while len(data) < target and time.monotonic() < deadline:
         continue
     data.extend(chunk)
     if len(data) >= next_pause:
-        time.sleep(0.120)
+        time.sleep(0.220)
         next_pause += 44100 * 8 // 4
 os.close(fd)
 with open(output, "wb") as handle:
