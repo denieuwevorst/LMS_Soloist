@@ -23,6 +23,11 @@ like(
 	qr/^s32p\s+pcm\s+\*\s+\*.*?aresample=osf=s16:dither_method=triangular.*?-f s16le -/ms,
 	'PCM rule converts and dithers S32LE to S16LE instead of passing 32-bit audio to the player',
 );
+like(
+	$convert,
+	qr/^s32p\s+pcm\s+\*\s+\*.*?-flush_packets 1 -f s16le -/ms,
+	'PCM rule flushes converted samples promptly for realtime player delivery',
+);
 unlike(
 	$convert,
 	qr/^s32p\s+pcm\s+\*\s+\*.*?-f s32le -/ms,
