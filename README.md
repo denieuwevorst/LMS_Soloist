@@ -28,10 +28,10 @@ The former ALSA/apulse loopback backend has been removed. Existing
 Spotify
   -> Soloist
   -> per-player Pulse/PipeWire null sink
-  -> parec (PCM/WAV) or ffmpeg (MP3/FLAC)
+  -> parec S32LE capture
   -> per-player FIFO
   -> soloist:// protocol handler
-  -> LMS conversion/streaming pipeline
+  -> LMS S16LE/FLAC/MP3 conversion
   -> player
 ```
 
@@ -42,22 +42,22 @@ Spotify
   -> Soloist
   -> custom libpulse.so.0
   -> 200 ms bounded live-edge PCM ring
-  -> per-player LMS FIFO (PCM/WAV) or ffmpeg (MP3/FLAC)
+  -> per-player LMS FIFO (S32LE)
   -> soloist:// protocol handler
-  -> LMS conversion/streaming pipeline
+  -> LMS S16LE/FLAC/MP3 conversion
   -> player
 ```
 
-PCM/WAV mode does not run ffmpeg or a forwarding `cat` process. The shim writes
+The bridge does not run ffmpeg or a forwarding `cat` process. The shim writes
 directly to the bridge-lifetime guarded LMS FIFO, and the protocol handler adds
-a streaming WAV header when LMS opens it. The shim's 200 ms live-edge ring
+a streaming S32LE WAV header when LMS opens it. LMS then performs the selected
+conversion; PCM output is dithered to S16LE before it leaves the server. The
+shim's 200 ms live-edge ring
 isolates Soloist from the FIFO writer. Short reader scheduling gaps are retried
 inside that budget without dropping audio; a sustained slow reader drops the
 oldest complete PCM frames only after the budget is exhausted, so a stall
 cannot turn into multi-second delayed playback. Together with the deliberately
-small final FIFO, PCM buffering remains bounded to approximately 300 ms. LMS
-may still use its own conversion rules when a player cannot consume WAV
-directly.
+small final FIFO, source buffering remains bounded to approximately 300 ms.
 
 The handler opens the FIFO nonblocking in read/write mode. Keeping one local
 writer open prevents a temporary capture-process exit from appearing as EOF to
@@ -223,8 +223,11 @@ environment variables, and limitations.
 
 ## Stream formats
 
-- **PCM/WAV** - 44.1 kHz stereo S32LE at exactly 2,822,400 bps.
-- **FLAC** - lossless LMS conversion from the same S32LE WAV source.
+- **PCM/WAV** - LMS converts the S32LE source to dithered 44.1 kHz stereo
+  S16LE at exactly 1,411,200 bps. The Squeezebox Touch therefore receives a
+  supported 16-bit PCM stream, never raw S32LE.
+- **FLAC** - lossless LMS conversion from the same S32LE WAV source, explicitly
+  bounded to 16-bit for hardware-player compatibility.
 - **MP3** - LMS conversion from S32LE at the configured fixed bitrate
   (96, 128, 160, 192, 256, or 320 kbps).
 
@@ -235,8 +238,10 @@ reports an LMS conversion error instead of silently falling back.
 
 The global format is the default. Each enabled player can override it
 independently from the settings page. Lyrion's Now Playing and track-info
-surfaces report the selected output properties, while the handler advertises
-the truthful S32LE source contract to LMS conversion.
+surfaces report the selected output properties. The S32LE source contract is
+used only while LMS selects and starts the converter; the track and `strm`
+metadata are changed to the actual converted output before data reaches the
+player.
 
 ## Volume normalization
 

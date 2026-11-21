@@ -69,31 +69,34 @@ $Plugins::SpotifySoloist::Plugin::stream = {
 		key           => 'pcm',
 		contentType   => 's32p',
 		displayFormat => 'WAV',
-		bitrateBps    => 2_822_400,
+		bitrateBps    => 1_411_200,
 		sourceBitrateBps => 2_822_400,
-		bitrateLabel  => '2822.4 kbps',
+		bitrateLabel  => '1411.2 kbps',
 		sampleRate    => 44_100,
-		sampleSize    => 32,
+		sampleSize    => 16,
 		sourceSampleSize => 32,
 		channels      => 2,
-		blockAlign    => 8,
+		blockAlign    => 4,
 		sourceBlockAlign => 8,
-		bufferKb      => 70,
+		bufferKb      => 35,
 	},
 };
 
 my $song = TestSong->new;
+my $pcmTranscoder = { streamformat => 'pcm', sampleSize => 32 };
 my $handler = Plugins::SpotifySoloist::ProtocolHandler->new({
 	url  => 'soloist://player-0/soloist.wav',
 	song => $song,
+	transcoder => $pcmTranscoder,
 });
 ok( $handler, 'opens the direct FIFO stream' );
 is( $handler->contentType, 's32p', 'declares the Soloist S32-to-PCM source type' );
 is( $handler->getStreamBitrate(3_000_000), 2_822_400, 'declares S32LE source bitrate' );
 is( $song->samplerate, 44100, 'sets PCM sample rate' );
-is( $song->samplesize, 32, 'sets PCM sample size' );
+is( $song->samplesize, 16, 'sets Touch-compatible PCM output sample size after converter selection' );
 is( $song->channels, 2, 'sets PCM channels' );
-is( $song->blockalign, 8, 'sets PCM block alignment' );
+is( $song->blockalign, 4, 'sets S16LE PCM output block alignment' );
+is( $pcmTranscoder->{sampleSize}, 16, 'overrides LMS transcoded PCM strm metadata to 16-bit' );
 
 my $writer;
 sysopen( $writer, $fifo, O_WRONLY | O_NONBLOCK ) or die "open FIFO writer: $!";
@@ -155,6 +158,7 @@ my $generationSong = TestSong->new;
 my $generationHandler = Plugins::SpotifySoloist::ProtocolHandler->new({
 	url  => 'soloist://player-0/soloist.wav?g=7',
 	song => $generationSong,
+	transcoder => { streamformat => 'pcm', sampleSize => 32 },
 });
 ok( $generationHandler, 'generation-qualified PCM URL opens the same player FIFO' );
 is_deeply(
@@ -173,7 +177,7 @@ $Plugins::SpotifySoloist::Plugin::stream->{format} = {
 	bitrateLabel  => 'VBR (live stream)',
 	sourceBitrateBps => 2_822_400,
 	sampleRate    => 44_100,
-	sampleSize    => 32,
+	sampleSize    => 16,
 	sourceSampleSize => 32,
 	channels      => 2,
 	blockAlign    => 8,
@@ -181,9 +185,11 @@ $Plugins::SpotifySoloist::Plugin::stream->{format} = {
 	bufferKb      => 24,
 };
 my $flacSong = TestSong->new;
+my $flacTranscoder = { streamformat => 'flc', sampleSize => 32 };
 my $flacHandler = Plugins::SpotifySoloist::ProtocolHandler->new({
 	url  => 'soloist://player-0/soloist.flac',
 	song => $flacSong,
+	transcoder => $flacTranscoder,
 });
 ok( $flacHandler, 'opens a variable-bitrate FLAC direct stream' );
 is( $flacHandler->contentType, 's32f', 'declares the Soloist S32-to-FLAC source type' );
@@ -192,10 +198,11 @@ is(
 	1_500_000,
 	'caps the S32LE source bitrate at the LMS conversion rate limit',
 );
-is( $flacSong->bitrate, 2_822_400, 'sets the truthful S32LE source bitrate' );
-is( $flacSong->samplerate, 44_100, 'sets the S32LE source sample rate' );
-is( $flacSong->samplesize, 32, 'sets the S32LE source sample size' );
-is( $flacSong->channels, 2, 'sets the S32LE source channel count' );
+is( $flacSong->bitrate, 0, 'leaves live FLAC output bitrate variable' );
+is( $flacSong->samplerate, 44_100, 'sets the FLAC output sample rate' );
+is( $flacSong->samplesize, 16, 'bounds FLAC output to Touch-compatible 16-bit samples' );
+is( $flacSong->channels, 2, 'sets the FLAC output channel count' );
+is( $flacTranscoder->{sampleSize}, 16, 'overrides LMS transcoded FLAC metadata to 16-bit' );
 close $flacHandler;
 
 my $overrideSong = TestSong->new;
@@ -206,5 +213,10 @@ is(
 	'overrides the source type before LMS selects the conversion rule',
 );
 is( $overrideSong->samplesize, 32, 'format override publishes S32 source properties before conversion selection' );
+is(
+	Plugins::SpotifySoloist::ProtocolHandler->canDirectStream(),
+	0,
+	'S32 source cannot bypass LMS conversion through direct streaming',
+);
 
 done_testing;

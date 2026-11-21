@@ -137,14 +137,14 @@ my $pcmFormat = {
 	displayFormat => 'WAV',
 	contentType   => 's32p',
 	outputContentType => 'pcm',
-	bitrateBps    => 2_822_400,
+	bitrateBps    => 1_411_200,
 	sourceBitrateBps => 2_822_400,
-	bitrateLabel  => '2822.4 kbps',
+	bitrateLabel  => '1411.2 kbps',
 	sampleRate    => 44_100,
-	sampleSize    => 32,
+	sampleSize    => 16,
 	sourceSampleSize => 32,
 	channels      => 2,
-	blockAlign    => 8,
+	blockAlign    => 4,
 	sourceBlockAlign => 8,
 };
 is_deeply(
@@ -153,24 +153,30 @@ is_deeply(
 		$pcmFormat,
 	),
 	{
-		type       => 'Spotify Soloist (WAV, 2822.4 kbps, 44.1 kHz, 32-bit, stereo)',
+		type       => 'Spotify Soloist (WAV, 1411.2 kbps, 44.1 kHz, 16-bit, stereo)',
 		format     => 'WAV',
 		ct         => 'pcm',
-		bitrate    => '2822.4 kbps',
+		bitrate    => '1411.2 kbps',
 		samplerate => 44_100,
-		samplesize => 32,
+		samplesize => 16,
 		channels   => 2,
 	},
 	'publishes exact final PCM transport metadata',
 );
-is( $song->bitrate, 2_822_400, 'sets exact S32LE bitrate on the LMS song' );
+is( $song->bitrate, 2_822_400, 'sets exact S32LE source bitrate before converter selection' );
 is( $song->samplerate, 44_100, 'sets PCM sample rate on the LMS song' );
-is( $song->samplesize, 32, 'sets PCM sample size on the LMS song' );
+is( $song->samplesize, 32, 'sets S32LE source sample size before converter selection' );
 is( $song->channels, 2, 'sets PCM channel count on the LMS song' );
-is( $song->blockalign, 8, 'sets PCM block alignment on the LMS song' );
-is( $song->currentTrack->bitrate, 2_822_400, 'sets PCM bitrate on the LMS track' );
+is( $song->blockalign, 8, 'sets S32LE source block alignment before converter selection' );
+is( $song->currentTrack->bitrate, 2_822_400, 'sets S32LE source bitrate on the LMS track' );
 is( $song->currentTrack->samplerate, 44_100, 'sets PCM sample rate on the LMS track' );
-is( $song->currentTrack->samplesize, 32, 'sets PCM sample size on the LMS track' );
+is( $song->currentTrack->samplesize, 32, 'sets S32LE source sample size on the LMS track' );
+
+Plugins::SpotifySoloist::StreamSemantics::applyOutputSongFormat( $song, $pcmFormat );
+is( $song->bitrate, 1_411_200, 'publishes the converted PCM output bitrate' );
+is( $song->samplesize, 16, 'publishes the converted PCM output sample size' );
+is( $song->blockalign, 4, 'publishes the converted PCM output block alignment' );
+is( $song->currentTrack->samplesize, 16, 'Touch strm metadata resolves to 16-bit after conversion selection' );
 
 my $mp3Meta = Plugins::SpotifySoloist::StreamSemantics::metadataForFormat({
 	key           => 'mp3',
@@ -194,16 +200,17 @@ my $flacFormat = {
 	bitrateLabel  => 'VBR (live stream)',
 	sourceBitrateBps => 2_822_400,
 	sampleRate    => 44_100,
-	sampleSize    => 32,
+	sampleSize    => 16,
 	sourceSampleSize => 32,
 	sourceBlockAlign => 8,
 	channels      => 2,
 };
 my $flacMeta =
-	Plugins::SpotifySoloist::StreamSemantics::applySongFormat( $song, $flacFormat );
+	Plugins::SpotifySoloist::StreamSemantics::applyOutputSongFormat( $song, $flacFormat );
 is( $flacMeta->{bitrate}, 'VBR (live stream)', 'labels live FLAC bitrate without fabricating precision' );
-is( $song->bitrate, 2_822_400, 'sets the truthful S32LE source bitrate for FLAC conversion' );
-is( $song->currentTrack->bitrate, 2_822_400, 'sets the truthful track source bitrate for FLAC conversion' );
+is( $song->bitrate, 0, 'leaves converted live FLAC bitrate variable' );
+is( $song->samplesize, 16, 'publishes Touch-compatible FLAC sample size' );
+is( $song->currentTrack->bitrate, 0, 'leaves converted track FLAC bitrate variable' );
 
 ok(
 	Plugins::SpotifySoloist::StreamSemantics::isSoloistUrl(

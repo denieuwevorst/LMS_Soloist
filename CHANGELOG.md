@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+- Fix the S32 LMS conversion regression that allowed the PCM rule and cached
+  track metadata to remain 32-bit. PCM now uses low-probe-latency triangular
+  dithering to S16LE, FLAC is explicitly encoded at 16-bit, and the
+  generation-qualified RemoteTrack is changed to truthful output metadata
+  after converter selection. Hardware players such as Squeezebox Touch can no
+  longer receive raw S32LE or a 32-bit `strm` declaration.
+- Restore the PCM startup threshold to 35 KB for the 1,411,200 bps converted
+  output, avoiding the doubled startup buffer introduced with S32 source
+  accounting.
 - Replace all compatibility/legacy shim branches with one validated
   `live-ring-s32le` path. Soloist float32 is converted to 44.1 kHz stereo
   S32LE, kept within the 200 ms live-edge ring, and written directly to the

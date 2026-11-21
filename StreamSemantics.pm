@@ -99,7 +99,7 @@ sub metadataForFormat {
 	my @details;
 	push @details, $format->{bitrateLabel} if $format->{bitrateLabel};
 	if ( $format->{key} eq 'pcm' ) {
-		push @details, '44.1 kHz', '32-bit', 'stereo';
+		push @details, '44.1 kHz', '16-bit', 'stereo';
 	}
 
 	return {
@@ -141,6 +141,34 @@ sub applySongFormat {
 	$song->blockalign( $format->{sourceBlockAlign} || $format->{blockAlign} || 0 )
 		if $song->can('blockalign');
 	$track->block_alignment( $format->{sourceBlockAlign} || $format->{blockAlign} || 0 )
+		if $track && $track->can('block_alignment');
+
+	return metadataForFormat($format);
+}
+
+sub applyOutputSongFormat {
+	my ( $song, $format ) = @_;
+	return {} unless $song && ref $format eq 'HASH';
+
+	my @targets = ($song);
+	my $track = eval { $song->currentTrack() };
+	push @targets, $track if $track;
+
+	for my $target (@targets) {
+		next unless $target;
+		$target->bitrate( $format->{bitrateBps} || 0 )
+			if $target->can('bitrate');
+		$target->samplerate( $format->{sampleRate} || 0 )
+			if $target->can('samplerate');
+		$target->samplesize( $format->{sampleSize} || 0 )
+			if $target->can('samplesize');
+		$target->channels( $format->{channels} || 0 )
+			if $target->can('channels');
+	}
+
+	$song->blockalign( $format->{blockAlign} || 0 )
+		if $song->can('blockalign');
+	$track->block_alignment( $format->{blockAlign} || 0 )
 		if $track && $track->can('block_alignment');
 
 	return metadataForFormat($format);

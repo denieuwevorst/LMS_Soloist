@@ -116,10 +116,22 @@ sub new {
 	${*$self}{maxReadGap} = 0;
 
 	my $song = $args->{song};
-	Plugins::SpotifySoloist::StreamSemantics::applySongFormat( $song, $format );
+	my $transcoder = $args->{transcoder} || {};
+	my $streamFormat = $transcoder->{streamformat} || '';
+	if ( $streamFormat eq 'pcm' || $streamFormat eq 'flc' ) {
+		$transcoder->{sampleSize} = 16;
+	}
+	Plugins::SpotifySoloist::StreamSemantics::applyOutputSongFormat(
+		$song,
+		$format,
+	);
 
 	$log->info(
 		"opened direct Soloist stream '$url' from '$fifo'"
+		. " for LMS $streamFormat output"
+		. ( $streamFormat eq 'pcm' || $streamFormat eq 'flc'
+			? ' at 16-bit/44.1-kHz stereo'
+			: '' )
 		. ( $initialDiscarded
 			? " after discarding $initialDiscarded bytes queued while the LMS reader was replaced"
 			: '' )

@@ -147,7 +147,7 @@ my %FORMAT_SPECS = (
 		wireExt       => 'wav',
 		displayFormat => 'WAV',
 		contentType   => 's32p',
-		bufferKb      => 70,
+		bufferKb      => 35,
 	},
 );
 
@@ -171,7 +171,7 @@ sub currentFormatSpec {
 		? $configuredBitrate
 		: '320k';
 	my $parsedBitrate = $format eq 'mp3' ? $MP3_BITRATES{$effectiveBitrate} : undef;
-	my $bitrateBps = $format eq 'pcm' ? 2_822_400
+	my $bitrateBps = $format eq 'pcm' ? 1_411_200
 		: $format eq 'mp3' ? ( $parsedBitrate || 320_000 )
 		: undef;
 	my $bufferKb = ref $spec->{bufferKb} eq 'CODE'
@@ -197,8 +197,8 @@ sub currentFormatSpec {
 		( defined $configuredBitrate ? ( configuredBitrate => $configuredBitrate ) : () ),
 		sourceSampleSize => 32,
 		sourceBlockAlign => 8,
-		( $format ne 'mp3' ? ( sampleSize => 32 ) : () ),
-		( $format eq 'pcm' ? ( blockAlign => 8 ) : () ),
+		( $format ne 'mp3' ? ( sampleSize => 16 ) : () ),
+		( $format eq 'pcm' ? ( blockAlign => 4 ) : () ),
 		sourceContentType => $spec->{contentType},
 		outputContentType => $format eq 'mp3' ? 'mp3'
 			: $format eq 'flac' ? 'flc'
@@ -2196,7 +2196,7 @@ sub _publishMetadataForPlayer {
 	if ($song) {
 		my $songUrl = eval { $song->currentTrack()->url };
 		if ( defined $songUrl && $songUrl eq $url ) {
-			Plugins::SpotifySoloist::StreamSemantics::applySongFormat(
+			Plugins::SpotifySoloist::StreamSemantics::applyOutputSongFormat(
 				$song,
 				$format,
 			);
