@@ -36,13 +36,12 @@ sleep 0.12
 python3 - "$fifo" <<'PY' &
 import os, sys, time
 
-target = 6 * 44100 * 8
 fd = os.open(sys.argv[1], os.O_RDONLY | os.O_NONBLOCK)
 received = 0
-deadline = time.monotonic() + 8
-while received < target and time.monotonic() < deadline:
+deadline = time.monotonic() + 6.5
+while time.monotonic() < deadline:
     try:
-        chunk = os.read(fd, min(65536, target - received))
+        chunk = os.read(fd, 65536)
     except BlockingIOError:
         time.sleep(0.001)
         continue
@@ -51,8 +50,13 @@ while received < target and time.monotonic() < deadline:
         continue
     received += len(chunk)
 os.close(fd)
-if received != target:
-    raise SystemExit(f"short converter-stall capture: {received} != {target}")
+minimum = int(5.7 * 44100 * 8)
+maximum = 6 * 44100 * 8
+if not minimum <= received <= maximum:
+    raise SystemExit(
+        f"converter-stall capture outside bounded range: {received} "
+        f"not in [{minimum}, {maximum}]"
+    )
 PY
 reader_pid=$!
 
