@@ -30,8 +30,8 @@ test_client: test_client.c libpulse.so.0
 marker_client: marker_client.c libpulse.so.0
 	$(CC) $(CFLAGS) -o $@ marker_client.c -L. -l:libpulse.so.0 $(LIBS)
 
-# Plays a 2s tone into /tmp/shim-test.raw (24-bit stereo, 44.1 kHz) and
-# prints its size -- should be ~2.0s worth of audio (264600 bytes).
+# Plays a 2s tone into /tmp/shim-test.raw (S32LE stereo, 44.1 kHz) and
+# prints its size -- should be ~2.0s worth of audio (705600 bytes).
 test: test_client
 	touch /tmp/shim-test.raw
 	LD_LIBRARY_PATH=. SOLOIST_SHIM_OUT=/tmp/shim-test.raw ./test_client 2

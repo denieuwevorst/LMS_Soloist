@@ -22,12 +22,6 @@ PLUGIN_SPOTIFYSOLOIST_UPDATE_NOW
 PLUGIN_SPOTIFYSOLOIST_MANAGED_STATUS
 	EN	Managed Soloist:
 
-PLUGIN_SPOTIFYSOLOIST_FFMPEGBIN
-	EN	Path to ffmpeg binary
-
-PLUGIN_SPOTIFYSOLOIST_FFMPEGBIN_DESC
-	EN	Used to capture each player's backend-specific audio source and feed its direct LMS stream.
-
 PLUGIN_SPOTIFYSOLOIST_AUDIOBACKEND
 	EN	Audio backend
 
@@ -56,13 +50,13 @@ PLUGIN_SPOTIFYSOLOIST_FORMAT
 	EN	Default stream format
 
 PLUGIN_SPOTIFYSOLOIST_FORMAT_DESC
-	EN	Default format for players without an individual override in the player table above. MP3 and FLAC are encoded by ffmpeg in the bridge. PCM sends uncompressed 44.1 kHz stereo 16-bit audio in a WAV stream; with the direct-PCM shim backend it avoids ffmpeg entirely, and LMS may apply its normal per-player transcoding when a player cannot accept WAV directly.
+	EN	Default format for players without an individual override in the player table above. The bridge always supplies uncompressed 44.1 kHz stereo 32-bit PCM in a WAV stream. Lyrion applies the plugin conversion rule for PCM, FLAC, or MP3 and reports a conversion error when the required LMS converter is unavailable.
 
 PLUGIN_SPOTIFYSOLOIST_BITRATE
 	EN	MP3 bitrate
 
 PLUGIN_SPOTIFYSOLOIST_BITRATE_DESC
-	EN	Only used when format is mp3.
+	EN	Only used when format is MP3. Lyrion selects the matching fixed-bitrate conversion rule.
 
 PLUGIN_SPOTIFYSOLOIST_INITIALVOLUME
 	EN	Initial Soloist volume

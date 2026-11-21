@@ -10,19 +10,18 @@ trap 'rm -rf "$tmp"' EXIT INT TERM
 mkdir "$tmp"
 make -C "$shim" clean marker_client >/dev/null
 
-run_mode() {
-	mode="$1"
-	fifo="$tmp/$mode.fifo"
-	raw="$tmp/$mode.raw"
-	times="$tmp/$mode.times"
-	log="$tmp/$mode.log"
+run_s32() {
+	fifo="$tmp/s32.fifo"
+	raw="$tmp/s32.raw"
+	times="$tmp/s32.times"
+	log="$tmp/s32.log"
 	mkfifo "$fifo"
 	exec 9<>"$fifo"
 
 	python3 - "$fifo" "$raw" "$times" <<'PY' &
 import os, sys, time
 fifo, output, timings = sys.argv[1:]
-target = 6 * 44100 * 4
+target = 6 * 44100 * 8
 fd = os.open(fifo, os.O_RDONLY | os.O_NONBLOCK)
 data = bytearray()
 events = []
@@ -48,42 +47,32 @@ PY
 
 	LD_LIBRARY_PATH="$shim" \
 	SOLOIST_SHIM_OUT="$fifo" \
-	SOLOIST_SHIM_FORMAT=s16 \
 	SOLOIST_SHIM_RATE=44100 \
 	SOLOIST_SHIM_RING_MS=200 \
-	SOLOIST_SHIM_MODE="$mode" \
 	SOLOIST_SHIM_LOG=1 \
 	"$shim/marker_client" 6 >"$log" 2>&1
 	wait "$reader"
 	exec 9>&-
 
-	python3 - "$times" "$mode" <<'PY'
+	python3 - "$times" <<'PY'
 import sys
 events = [float(line) for line in open(sys.argv[1]) if line.strip()]
 if len(events) < 20:
-    raise SystemExit(f"{sys.argv[2]} produced too few output events: {len(events)}")
+    raise SystemExit(f"S32LE produced too few output events: {len(events)}")
 gaps = [b - a for a, b in zip(events, events[1:])]
 maximum = max(gaps, default=0)
 if maximum > 0.080:
-    raise SystemExit(f"{sys.argv[2]} wall-clock PCM gap was {maximum * 1000:.1f} ms")
-print(f"{sys.argv[2]} wall-clock output max gap={maximum * 1000:.1f} ms")
+    raise SystemExit(f"S32LE wall-clock PCM gap was {maximum * 1000:.1f} ms")
+print(f"S32LE wall-clock output max gap={maximum * 1000:.1f} ms")
 PY
-	grep -q "loaded build 2026-11-18.6-frameunits: mode=$mode" "$log"
-	grep -q "runtime summary: mode=$mode" "$log"
+	grep -q "loaded build 2026-11-18.7-s32le: mode=live-ring-s32le" "$log"
+	grep -q "runtime summary: mode=live-ring-s32le" "$log"
 	if grep -Eq 'live-edge drop|stream underflow' "$log"; then
 		cat "$log" >&2
-		echo "$mode cadence run dropped or underflowed audio" >&2
+		echo "S32LE cadence run dropped or underflowed audio" >&2
 		exit 1
 	fi
 }
 
-run_mode live-ring
-run_mode compat
-live_contract="$(grep 'connect_playback:' "$tmp/live-ring.log" | sed -e 's/mode=live-ring/mode=MODE/' -e 's#out=[^ ]*#out=OUTPUT#')"
-compat_contract="$(grep 'connect_playback:' "$tmp/compat.log" | sed -e 's/mode=compat/mode=MODE/' -e 's#out=[^ ]*#out=OUTPUT#')"
-[ "$live_contract" = "$compat_contract" ] || {
-	echo "live-ring changed the Pulse producer contract:" >&2
-	printf '%s\n%s\n' "$live_contract" "$compat_contract" >&2
-	exit 1
-}
-echo "live-ring and compatibility modes maintained continuous wall-clock PCM cadence"
+run_s32
+echo "live-ring S32LE maintained continuous wall-clock PCM cadence"

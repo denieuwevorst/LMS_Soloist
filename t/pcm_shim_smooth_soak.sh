@@ -22,10 +22,10 @@ exec 9<>"$fifo"
 python3 - "$fifo" "$raw" <<'PY' &
 import os, sys, time
 fifo, output = sys.argv[1:]
-target = 5 * 44100 * 4
+target = 5 * 44100 * 8
 fd = os.open(fifo, os.O_RDONLY | os.O_NONBLOCK)
 data = bytearray()
-next_pause = 44100 * 4 // 4
+next_pause = 44100 * 8 // 4
 deadline = time.monotonic() + 8
 while len(data) < target and time.monotonic() < deadline:
     try:
@@ -39,7 +39,7 @@ while len(data) < target and time.monotonic() < deadline:
     data.extend(chunk)
     if len(data) >= next_pause:
         time.sleep(0.120)
-        next_pause += 44100 * 4 // 4
+        next_pause += 44100 * 8 // 4
 os.close(fd)
 with open(output, "wb") as handle:
     handle.write(data)
@@ -50,7 +50,6 @@ reader_pid=$!
 
 LD_LIBRARY_PATH="$shim" \
 SOLOIST_SHIM_OUT="$fifo" \
-SOLOIST_SHIM_FORMAT=s16 \
 SOLOIST_SHIM_RATE=44100 \
 SOLOIST_SHIM_RING_MS=200 \
 SOLOIST_SHIM_LOG=1 \
@@ -62,7 +61,7 @@ client_pid=""
 wait "$reader_pid"
 reader_pid=""
 
-[ "$(wc -c < "$raw")" -eq 882000 ]
+[ "$(wc -c < "$raw")" -eq 1764000 ]
 if grep -Eq 'live-edge drop|stream underflow' "$tmp/client.log"; then
 	cat "$tmp/client.log" >&2
 	echo "steady-state soak dropped or underflowed audio" >&2
@@ -73,11 +72,13 @@ grep -q 'output pressure: eagain=' "$tmp/client.log"
 python3 - "$raw" "$tmp/client.log" <<'PY'
 import re, struct, sys
 raw = open(sys.argv[1], "rb").read()
-frames = struct.iter_unpack("<hh", raw)
+frames = struct.iter_unpack("<ii", raw)
 last = -1
 for left, right in frames:
     if left != right:
         raise SystemExit("stereo frame alignment was lost")
+    left >>= 16
+    right >>= 16
     if left < last:
         raise SystemExit(f"PCM marker moved backward: {left} < {last}")
     if left > last + 1 and last >= 0:

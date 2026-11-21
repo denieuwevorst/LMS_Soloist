@@ -43,7 +43,27 @@ sub bufferThreshold {
 
 sub scanUrl {
 	my ( $class, $url, $args ) = @_;
-	$args->{cb}->( $args->{song}->currentTrack );
+	my $track = $args->{song}->currentTrack;
+	if ( my $stream = Plugins::SpotifySoloist::Plugin::directStreamInfoForUrl($url) ) {
+		Plugins::SpotifySoloist::StreamSemantics::applySongFormat(
+			$args->{song},
+			$stream->{format},
+		);
+	}
+	$args->{cb}->($track);
+}
+
+sub formatOverride {
+	my ( $class, $song ) = @_;
+	my $track = $song && $song->currentTrack;
+	my $url = $track && $track->can('url') ? $track->url : undef;
+	my $stream = Plugins::SpotifySoloist::Plugin::directStreamInfoForUrl($url);
+	return unless $stream;
+	Plugins::SpotifySoloist::StreamSemantics::applySongFormat(
+		$song,
+		$stream->{format},
+	);
+	return $stream->{format}->{contentType};
 }
 
 sub new {
@@ -77,7 +97,7 @@ sub new {
 	${*$self}{client} = $args->{client};
 	${*$self}{contentType} = $format->{contentType};
 	${*$self}{formatKey} = $format->{key};
-	${*$self}{bitrate} = $format->{bitrateBps};
+	${*$self}{bitrate} = $format->{sourceBitrateBps} || 2_822_400;
 	${*$self}{streamGeneration} = $stream->{streamGeneration} || 0;
 	${*$self}{transition} =
 		Plugins::SpotifySoloist::Plugin::claimDirectStreamTransitionForUrl(
@@ -85,7 +105,7 @@ sub new {
 			${*$self}{streamGeneration},
 		);
 	${*$self}{firstAudioReadLogged} = 0;
-	${*$self}{prefix} = $format->{key} eq 'pcm' ? _wavHeader() : '';
+	${*$self}{prefix} = _wavHeader();
 	${*$self}{lastAudioReadAt} = undef;
 	${*$self}{staleDrainUntil} = undef;
 	${*$self}{staleBytesDiscarded} = 0;
@@ -216,7 +236,6 @@ sub sysread {
 
 sub _logReadSummary {
 	my ( $self, $now ) = @_;
-	return unless ( ${*$self}{formatKey} || '' ) eq 'pcm';
 	return if $now - ( ${*$self}{readSummaryAt} || $now ) < 5;
 	$log->info(
 		sprintf(
@@ -240,9 +259,7 @@ sub close {
 	my $url = ${*$self}{url} || 'unknown Soloist stream';
 	$log->info(
 		"closing direct Soloist protocol handler for '$url'"
-		. ( ( ${*$self}{formatKey} || '' ) eq 'pcm'
-			? '; the PCM bridge guard remains open during handler replacement'
-			: '' )
+		. '; the S32LE bridge guard remains open during handler replacement'
 	);
 	return $self->SUPER::close();
 }
@@ -270,13 +287,13 @@ sub getMetadataFor {
 
 sub _wavHeader {
 	my $dataSize = 0xffffffff;
-	my $byteRate = 44100 * 2 * 16 / 8;
-	my $blockAlign = 2 * 16 / 8;
+	my $byteRate = 44100 * 2 * 32 / 8;
+	my $blockAlign = 2 * 32 / 8;
 
 	return 'RIFF'
 		. pack( 'V', ( 36 + $dataSize ) & 0xffffffff )
 		. 'WAVEfmt '
-		. pack( 'VvvVVvv', 16, 1, 2, 44100, $byteRate, $blockAlign, 16 )
+		. pack( 'VvvVVvv', 16, 1, 2, 44100, $byteRate, $blockAlign, 32 )
 		. 'data'
 		. pack( 'V', $dataSize );
 }

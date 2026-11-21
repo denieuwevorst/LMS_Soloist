@@ -10,7 +10,7 @@ The Pulse/PipeWire backend remains available as an alternative.
 
 The direct PCM path has been validated on DietPi/LMS with Soloist
 1.3.8.36: Soloist loads the shim, writes PCM to the per-player FIFO, and LMS
-plays the WAV stream without ffmpeg.
+plays the S32LE WAV source through LMS conversion rules.
 
 Validated builds are bundled at `Bin/X86_64`, `Bin/ARMv7`, and
 `Bin/ARMv8_Arch64`. Build from this directory when targeting another
@@ -47,12 +47,9 @@ loader's `--preload` option; native-runtime starts use the equivalent exact
 backend. The bridge also sets:
 
 - `SOLOIST_SHIM_OUT` - FIFO path or Unix socket path
-- `SOLOIST_SHIM_FORMAT` - `s16` for the plugin integration
 - `SOLOIST_SHIM_RATE` - `44100` for the plugin integration
 - `SOLOIST_SHIM_LOG` - diagnostic level (`0`, `1`, or `2`)
 - `SOLOIST_SHIM_RING_MS` - bounded live-edge ring depth; the bridge uses `200`
-- `SOLOIST_SHIM_MODE` - `live-ring` (default) or `compat`; compatibility mode
-  restores the pre-ring Pulse buffer growth and sink-wait behavior for A/B tests
 - `SOLOIST_SHIM_CONTROL` - optional atomic generation command file
 - `SOLOIST_SHIM_ACK` - optional generation acknowledgement file
 - `SOLOIST_SHIM_MAX_TLENGTH_MS` - optional playback buffer clamp; the bridge
@@ -67,15 +64,14 @@ for each Soloist process.
 Soloist
   -> this libpulse.so.0
   -> bounded live-edge ring (200 ms by default)
-  -> player_<slot>/audio.fifo for PCM/WAV
-     or player_<slot>/pcm-shim.fifo -> ffmpeg for MP3/FLAC
   -> player_<slot>/audio.fifo
-  -> soloist:// protocol handler
+  -> soloist:// protocol handler (streaming S32LE WAV)
+  -> LMS custom conversion rule (PCM/FLAC/MP3)
   -> LMS/player
 ```
 
-For PCM/WAV, the protocol handler adds a streaming WAV header when LMS opens
-the FIFO; it does not encode or alter the PCM payload.
+The protocol handler adds a streaming 44.1 kHz stereo 32-bit WAV header when
+LMS opens the FIFO; it does not encode or alter the PCM payload.
 
 `pa_stream_write` only copies complete frames into the bounded ring. The writer
 thread transmits available frames immediately with nonblocking FIFO writes.
@@ -102,7 +98,7 @@ and inspect the player's `bridge.log`. The bridge maps this setting to
 A successfully loaded build logs its configured ring depth and control path:
 
 ```text
-[soloist-shim] loaded build 2026-11-18.6-frameunits: mode=live-ring ... ring_ms=200 ...
+[soloist-shim] loaded build 2026-11-18.7-s32le: mode=live-ring-s32le ... ring_ms=200 ...
 ```
 
 Level `2` also logs Pulse API activity. A constructor/load marker without
@@ -139,11 +135,11 @@ Soloist currently requires compatibility exports including:
 - This is a focused compatibility implementation, not a complete PulseAudio
   client library.
 - A future Soloist release may require additional Pulse symbols or semantics.
-- The plugin integration currently assumes stereo, 44.1 kHz, signed 16-bit
+- The plugin integration currently assumes stereo, 44.1 kHz, signed 32-bit
   little-endian PCM.
 - Bundled binaries support x86_64, ARMv7 hard-float, and ARMv8/AArch64.
   Build and deploy the library separately on every other target architecture.
-- MP3 and FLAC bridge output still require ffmpeg. PCM/WAV does not.
+- LMS conversion to PCM, MP3, or FLAC requires an available ffmpeg binary.
 
 ## Clean
 

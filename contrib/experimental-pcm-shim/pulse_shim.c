@@ -8,11 +8,9 @@
  *
  * Environment:
  *   SOLOIST_SHIM_OUT     path to FIFO / unix socket / file   (/tmp/soloist-pcm.fifo)
- *   SOLOIST_SHIM_FORMAT  s16 | s24 | s32 (interleaved stereo LE)   (s24, packed)
  *   SOLOIST_SHIM_RATE    output rate in Hz, 0 = pass through       (44100)
  *   SOLOIST_SHIM_LOG     0 quiet, 1 info, 2 trace API calls         (0)
  *   SOLOIST_SHIM_RING_MS bounded live-edge ring depth               (200)
- *   SOLOIST_SHIM_MODE    live-ring | compat                    (live-ring)
  *   SOLOIST_SHIM_CONTROL generation/flush command file              (unset)
  *   SOLOIST_SHIM_ACK     generation acknowledgement file            (unset)
  *   SOLOIST_SHIM_MAX_TLENGTH_MS  clamp requested tlength/prebuf/minreq
@@ -49,7 +47,7 @@
 
 static struct {
     char out[512], control[512], ack[512];
-    int bytes, rate, log, max_tlength_ms, ring_ms, compat;
+    int rate, log, max_tlength_ms, ring_ms;
     uint64_t counter_base_frames;
 } cfg;
 static pthread_once_t cfg_once = PTHREAD_ONCE_INIT;
@@ -59,11 +57,6 @@ static void cfg_init(void)
     const char *e;
     snprintf(cfg.out, sizeof cfg.out, "%s",
              (e = getenv("SOLOIST_SHIM_OUT")) && *e ? e : "/tmp/soloist-pcm.fifo");
-    cfg.bytes = 3;
-    if ((e = getenv("SOLOIST_SHIM_FORMAT"))) {
-        if (!strcmp(e, "s16")) cfg.bytes = 2;
-        else if (!strcmp(e, "s32")) cfg.bytes = 4;
-    }
     cfg.rate = 44100;
     if ((e = getenv("SOLOIST_SHIM_RATE"))) cfg.rate = atoi(e);
     cfg.log = (e = getenv("SOLOIST_SHIM_LOG")) ? atoi(e) : 0;
@@ -75,8 +68,6 @@ static void cfg_init(void)
              (e = getenv("SOLOIST_SHIM_CONTROL")) && *e ? e : "");
     snprintf(cfg.ack, sizeof cfg.ack, "%s",
              (e = getenv("SOLOIST_SHIM_ACK")) && *e ? e : "");
-    cfg.compat = (e = getenv("SOLOIST_SHIM_MODE")) &&
-                 (!strcmp(e, "compat") || !strcmp(e, "legacy"));
     cfg.counter_base_frames = (e = getenv("SOLOIST_SHIM_TEST_COUNTER_BASE_FRAMES"))
         ? strtoull(e, NULL, 10) : 0;
 }
@@ -88,9 +79,8 @@ __attribute__((constructor))
 static void shim_loaded(void)
 {
     CFG();
-    fprintf(stderr, "[soloist-shim] loaded build 2026-11-18.6-frameunits: mode=%s out=%s format=%dB rate=%d ring_ms=%d max_tlength_ms=%d control=%s\n",
-        cfg.compat ? "compat" : "live-ring",
-        cfg.out, cfg.bytes, cfg.rate, cfg.ring_ms, cfg.max_tlength_ms,
+    fprintf(stderr, "[soloist-shim] loaded build 2026-11-18.7-s32le: mode=live-ring-s32le out=%s format=4B rate=%d ring_ms=%d max_tlength_ms=%d control=%s\n",
+        cfg.out, cfg.rate, cfg.ring_ms, cfg.max_tlength_ms,
         cfg.control[0] ? cfg.control : "off");
 }
 
@@ -152,7 +142,7 @@ static int out_open_locked(void)
         fd = open(cfg.out, O_WRONLY | O_NONBLOCK | O_CLOEXEC);
         if (fd < 0) return -1;
         /*
-         * Keep the kernel queue below 100 ms at the plugin's 44.1 kHz s16
+         * Keep the kernel queue below 100 ms at the plugin's 44.1 kHz S32LE
          * stereo format. The userspace ring owns the deliberate buffering;
          * a large FIFO would preserve stale audio that cannot be dropped
          * from the head by the writer.
@@ -162,7 +152,7 @@ static int out_open_locked(void)
         if (pipe_size > 0) {
             int output_rate = cfg.rate > 0 ? cfg.rate : 44100;
             LOG(1, "FIFO kernel queue: %d bytes (%.1f ms at configured output)",
-                pipe_size, 1000.0 * pipe_size / (output_rate * cfg.bytes * 2));
+                pipe_size, 1000.0 * pipe_size / (output_rate * 8));
         }
         out.is_sock = 0;
     } else {
@@ -211,7 +201,6 @@ static void out_write(pa_stream *s, const unsigned char *b, size_t len,
     size_t off = 0;
     uint64_t wait_started = 0;
     uint64_t wait_limit_ns = (uint64_t) cfg.ring_ms * 1000000ull;
-    if (cfg.compat) wait_limit_ns = 200000000ull;
 
     pthread_mutex_lock(&out.lk);
     if (out_open_locked() < 0) {
@@ -1001,15 +990,15 @@ pa_stream *pa_stream_new(pa_context *c, const char *name, const pa_sample_spec *
 }
 
 /* Application-facing Pulse buffer (caller holds s->lk). */
-#define COMPAT_RING_MAX (8u << 20)
+#define LIVE_RING_MAX (8u << 20)
 static size_t ring_put(pa_stream *s, const unsigned char *d, size_t n)
 {
     size_t fs = pa_frame_size(&s->ss), dropped = 0;
     n -= n % fs;
     if (s->fill + n > s->cap) {
         size_t want = s->cap ? s->cap : 65536;
-        while (want < s->fill + n && want < COMPAT_RING_MAX) want *= 2;
-        if (want > COMPAT_RING_MAX) want = COMPAT_RING_MAX;
+        while (want < s->fill + n && want < LIVE_RING_MAX) want *= 2;
+        if (want > LIVE_RING_MAX) want = LIVE_RING_MAX;
         if (want > s->cap) {
             unsigned char *next = malloc(want);
             size_t first = s->cap - s->rd < s->fill ? s->cap - s->rd : s->fill;
@@ -1022,17 +1011,13 @@ static size_t ring_put(pa_stream *s, const unsigned char *d, size_t n)
             s->cap = want;
             s->rd = 0;
         }
-        if (cfg.compat && n > s->cap - s->fill) {
-            dropped = n - (s->cap - s->fill);
-            n = s->cap - s->fill;
-        }
     }
     if (n > s->cap) {
         dropped += n - s->cap;
         d += n - s->cap;
         n = s->cap;
     }
-    if (!cfg.compat && s->fill + n > s->cap) {
+    if (s->fill + n > s->cap) {
         size_t remove = s->fill + n - s->cap;
         remove += (fs - remove % fs) % fs;
         if (remove > s->fill) remove = s->fill;
@@ -1075,7 +1060,7 @@ static void ring_trim_stale_locked(pa_stream *s, uint64_t now)
 {
     uint64_t budget_ns, cutoff, stale_ns;
     size_t fs, remove;
-    if (cfg.compat || !s->fill || !s->queue_start_ns) return;
+    if (!s->fill || !s->queue_start_ns) return;
     budget_ns = (uint64_t) cfg.ring_ms * 1000000ull;
     cutoff = now > budget_ns ? now - budget_ns : 0;
     if (s->queue_start_ns >= cutoff) return;
@@ -1115,7 +1100,7 @@ static int chunk_is_current(pa_stream *s, unsigned long generation,
     pthread_mutex_lock(&s->lk);
     control_check_locked(s);
     current = !s->quit && s->generation == generation &&
-              (cfg.compat || s->overflow_serial == overflow_serial);
+              s->overflow_serial == overflow_serial;
     pthread_mutex_unlock(&s->lk);
     return current;
 }
@@ -1267,25 +1252,13 @@ static inline int32_t dec_sample(pa_sample_format_t f, const unsigned char *p)
         return 0;
     }
 }
-static inline void enc_sample(int bytes, double dv, unsigned char *o)
+static inline void enc_sample(double dv, unsigned char *o)
 {
     int64_t v = (int64_t) llround(dv);
-    if (bytes == 4) {
-        if (v > INT32_MAX) v = INT32_MAX;
-        if (v < INT32_MIN) v = INT32_MIN;
-        o[0] = (unsigned char) v; o[1] = (unsigned char) (v >> 8);
-        o[2] = (unsigned char) (v >> 16); o[3] = (unsigned char) (v >> 24);
-    } else if (bytes == 3) {
-        int64_t t = (v + 0x80) >> 8;
-        if (t > 0x7FFFFF) t = 0x7FFFFF;
-        if (t < -0x800000) t = -0x800000;
-        o[0] = (unsigned char) t; o[1] = (unsigned char) (t >> 8); o[2] = (unsigned char) (t >> 16);
-    } else {
-        int64_t t = (v + 0x8000) >> 16;
-        if (t > 32767) t = 32767;
-        if (t < -32768) t = -32768;
-        o[0] = (unsigned char) t; o[1] = (unsigned char) (t >> 8);
-    }
+    if (v > INT32_MAX) v = INT32_MAX;
+    if (v < INT32_MIN) v = INT32_MIN;
+    o[0] = (unsigned char) v; o[1] = (unsigned char) (v >> 8);
+    o[2] = (unsigned char) (v >> 16); o[3] = (unsigned char) (v >> 24);
 }
 
 /* Decode n frames to interleaved int32 stereo, resample, encode. Returns bytes written to o. */
@@ -1293,7 +1266,7 @@ static size_t convert_chunk(pa_stream *s, const unsigned char *in, size_t n, int
                             unsigned char *o, int rout)
 {
     size_t ssz = pa_sample_size(&s->ss), fs = pa_frame_size(&s->ss), m = 0;
-    int ch = s->ss.channels, ob = cfg.bytes;
+    int ch = s->ss.channels;
 
     for (size_t i = 0; i < n; i++) {
         const unsigned char *f = in + i * fs;
@@ -1303,8 +1276,8 @@ static size_t convert_chunk(pa_stream *s, const unsigned char *in, size_t n, int
         dec[i * 2 + 1] = r;
     }
     if ((unsigned) rout == s->ss.rate) {
-        for (size_t i = 0; i < n * 2; i++) enc_sample(ob, (double) dec[i], o + i * ob);
-        return n * 2 * ob;
+        for (size_t i = 0; i < n * 2; i++) enc_sample((double) dec[i], o + i * 4);
+        return n * 8;
     }
     {
         double step = (double) s->ss.rate / (double) rout, p = s->rs_pos;
@@ -1314,7 +1287,7 @@ static size_t convert_chunk(pa_stream *s, const unsigned char *in, size_t n, int
             for (int c = 0; c < 2; c++) {
                 double a = i < 0 ? (double) s->rs_last[c] : (double) dec[i * 2 + c];
                 double b = (double) dec[(i + 1) * 2 + c];
-                enc_sample(ob, a + (b - a) * fr, o + (m * 2 + c) * ob);
+                enc_sample(a + (b - a) * fr, o + (m * 2 + c) * 4);
             }
             m++;
             p += step;
@@ -1324,7 +1297,7 @@ static size_t convert_chunk(pa_stream *s, const unsigned char *in, size_t n, int
             s->rs_last[0] = dec[(n - 1) * 2];
             s->rs_last[1] = dec[(n - 1) * 2 + 1];
         }
-        return m * 2 * ob;
+        return m * 8;
     }
 }
 
@@ -1433,7 +1406,7 @@ static void *writer_main(void *arg)
                 ? (t - s->queue_start_ns) / 1000000.0 : 0.0;
             LOG(1, "runtime summary: mode=%s queued=%.1f ms oldest_age=%.1f ms writes=%llu callbacks=%llu "
                 "underflows=%llu drops=%.1f ms writer_gap_max=%.1f ms requested=%.1f ms",
-                cfg.compat ? "compat" : "live-ring",
+                "live-ring-s32le",
                 pa_bytes_to_usec(s->fill, &s->ss) / 1000.0,
                 oldest_age_ms,
                 (unsigned long long) s->write_calls,
@@ -1473,7 +1446,7 @@ static void *writer_main(void *arg)
             current = chunk_generation == s->generation;
             pthread_mutex_unlock(&s->lk);
             if (bytes && current) {
-                out_write(s, obuf, bytes, (size_t) cfg.bytes * 2,
+                out_write(s, obuf, bytes, 8,
                           chunk_generation, chunk_overflow_serial);
             }
         }
@@ -1532,7 +1505,7 @@ int pa_stream_connect_playback(pa_stream *s, const char *dev, const pa_buffer_at
     }
     if (s->attr.maxlength != (uint32_t) -1 && s->attr.maxlength < s->attr.tlength)
         s->attr.maxlength = s->attr.tlength;
-    s->prebuf = cfg.compat ? s->attr.prebuf : fs;
+    s->prebuf = fs;
     s->minreq = s->attr.minreq ? s->attr.minreq : fs;
     s->requested = s->attr.tlength;
     s->consumed_frames = s->written_frames = cfg.counter_base_frames;
@@ -1542,11 +1515,10 @@ int pa_stream_connect_playback(pa_stream *s, const char *dev, const pa_buffer_at
     s->thread_started = pthread_create(&s->th, NULL, writer_main, s) == 0;
     if (!s->thread_started) return -1;
 
-    LOG(1, "connect_playback: mode=%s tlength=%u minreq=%u prebuf=%u initial_ring=%zu bytes live_edge_ms=%d max_tlength_ms=%d out=%s fmt=%dB rate=%d",
-        cfg.compat ? "compat" : "live-ring",
+    LOG(1, "connect_playback: mode=live-ring-s32le tlength=%u minreq=%u prebuf=%u initial_ring=%zu bytes live_edge_ms=%d max_tlength_ms=%d out=%s fmt=4B rate=%d",
         s->attr.tlength, s->attr.minreq, s->attr.prebuf, s->cap,
         cfg.ring_ms,
-        cfg.max_tlength_ms, cfg.out, cfg.bytes, cfg.rate);
+        cfg.max_tlength_ms, cfg.out, cfg.rate);
     stream_post_state(s, PA_STREAM_CREATING);
     stream_post_state(s, PA_STREAM_READY);
     pthread_mutex_lock(&s->lk);

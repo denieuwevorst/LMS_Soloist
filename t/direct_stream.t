@@ -53,6 +53,8 @@ require './ProtocolHandler.pm';
 	sub samplesize { $_[0]->{samplesize} = $_[1] if @_ > 1; $_[0]->{samplesize} }
 	sub channels { $_[0]->{channels} = $_[1] if @_ > 1; $_[0]->{channels} }
 	sub blockalign { $_[0]->{blockalign} = $_[1] if @_ > 1; $_[0]->{blockalign} }
+	sub url { $_[0]->{url} = $_[1] if @_ > 1; $_[0]->{url} }
+	sub currentTrack { $_[0] }
 }
 
 my $dir = tempdir( CLEANUP => 1 );
@@ -65,15 +67,18 @@ $Plugins::SpotifySoloist::Plugin::stream = {
 	fifoPath => $fifo,
 	format   => {
 		key           => 'pcm',
-		contentType   => 'wav',
+		contentType   => 's32p',
 		displayFormat => 'WAV',
-		bitrateBps    => 1_411_200,
-		bitrateLabel  => '1411.2 kbps',
+		bitrateBps    => 2_822_400,
+		sourceBitrateBps => 2_822_400,
+		bitrateLabel  => '2822.4 kbps',
 		sampleRate    => 44_100,
-		sampleSize    => 16,
+		sampleSize    => 32,
+		sourceSampleSize => 32,
 		channels      => 2,
-		blockAlign    => 4,
-		bufferKb      => 35,
+		blockAlign    => 8,
+		sourceBlockAlign => 8,
+		bufferKb      => 70,
 	},
 };
 
@@ -83,12 +88,12 @@ my $handler = Plugins::SpotifySoloist::ProtocolHandler->new({
 	song => $song,
 });
 ok( $handler, 'opens the direct FIFO stream' );
-is( $handler->contentType, 'wav', 'declares the LMS WAV content type' );
-is( $handler->getStreamBitrate(2_000_000), 1_411_200, 'declares PCM bitrate' );
+is( $handler->contentType, 's32p', 'declares the Soloist S32-to-PCM source type' );
+is( $handler->getStreamBitrate(3_000_000), 2_822_400, 'declares S32LE source bitrate' );
 is( $song->samplerate, 44100, 'sets PCM sample rate' );
-is( $song->samplesize, 16, 'sets PCM sample size' );
+is( $song->samplesize, 32, 'sets PCM sample size' );
 is( $song->channels, 2, 'sets PCM channels' );
-is( $song->blockalign, 4, 'sets PCM block alignment' );
+is( $song->blockalign, 8, 'sets PCM block alignment' );
 
 my $writer;
 sysopen( $writer, $fifo, O_WRONLY | O_NONBLOCK ) or die "open FIFO writer: $!";
@@ -99,6 +104,8 @@ is( $handler->sysread( $buffer, 44 ), 44, 'prepends a complete WAV header' );
 is( substr( $buffer, 0, 4 ), 'RIFF', 'WAV header has RIFF marker' );
 is( substr( $buffer, 8, 8 ), 'WAVEfmt ', 'WAV header has format marker' );
 is( substr( $buffer, 36, 4 ), 'data', 'WAV header has data marker' );
+is( unpack( 'v', substr( $buffer, 32, 2 ) ), 8, 'WAV header declares 8-byte block alignment' );
+is( unpack( 'v', substr( $buffer, 34, 2 ) ), 32, 'WAV header declares 32-bit samples' );
 
 $buffer = '';
 is( $handler->sysread( $buffer, 32 ), 9, 'reads FIFO audio after the header' );
@@ -161,12 +168,16 @@ close $generationHandler;
 
 $Plugins::SpotifySoloist::Plugin::stream->{format} = {
 	key           => 'flac',
-	contentType   => 'flc',
+	contentType   => 's32f',
 	displayFormat => 'FLAC',
 	bitrateLabel  => 'VBR (live stream)',
+	sourceBitrateBps => 2_822_400,
 	sampleRate    => 44_100,
-	sampleSize    => 16,
+	sampleSize    => 32,
+	sourceSampleSize => 32,
 	channels      => 2,
+	blockAlign    => 8,
+	sourceBlockAlign => 8,
 	bufferKb      => 24,
 };
 my $flacSong = TestSong->new;
@@ -175,16 +186,25 @@ my $flacHandler = Plugins::SpotifySoloist::ProtocolHandler->new({
 	song => $flacSong,
 });
 ok( $flacHandler, 'opens a variable-bitrate FLAC direct stream' );
-is( $flacHandler->contentType, 'flc', 'declares the LMS FLAC content type' );
+is( $flacHandler->contentType, 's32f', 'declares the Soloist S32-to-FLAC source type' );
 is(
 	$flacHandler->getStreamBitrate(1_500_000),
 	1_500_000,
-	'leaves FLAC stream bitrate unknown instead of reporting a fixed estimate',
+	'caps the S32LE source bitrate at the LMS conversion rate limit',
 );
-is( $flacSong->bitrate, 0, 'does not set a fabricated numeric FLAC bitrate' );
-is( $flacSong->samplerate, 44_100, 'sets the final FLAC sample rate' );
-is( $flacSong->samplesize, 16, 'sets the final FLAC sample size' );
-is( $flacSong->channels, 2, 'sets the final FLAC channel count' );
+is( $flacSong->bitrate, 2_822_400, 'sets the truthful S32LE source bitrate' );
+is( $flacSong->samplerate, 44_100, 'sets the S32LE source sample rate' );
+is( $flacSong->samplesize, 32, 'sets the S32LE source sample size' );
+is( $flacSong->channels, 2, 'sets the S32LE source channel count' );
 close $flacHandler;
+
+my $overrideSong = TestSong->new;
+$overrideSong->url('soloist://player-0/soloist.flac');
+is(
+	Plugins::SpotifySoloist::ProtocolHandler->formatOverride($overrideSong),
+	's32f',
+	'overrides the source type before LMS selects the conversion rule',
+);
+is( $overrideSong->samplesize, 32, 'format override publishes S32 source properties before conversion selection' );
 
 done_testing;

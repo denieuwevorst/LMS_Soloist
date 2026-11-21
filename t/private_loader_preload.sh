@@ -15,7 +15,6 @@ exec 9<>"$tmp/audio.fifo"
 make -C "$shim" clean marker_client >/dev/null
 
 SOLOIST_SHIM_OUT="$tmp/audio.fifo" \
-SOLOIST_SHIM_FORMAT=s16 \
 SOLOIST_SHIM_RATE=44100 \
 SOLOIST_SHIM_LOG=1 \
 "$loader" \
@@ -25,13 +24,13 @@ SOLOIST_SHIM_LOG=1 \
 client_pid=$!
 
 for _try in $(seq 1 100); do
-	grep -q 'loaded build 2026-11-18.6-frameunits' "$tmp/client.log" 2>/dev/null &&
+	grep -q 'loaded build 2026-11-18.7-s32le' "$tmp/client.log" 2>/dev/null &&
 		grep -F "$(readlink -f "$shim/libpulse.so.0")" "/proc/$client_pid/maps" >/dev/null 2>&1 &&
 		break
 	sleep 0.01
 done
 
-grep -q 'loaded build 2026-11-18.6-frameunits' "$tmp/client.log"
+grep -q 'loaded build 2026-11-18.7-s32le' "$tmp/client.log"
 grep -F "$(readlink -f "$shim/libpulse.so.0")" "/proc/$client_pid/maps" >/dev/null
 kill -0 "$client_pid"
 kill "$client_pid"

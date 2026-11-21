@@ -38,12 +38,6 @@ sub normalizationForPlayer {
 	return $values->{$playerId} ? 1 : 0;
 }
 
-sub liveRingForPlayer {
-	my ( $values, $playerId ) = @_;
-	return 1 unless ref $values eq 'HASH' && exists $values->{$playerId};
-	return $values->{$playerId} ? 1 : 0;
-}
-
 sub _writePrefs {
 	my ( $path, $value ) = @_;
 	my $content = '';

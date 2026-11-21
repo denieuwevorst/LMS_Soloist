@@ -23,7 +23,7 @@ sub page {
 sub prefs {
 	return ( $prefs, qw(
 		soloistBin managedSoloistUpdates managedSoloistArch
-		ffmpegBin audioBackend pipewireSink pcmShimDir wsPortBase
+		audioBackend pipewireSink pcmShimDir wsPortBase
 		format bitrate initialVolume deviceNameSuffix apiKey autostart
 		idleDisconnectSeconds
 	) );
@@ -31,6 +31,9 @@ sub prefs {
 
 sub handler {
 	my ( $class, $client, $params, $callback, @args ) = @_;
+	my $savedBitrate = $prefs->get('bitrate') || '';
+	$prefs->set( 'bitrate', '320k' )
+		unless $savedBitrate =~ /^(?:96|128|160|192|256|320)k$/;
 
 	my @players = sort { $a->{name} cmp $b->{name} }
 		map { { id => $_->id, name => $_->name } }
@@ -54,14 +57,12 @@ sub handler {
 		my $newPlayerNormalization = {
 			%{ ref $oldPlayerNormalization eq 'HASH' ? $oldPlayerNormalization : {} }
 		};
-		my $oldPlayerLiveRing = $prefs->get('playerLiveRing') || {};
-		my $newPlayerLiveRing = {
-			%{ ref $oldPlayerLiveRing eq 'HASH' ? $oldPlayerLiveRing : {} }
-		};
 		my $oldGlobalFormat = $prefs->get('format')  || 'mp3';
 		my $newGlobalFormat = $params->{pref_format} || $oldGlobalFormat;
 		my $oldBitrate      = $prefs->get('bitrate') || '320k';
 		my $newBitrate      = $params->{pref_bitrate} || $oldBitrate;
+		$newBitrate = '320k'
+			unless $newBitrate =~ /^(?:96|128|160|192|256|320)k$/;
 		my $oldBackend      = $prefs->get('audioBackend') || 'pcm-shim';
 		my $newBackend      = $params->{pref_audioBackend} || $oldBackend;
 		my $oldPcmShimDir   = $prefs->get('pcmShimDir') || '';
@@ -90,16 +91,8 @@ sub handler {
 				Plugins::SpotifySoloist::Plugin::normalizationForPlayer($id);
 			my $normalizationParam = 'normalization.' . $id;
 			my $newNormalization = $params->{$normalizationParam} ? 1 : 0;
-			my $oldLiveRing =
-				Plugins::SpotifySoloist::Plugin::liveRingForPlayer($id);
-			my $liveRingParam = 'liveRing.' . $id;
-			my $newLiveRing = $newFormat eq 'pcm'
-				? ( $params->{$liveRingParam} ? 1 : 0 )
-				: $oldLiveRing;
-
 			$newSelected->{$id} = 1 if $isOn;
 			$newPlayerNormalization->{$id} = $newNormalization;
-			$newPlayerLiveRing->{$id} = $newLiveRing;
 			if ( exists $params->{$formatParam} ) {
 				if ($newOverride) {
 					$newPlayerFormats->{$id} = $newOverride;
@@ -122,10 +115,6 @@ sub handler {
 					$oldBackend ne $newBackend ||
 					$oldPcmShimDir ne $newPcmShimDir ||
 					$oldNormalization != $newNormalization ||
-					(
-						$newFormat eq 'pcm' &&
-						$oldLiveRing != $newLiveRing
-					) ||
 					( $oldManagedUpdates && !$newManagedUpdates ) ||
 					(
 						$newFormat eq 'mp3' &&
@@ -140,7 +129,6 @@ sub handler {
 		$prefs->set( 'selectedPlayers', $newSelected );
 		$prefs->set( 'playerFormatOverrides', $newPlayerFormats );
 		$prefs->set( 'playerNormalization', $newPlayerNormalization );
-		$prefs->set( 'playerLiveRing', $newPlayerLiveRing );
 		$prefs->set( 'format',  $newGlobalFormat );
 		$prefs->set( 'bitrate', $newBitrate );
 		$prefs->set( 'managedSoloistUpdates', $newManagedUpdates );
@@ -184,8 +172,6 @@ sub handler {
 			Plugins::SpotifySoloist::Plugin::formatForPlayer($id);
 		$player->{normalization} =
 			Plugins::SpotifySoloist::Plugin::normalizationForPlayer($id);
-		$player->{liveRing} =
-			Plugins::SpotifySoloist::Plugin::liveRingForPlayer($id);
 	}
 	$params->{players} = \@players;
 	$params->{soloistBinaryStatus} = Plugins::SpotifySoloist::Plugin::soloistBinaryStatus();

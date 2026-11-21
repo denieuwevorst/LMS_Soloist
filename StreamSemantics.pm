@@ -99,13 +99,13 @@ sub metadataForFormat {
 	my @details;
 	push @details, $format->{bitrateLabel} if $format->{bitrateLabel};
 	if ( $format->{key} eq 'pcm' ) {
-		push @details, '44.1 kHz', '16-bit', 'stereo';
+		push @details, '44.1 kHz', '32-bit', 'stereo';
 	}
 
 	return {
 		type   => 'Spotify Soloist (' . join( ', ', $display, @details ) . ')',
 		format => $display,
-		ct     => $format->{contentType},
+		ct     => $format->{outputContentType} || $format->{contentType},
 		( $format->{bitrateLabel} ? ( bitrate => $format->{bitrateLabel} ) : () ),
 		( $format->{sampleRate} ? ( samplerate => $format->{sampleRate} ) : () ),
 		( $format->{sampleSize} ? ( samplesize => $format->{sampleSize} ) : () ),
@@ -123,19 +123,24 @@ sub applySongFormat {
 
 	for my $target (@targets) {
 		next unless $target;
-		$target->bitrate( $format->{bitrateBps} || 0 )
+		$target->bitrate(
+			$format->{transcodeBitrateBps}
+				|| $format->{sourceBitrateBps}
+				|| $format->{bitrateBps}
+				|| 0
+		)
 			if $target->can('bitrate');
 		$target->samplerate( $format->{sampleRate} || 0 )
 			if $target->can('samplerate');
-		$target->samplesize( $format->{sampleSize} || 0 )
+		$target->samplesize( $format->{sourceSampleSize} || $format->{sampleSize} || 0 )
 			if $target->can('samplesize');
 		$target->channels( $format->{channels} || 0 )
 			if $target->can('channels');
 	}
 
-	$song->blockalign( $format->{blockAlign} || 0 )
+	$song->blockalign( $format->{sourceBlockAlign} || $format->{blockAlign} || 0 )
 		if $song->can('blockalign');
-	$track->block_alignment( $format->{blockAlign} || 0 )
+	$track->block_alignment( $format->{sourceBlockAlign} || $format->{blockAlign} || 0 )
 		if $track && $track->can('block_alignment');
 
 	return metadataForFormat($format);

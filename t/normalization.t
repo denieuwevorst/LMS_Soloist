@@ -57,19 +57,6 @@ is(
 	'missing normalization preferences preserve the enabled default',
 );
 is(
-	Plugins::SpotifySoloist::SoloistPrefs::liveRingForPlayer( undef, 'player-a' ),
-	1,
-	'missing live-ring preferences preserve the enabled experimental default',
-);
-is(
-	Plugins::SpotifySoloist::SoloistPrefs::liveRingForPlayer(
-		{ 'player-a' => 0, 'player-b' => 1 },
-		'player-a',
-	),
-	0,
-	'compatibility mode resolves independently per player',
-);
-is(
 	Plugins::SpotifySoloist::SoloistPrefs::normalizationForPlayer(
 		{ 'player-a' => 0, 'player-b' => 1 },
 		'player-a',

@@ -86,7 +86,6 @@ $prefs->init({
 	soloistBin      => '/usr/local/bin/soloist',
 	managedSoloistUpdates => 0,
 	managedSoloistArch => 'auto',
-	ffmpegBin       => '/usr/bin/ffmpeg',
 	audioBackend    => 'pcm-shim',        # pcm-shim | pulse
 	pipewireSink    => 'soloist_sink',    # base name; each player gets _<slot> appended
 	pcmShimDir      => '',                # optional override; supported bundled architectures are selected automatically
@@ -101,7 +100,6 @@ $prefs->init({
 	selectedPlayers => {},                # { playerID => 1, ... }
 	playerFormatOverrides => {},          # { playerID => mp3|flac|pcm } (missing = global format)
 	playerNormalization => {},            # { playerID => 0|1 } (missing = enabled for compatibility)
-	playerLiveRing => {},                 # { playerID => 0|1 } (missing = live ring enabled)
 	playerSlots     => {},                # { playerID => slot int }, stable across restarts
 });
 
@@ -117,11 +115,18 @@ my $soloistVersionProbeError = '';
 my %pendingBridgeStartRetries;
 my %lastBridgeFailureLog;
 my %lastBridgeFailureAt;
+my %MP3_BITRATES = (
+	'96k'  => 96_000,
+	'128k' => 128_000,
+	'160k' => 160_000,
+	'192k' => 192_000,
+	'256k' => 256_000,
+	'320k' => 320_000,
+);
 my %FORMAT_SPECS = (
 	mp3 => {
 		wireExt       => 'mp3',
 		displayFormat => 'MP3',
-		contentType   => 'mp3',
 		bufferKb      => sub {
 			my ($bitrateBps) = @_;
 			my $threshold = $bitrateBps
@@ -135,14 +140,14 @@ my %FORMAT_SPECS = (
 	flac => {
 		wireExt       => 'flac',
 		displayFormat => 'FLAC',
-		contentType   => 'flc',
+		contentType   => 's32f',
 		bufferKb      => 24,
 	},
 	pcm => {
 		wireExt       => 'wav',
 		displayFormat => 'WAV',
-		contentType   => 'wav',
-		bufferKb      => 35,
+		contentType   => 's32p',
+		bufferKb      => 70,
 	},
 );
 
@@ -161,10 +166,12 @@ sub currentFormatSpec {
 	$format = _normalizedFormatKey( $prefs->get('format') ) || 'mp3' unless defined $format;
 	my $spec = $FORMAT_SPECS{$format} || $FORMAT_SPECS{mp3};
 	my $configuredBitrate = $format eq 'mp3' ? ( $prefs->get('bitrate') || '320k' ) : undef;
-	my $parsedBitrate = $format eq 'mp3'
-		? Plugins::SpotifySoloist::StreamSemantics::parseBitrateBps($configuredBitrate)
-		: undef;
-	my $bitrateBps = $format eq 'pcm' ? 1_411_200
+	my $bitrateValid = $format ne 'mp3' || exists $MP3_BITRATES{$configuredBitrate};
+	my $effectiveBitrate = $format eq 'mp3' && $bitrateValid
+		? $configuredBitrate
+		: '320k';
+	my $parsedBitrate = $format eq 'mp3' ? $MP3_BITRATES{$effectiveBitrate} : undef;
+	my $bitrateBps = $format eq 'pcm' ? 2_822_400
 		: $format eq 'mp3' ? ( $parsedBitrate || 320_000 )
 		: undef;
 	my $bufferKb = ref $spec->{bufferKb} eq 'CODE'
@@ -175,17 +182,27 @@ sub currentFormatSpec {
 		key           => $format,
 		wireExt       => $spec->{wireExt},
 		displayFormat => $spec->{displayFormat},
-		contentType   => $spec->{contentType},
+		contentType   => $format eq 'mp3'
+			? 's32m' . int( $parsedBitrate / 1000 )
+			: $spec->{contentType},
 		bufferKb      => $bufferKb,
 		sampleRate    => 44_100,
 		channels      => 2,
 		bitrateBps    => $bitrateBps,
+		sourceBitrateBps => 2_822_400,
+		transcodeBitrateBps => $format eq 'mp3' ? $bitrateBps : 2_822_400,
 		bitrateLabel  => $format eq 'flac' ? 'VBR (live stream)'
 			: Plugins::SpotifySoloist::StreamSemantics::bitrateLabel($bitrateBps),
-		bitrateValid  => $format ne 'mp3' || defined $parsedBitrate,
+		bitrateValid  => $bitrateValid,
 		( defined $configuredBitrate ? ( configuredBitrate => $configuredBitrate ) : () ),
-		( $format ne 'mp3' ? ( sampleSize => 16 ) : () ),
-		( $format eq 'pcm' ? ( blockAlign => 4 ) : () ),
+		sourceSampleSize => 32,
+		sourceBlockAlign => 8,
+		( $format ne 'mp3' ? ( sampleSize => 32 ) : () ),
+		( $format eq 'pcm' ? ( blockAlign => 8 ) : () ),
+		sourceContentType => $spec->{contentType},
+		outputContentType => $format eq 'mp3' ? 'mp3'
+			: $format eq 'flac' ? 'flc'
+			: 'pcm',
 	};
 }
 
@@ -200,14 +217,6 @@ sub normalizationForPlayer {
 	my ($playerId) = @_;
 	return Plugins::SpotifySoloist::SoloistPrefs::normalizationForPlayer(
 		$prefs->get('playerNormalization'),
-		$playerId,
-	);
-}
-
-sub liveRingForPlayer {
-	my ($playerId) = @_;
-	return Plugins::SpotifySoloist::SoloistPrefs::liveRingForPlayer(
-		$prefs->get('playerLiveRing'),
 		$playerId,
 	);
 }
@@ -954,7 +963,6 @@ sub _configFor {
 		cacheDir   => catdir( $baseCacheDir, "player_$slot" ),
 		fifoPath   => catfile( $baseCacheDir, "player_$slot", 'audio.fifo' ),
 		pcmShimDir => $prefs->get('pcmShimDir') || bundledPcmShimDir(),
-		pcmShimFifo => catfile( $baseCacheDir, "player_$slot", 'pcm-shim.fifo' ),
 		pcmShimControl => catfile( $baseCacheDir, "player_$slot", 'pcm-shim.control' ),
 		pcmShimAck => catfile( $baseCacheDir, "player_$slot", 'pcm-shim.ack' ),
 		runtimeDir => $runtime ? $runtime->{dir} : '',
@@ -968,7 +976,6 @@ sub _configFor {
 			)
 		],
 		normalization => normalizationForPlayer($playerId),
-		liveRing => liveRingForPlayer($playerId),
 		deviceName => $playerName . $prefs->get('deviceNameSuffix'),
 	};
 }
@@ -979,11 +986,9 @@ sub streamUrlFor {
 	my $canonical =
 		'soloist://player-' . $cfg->{slot} . '/soloist.' . $format->{wireExt};
 
-	return $format->{key} eq 'pcm'
-		? Plugins::SpotifySoloist::StreamSemantics::generationSoloistUrl(
-			$canonical, $generation,
-		)
-		: $canonical;
+	return Plugins::SpotifySoloist::StreamSemantics::generationSoloistUrl(
+		$canonical, $generation,
+	);
 }
 
 sub _playbackStreamUrlFor {
@@ -1003,15 +1008,10 @@ sub directStreamInfoForUrl {
 			$bridge->{formatSpec} || currentFormatSpec( $bridge->{format} );
 		return unless $parts->{extension} eq $format->{wireExt};
 		my $currentGeneration = $bridge->{streamGeneration} || 0;
-		if ( $format->{key} eq 'pcm' ) {
-			return unless
-				Plugins::SpotifySoloist::StreamSemantics::isCurrentSoloistPlaybackUrl(
-					$url, streamUrlFor($bridge), $currentGeneration,
-				);
-		}
-		else {
-			return if defined $parts->{generation};
-		}
+		return unless
+			Plugins::SpotifySoloist::StreamSemantics::isCurrentSoloistPlaybackUrl(
+				$url, streamUrlFor($bridge), $currentGeneration,
+			);
 		return {
 			fifoPath        => $bridge->{fifoPath},
 			format          => $format,
@@ -1223,11 +1223,9 @@ sub _startBridge {
 	}
 
 	local $ENV{SOLOIST_BIN}       = soloistBin();
-	local $ENV{FFMPEG_BIN}        = $prefs->get('ffmpegBin');
 	local $ENV{SOLOIST_AUDIO_BACKEND} = $cfg->{backend};
 	local $ENV{PIPEWIRE_SINK}     = $cfg->{sink};
 	local $ENV{FORMAT}            = $cfg->{format};
-	local $ENV{BITRATE}           = $cfg->{formatSpec}->{bitrateBps} || 320_000;
 	local $ENV{SOLOIST_INITIAL_VOLUME} = _initialVolume();
 	local $ENV{WS_PORT}           = $cfg->{wsPort};
 	local $ENV{DEVICE_NAME}       = $cfg->{deviceName};
@@ -1236,14 +1234,11 @@ sub _startBridge {
 	local $ENV{SOLOIST_CACHE_DIR} = $cfg->{cacheDir};
 	local $ENV{FIFO_PATH}         = $cfg->{fifoPath};
 	local $ENV{SOLOIST_PCM_SHIM_DIR}  = $cfg->{pcmShimDir};
-	local $ENV{SOLOIST_PCM_SHIM_FIFO} = $cfg->{pcmShimFifo};
 	local $ENV{SOLOIST_PCM_SHIM_CONTROL} = $cfg->{pcmShimControl};
 	local $ENV{SOLOIST_PCM_SHIM_ACK} = $cfg->{pcmShimAck};
 	local $ENV{SOLOIST_PCM_SHIM_RING_MS} = 200;
 	local $ENV{SOLOIST_PCM_SHIM_LOG} = 1;
-	local $ENV{SOLOIST_PCM_SHIM_BUILD} = '2026-11-18.6-frameunits';
-	local $ENV{SOLOIST_PCM_SHIM_MODE} =
-		$cfg->{format} eq 'pcm' && !$cfg->{liveRing} ? 'compat' : 'live-ring';
+	local $ENV{SOLOIST_PCM_SHIM_BUILD} = '2026-11-18.7-s32le';
 	local $ENV{SOLOIST_RUNTIME_LIB_DIR} = $cfg->{runtimeDir};
 	local $ENV{SOLOIST_RUNTIME_LOADER}  = $cfg->{runtimeLoader};
 
@@ -1251,8 +1246,7 @@ sub _startBridge {
 		"starting soloist bridge for player '" . $client->name
 		. "' (device='$cfg->{deviceName}', slot=$cfg->{slot}, normalization="
 		. ( $cfg->{normalization} ? 'on' : 'off' )
-		. ', pcm_mode='
-		. ( $cfg->{format} eq 'pcm' && !$cfg->{liveRing} ? 'compat' : 'live-ring' )
+		. ', pcm_mode=live-ring-s32le'
 		. ', shim=' . catfile( $cfg->{pcmShimDir}, 'libpulse.so.0' )
 		. ' ' . _fileFingerprint( catfile( $cfg->{pcmShimDir}, 'libpulse.so.0' ) )
 		. ', prefs=' . scalar(@$normalizationFiles) . ')'
@@ -1260,7 +1254,7 @@ sub _startBridge {
 	if ( $cfg->{format} eq 'mp3' && !$cfg->{formatSpec}->{bitrateValid} ) {
 		$log->warn(
 			"invalid MP3 bitrate '$cfg->{formatSpec}->{configuredBitrate}'; "
-			. 'using 320 kbps for both the bridge and LMS metadata'
+			. 'using 320 kbps for LMS conversion and metadata'
 		);
 	}
 
@@ -1918,7 +1912,6 @@ sub _maybeApplyConfiguredVolumeOnConnect {
 
 sub _observeSpotifyTimeline {
 	my ( $b, $client, $state, $playback ) = @_;
-	return unless ( $b->{format} || '' ) eq 'pcm';
 	unless ( $playback->{isActiveDevice} ) {
 		$b->{timelineTracker} = {};
 		$b->{pendingTimelineResync} = undef;
@@ -2015,7 +2008,7 @@ sub _applySpotifyTransportEvents {
 		resyncAt   => $now,
 		generation => $b->{streamGeneration},
 	};
-	if ( $b->{backend} eq 'pcm-shim' && $b->{format} eq 'pcm' ) {
+	if ( $b->{backend} eq 'pcm-shim' ) {
 		my $generation = $b->{streamGeneration};
 		my $requestId = ++$b->{shimRequestId};
 		$log->info(
@@ -2070,7 +2063,7 @@ sub _applySpotifyTransportEvents {
 	);
 	$b->{suppressLyrionTransportUntil} = time() + 1;
 	my $replacementUrl = _playbackStreamUrlFor($b);
-	$log->info("opening generation-qualified PCM URL $replacementUrl");
+	$log->info("opening generation-qualified Soloist URL $replacementUrl");
 	$client->execute( [ 'playlist', 'play', $replacementUrl ] );
 }
 

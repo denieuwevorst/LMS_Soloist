@@ -11,20 +11,17 @@ trap '[ -n "$client_pid" ] && kill "$client_pid" 2>/dev/null || true; rm -rf "$t
 mkdir "$tmp"
 make -C "$shim" clean marker_client >/dev/null
 
-run_mode() {
-	mode="$1"
-	fifo="$tmp/$mode.fifo"
-	control="$tmp/$mode.control"
-	ack="$tmp/$mode.ack"
-	log="$tmp/$mode.log"
+run_s32() {
+	fifo="$tmp/s32.fifo"
+	control="$tmp/s32.control"
+	ack="$tmp/s32.ack"
+	log="$tmp/s32.log"
 	mkfifo "$fifo"
 	exec 9<>"$fifo"
 
 	LD_LIBRARY_PATH="$shim" \
 	SOLOIST_SHIM_OUT="$fifo" \
-	SOLOIST_SHIM_FORMAT=s16 \
 	SOLOIST_SHIM_RATE=44100 \
-	SOLOIST_SHIM_MODE="$mode" \
 	SOLOIST_SHIM_CONTROL="$control" \
 	SOLOIST_SHIM_ACK="$ack" \
 	SOLOIST_SHIM_LOG=1 \
@@ -63,11 +60,10 @@ run_mode() {
 	kill "$client_pid"
 	wait "$client_pid" 2>/dev/null || true
 	client_pid=""
-	grep -q "loaded build 2026-11-18.6-frameunits: mode=$mode" "$log"
+	grep -q "loaded build 2026-11-18.7-s32le: mode=live-ring-s32le" "$log"
 	grep -q 'generation flush: generation=8 reason=track' "$log"
 	exec 9>&-
 }
 
-run_mode live-ring
-run_mode compat
-echo "live-ring and compatibility shim processes survived repeated rapid track generations"
+run_s32
+echo "live-ring S32LE shim process survived repeated rapid track generations"

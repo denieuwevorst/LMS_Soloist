@@ -2,7 +2,20 @@
 
 ## Unreleased
 
-- Qualify PCM playback URLs with a monotonically increasing `?g=` token for
+- Replace all compatibility/legacy shim branches with one validated
+  `live-ring-s32le` path. Soloist float32 is converted to 44.1 kHz stereo
+  S32LE, kept within the 200 ms live-edge ring, and written directly to the
+  per-player FIFO using 8-byte output frames.
+- Move final PCM, FLAC, and MP3 conversion out of the bridge and into
+  plugin-owned LMS `custom-types.conf`/`custom-convert.conf` rules. The bridge
+  no longer invokes ffmpeg or creates an intermediate encoder FIFO; missing
+  LMS converter dependencies now surface as conversion failures.
+- Remove the per-player compatibility-mode setting, stale preference handling,
+  ffmpeg path setting, environment variables, tests, and diagnostics. Existing
+  saved compatibility values are ignored safely.
+- Advertise a truthful streaming S32LE WAV source: 44.1 kHz, stereo, 32-bit,
+  8-byte block alignment, and 2,822,400 bps.
+- Qualify playback URLs with a monotonically increasing `?g=` token for
   manual track/playlist changes, Next/Previous, meaningful backward seeks, and
   stale-stream recovery. LMS can no longer optimize the same-URL replay into a
   no-op, so it closes the old handler and flushes downstream player buffers.
@@ -10,8 +23,7 @@
   natural gapless transitions retain the current URL and handler.
 - Use 64-bit input frames as the canonical Pulse accounting unit, converting
   to input bytes only for Pulse indexes and independently to output bytes for
-  the FIFO. This fixes float32-input to s16-output flush accounting that could
-  otherwise leave a 2:1 phantom buffered duration near track end.
+  the FIFO.
 - Advance Pulse read-index accounting whenever queued PCM is flushed or
   discarded, preventing cumulative generation flushes from making Soloist
   believe several seconds remain buffered near natural track end. Drain
@@ -26,23 +38,15 @@
   exact `LD_PRELOAD` on native runtimes), ensuring it is mapped before Soloist
   chooses an audio backend. Official x86_64, ARMv7, and ARM64 runtime tests now
   require the constructor build marker.
-- Preserve Soloist's compatibility-mode Pulse writable-size, callback, and
-  prebuffer contract in live-edge mode while independently discarding audio
-  only when its wall-clock presentation age exceeds the configured budget.
-  This combines the smooth field behavior of compatibility mode with bounded
-  stale latency.
 - Verify the selected PCM shim build marker and Soloist's actual mapped
   `libpulse.so.0` before playback, enable diagnostic summaries by default, and
   log the exact cause of every bridge shutdown or safety restart. Repeated
   rapid generation flushes now assert same-process survival in both modes.
-- Add a per-player PCM compatibility switch for same-host A/B testing. It
-  restores the pre-ring Pulse buffering and sink-wait contract while preserving
-  direct final-FIFO delivery, generation flushes, and handler replacement.
 - Identify the exact shim build, mode, path, size, and SHA-1 at startup. Add
   five-second summaries for Pulse producer callbacks/writes, underflows, ring
   fill/drops, writer scheduling gaps, sink pressure, and LMS read cadence.
-- Add continuous wall-clock cadence tests for both live-ring and compatibility
-  modes; byte-completeness alone is no longer treated as proof of smooth audio.
+- Add continuous wall-clock cadence tests for the single S32LE live-ring path;
+  byte-completeness alone is no longer treated as proof of smooth audio.
 - Fix stuttering under ordinary scheduler jitter by retaining and retrying the
   current PCM chunk while the 200 ms live-edge ring still has budget. Temporary
   FIFO backpressure no longer drops audio immediately; oldest audio is dropped
