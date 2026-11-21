@@ -20,7 +20,7 @@ like( $types, qr/^s32p\s+-\s+audio\/x-soloist-s32-pcm\s+audio$/m, 'registers the
 like( $types, qr/^s32f\s+-\s+audio\/x-soloist-s32-flac\s+audio$/m, 'registers the S32-to-FLAC source type' );
 like(
 	$convert,
-	qr/^s32p\s+pcm\s+\*\s+\*.*?aresample=osf=s16:dither_method=triangular.*?-f s16le -/ms,
+	qr/^s32p\s+pcm\s+\*\s+\*.*?aresample=osf=s16:dither_method=triangular,asetnsamples=n=512:p=0.*?-f s16le -/ms,
 	'PCM rule converts and dithers S32LE to S16LE instead of passing 32-bit audio to the player',
 );
 like(
