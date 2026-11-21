@@ -56,8 +56,9 @@ shim's 200 ms live-edge ring
 isolates Soloist from the FIFO writer. Short reader scheduling gaps are retried
 inside that budget without dropping audio; a sustained slow reader drops the
 oldest complete PCM frames only after the budget is exhausted, so a stall
-cannot turn into multi-second delayed playback. Together with the deliberately
-small final FIFO, source buffering remains bounded to approximately 300 ms.
+cannot turn into multi-second delayed playback. The final 64 KiB S32LE FIFO
+provides 185.8 ms of converter-scheduling headroom without being prefilled
+during normal playback; the userspace live-edge age remains bounded to 200 ms.
 
 The handler opens the FIFO nonblocking in read/write mode. Keeping one local
 writer open prevents a temporary capture-process exit from appearing as EOF to
@@ -200,7 +201,7 @@ At bridge startup, `bridge.log` must show both:
 
 ```text
 [soloist-bridge] pcm-shim binary: .../libpulse.so.0 (... bytes sha1=...)
-[soloist-shim] loaded build 2026-11-18.7-s32le: mode=live-ring-s32le ...
+[soloist-shim] loaded build 2026-11-22.1-s32le: mode=live-ring-s32le ...
 ```
 
 The bridge also logs the exact matching `/proc/<soloist-pid>/maps` entry. It

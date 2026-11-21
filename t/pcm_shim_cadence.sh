@@ -65,7 +65,7 @@ if maximum > 0.080:
     raise SystemExit(f"S32LE wall-clock PCM gap was {maximum * 1000:.1f} ms")
 print(f"S32LE wall-clock output max gap={maximum * 1000:.1f} ms")
 PY
-	grep -q "loaded build 2026-11-18.7-s32le: mode=live-ring-s32le" "$log"
+	grep -q "loaded build 2026-11-22.1-s32le: mode=live-ring-s32le" "$log"
 	grep -q "runtime summary: mode=live-ring-s32le" "$log"
 	if grep -Eq 'live-edge drop|stream underflow' "$log"; then
 		cat "$log" >&2

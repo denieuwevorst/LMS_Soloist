@@ -63,4 +63,7 @@ bits="$(ffprobe -v error -select_streams a:0 \
 	exit 1
 }
 
+python3 "$(dirname "$0")/lms_converter_cadence.py" \
+	"$(dirname "$0")/../custom-convert.conf"
+
 echo "LMS conversion produced dithered S16LE output; no S32LE passthrough"

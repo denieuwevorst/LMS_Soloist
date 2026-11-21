@@ -79,7 +79,7 @@ __attribute__((constructor))
 static void shim_loaded(void)
 {
     CFG();
-    fprintf(stderr, "[soloist-shim] loaded build 2026-11-18.7-s32le: mode=live-ring-s32le out=%s format=4B rate=%d ring_ms=%d max_tlength_ms=%d control=%s\n",
+    fprintf(stderr, "[soloist-shim] loaded build 2026-11-22.1-s32le: mode=live-ring-s32le out=%s format=4B rate=%d ring_ms=%d max_tlength_ms=%d control=%s\n",
         cfg.out, cfg.rate, cfg.ring_ms, cfg.max_tlength_ms,
         cfg.control[0] ? cfg.control : "off");
 }
@@ -142,12 +142,14 @@ static int out_open_locked(void)
         fd = open(cfg.out, O_WRONLY | O_NONBLOCK | O_CLOEXEC);
         if (fd < 0) return -1;
         /*
-         * Keep the kernel queue below 100 ms at the plugin's 44.1 kHz S32LE
-         * stereo format. The userspace ring owns the deliberate buffering;
-         * a large FIFO would preserve stale audio that cannot be dropped
-         * from the head by the writer.
+         * LMS conversion can pause its input reader for about 120 ms while
+         * scheduling ffmpeg. Keep one bounded 185.8 ms S32LE handoff so that
+         * ordinary converter jitter does not force a live-edge drop.
          */
-        fcntl(fd, F_SETPIPE_SZ, 16384);
+        if (fcntl(fd, F_SETPIPE_SZ, 65536) < 0) {
+            LOG(1, "could not raise FIFO kernel queue to 65536 bytes: %s",
+                strerror(errno));
+        }
         pipe_size = fcntl(fd, F_GETPIPE_SZ);
         if (pipe_size > 0) {
             int output_rate = cfg.rate > 0 ? cfg.rate : 44100;

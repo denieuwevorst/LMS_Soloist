@@ -1238,7 +1238,7 @@ sub _startBridge {
 	local $ENV{SOLOIST_PCM_SHIM_ACK} = $cfg->{pcmShimAck};
 	local $ENV{SOLOIST_PCM_SHIM_RING_MS} = 200;
 	local $ENV{SOLOIST_PCM_SHIM_LOG} = 1;
-	local $ENV{SOLOIST_PCM_SHIM_BUILD} = '2026-11-18.7-s32le';
+	local $ENV{SOLOIST_PCM_SHIM_BUILD} = '2026-11-22.1-s32le';
 	local $ENV{SOLOIST_RUNTIME_LIB_DIR} = $cfg->{runtimeDir};
 	local $ENV{SOLOIST_RUNTIME_LOADER}  = $cfg->{runtimeLoader};
 

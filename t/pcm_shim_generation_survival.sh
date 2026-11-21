@@ -60,7 +60,7 @@ run_s32() {
 	kill "$client_pid"
 	wait "$client_pid" 2>/dev/null || true
 	client_pid=""
-	grep -q "loaded build 2026-11-18.7-s32le: mode=live-ring-s32le" "$log"
+	grep -q "loaded build 2026-11-22.1-s32le: mode=live-ring-s32le" "$log"
 	grep -q 'generation flush: generation=8 reason=track' "$log"
 	exec 9>&-
 }

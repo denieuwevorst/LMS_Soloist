@@ -79,7 +79,9 @@ Temporary FIFO `EAGAIN` is retried while the ring's configured time budget has
 not been superseded, allowing ordinary scheduler and network-player read jitter
 without gaps. If the reader remains slow beyond that budget, the in-flight
 oldest complete frames are discarded, keeping playback near the live edge and
-bounding total PCM buffering to approximately 300 ms with the bridge's FIFO.
+preventing unbounded delay. The shim requests a 64 KiB FIFO, giving the LMS
+converter 185.8 ms of S32LE scheduling headroom; this queue is not deliberately
+prefilled during normal playback.
 
 Generation command files contain `<request-id> <reason>`. The request ID is
 independent from the shim's internal audio generation, so Pulse flushes cannot
@@ -98,7 +100,7 @@ and inspect the player's `bridge.log`. The bridge maps this setting to
 A successfully loaded build logs its configured ring depth and control path:
 
 ```text
-[soloist-shim] loaded build 2026-11-18.7-s32le: mode=live-ring-s32le ... ring_ms=200 ...
+[soloist-shim] loaded build 2026-11-22.1-s32le: mode=live-ring-s32le ... ring_ms=200 ...
 ```
 
 Level `2` also logs Pulse API activity. A constructor/load marker without
