@@ -31,13 +31,20 @@ exec 4<&-
 # gone away; a tiny stdio-sized payload can remain buffered inside `cat`.
 dd if=/dev/zero bs=4096 count=1 >&5 2>/dev/null
 for _try in $(seq 1 100); do
-	kill -0 "$converter_pid" 2>/dev/null || break
+	converter_state="$(ps -o stat= -p "$converter_pid" 2>/dev/null || true)"
+	case "$converter_state" in
+		""|Z*) break ;;
+	esac
 	sleep 0.01
 done
-if kill -0 "$converter_pid" 2>/dev/null; then
+converter_state="$(ps -o stat= -p "$converter_pid" 2>/dev/null || true)"
+case "$converter_state" in
+""|Z*) ;;
+*)
 	echo "old converter survived final FIFO reader replacement" >&2
 	exit 1
-fi
+	;;
+esac
 wait "$converter_pid" 2>/dev/null || true
 converter_pid=""
 
