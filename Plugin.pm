@@ -323,8 +323,78 @@ sub _traceLmsStrmRequested {
 	$trace->{playerStatusLogged} = 0;
 	delete $trace->{handlerOpenedAt};
 	delete $trace->{handlerUrl};
+	$b->{playerProgressTrace} = {};
 	$trace->{strmRequestedAt} =
 		_delayTraceMilestone( $b, $client, 'lms-strm-requested', %fields );
+}
+
+sub _latestBridgePressureSummary {
+	my ($b) = @_;
+	return 'unavailable' unless $b->{cacheDir};
+	my $path = catfile( $b->{cacheDir}, 'bridge.log' );
+	return 'unavailable' unless -f $path && open my $fh, '<', $path;
+	my $size = -s $fh;
+	seek( $fh, $size > 32768 ? -32768 : 0, $size > 32768 ? 2 : 0 );
+	local $/;
+	my $tail = <$fh> // '';
+	close $fh;
+	my @lines = $tail =~ /^.*(?:runtime summary|output pressure|output live-edge drop).*$/mg;
+	return 'no-recent-pressure-summary' unless @lines;
+	my $start = @lines > 2 ? $#lines - 1 : 0;
+	return join( ' | ', @lines[ $start .. $#lines ] );
+}
+
+sub noteMidstreamStall {
+	my ( $playerId, $generation, $url, %fields ) = @_;
+	return unless delayDiagnosticsEnabled();
+	my $b = $bridges{$playerId} or return;
+	return unless ( $b->{streamGeneration} || 0 ) == ( $generation || 0 );
+	return unless
+		Plugins::SpotifySoloist::StreamSemantics::isCurrentSoloistPlaybackUrl(
+			$url, streamUrlFor($b), $generation,
+		);
+	my $client = Slim::Player::Client::getClient($playerId);
+	my $elapsed = $client ? eval { $client->master->songElapsedSeconds() } : undef;
+	my $playingUrl = $client ? eval { Slim::Player::Playlist::url($client->master) } : undef;
+	_delayTraceMilestone(
+		$b, $client, 'midstream-stall',
+		%fields,
+		current_url => defined $playingUrl ? $playingUrl : 'unknown',
+		song_elapsed_s => defined $elapsed ? sprintf( '%.3f', $elapsed ) : 'unknown',
+		is_remote => 1,
+		buffer_threshold_kb => $b->{formatSpec}->{bufferKb},
+		source_bitrate_bps => $b->{formatSpec}->{sourceBitrateBps},
+		transition_reason => ref $b->{lastStreamTransition} eq 'HASH'
+			? ( $b->{lastStreamTransition}->{reason} || 'unknown' )
+			: 'steady-state',
+		bridge_pressure => _latestBridgePressureSummary($b),
+	);
+}
+
+sub _traceMidstreamPlayerProgress {
+	my ( $b, $client, $url, $playback ) = @_;
+	return unless delayDiagnosticsEnabled();
+	my $onOwnStream = _clientIsOnOwnSoloistStream( $client, $url );
+	my $playing = $playback->{reallyPlayingHere}
+		&& $onOwnStream
+		&& eval { $client->isPlaying(1) } ? 1 : 0;
+	my $elapsed = $playing ? eval { $client->master->songElapsedSeconds() } : undef;
+	my $stall =
+		Plugins::SpotifySoloist::StreamSemantics::observePlayerProgressStall(
+			$b->{playerProgressTrace} ||= {},
+			$elapsed,
+			Plugins::SpotifySoloist::StreamSemantics::monotonicNow(),
+			$playing,
+		);
+	return unless $stall;
+	noteMidstreamStall(
+		$b->{playerId},
+		$b->{streamGeneration} || 0,
+		_playbackStreamUrlFor($b),
+		source => 'player-progress',
+		progress_gap_ms => sprintf( '%.0f', $stall->{gapMs} ),
+		fifo_available_bytes => 'unknown',
+	);
 }
 
 sub noteDelayTraceProtocolMilestone {
@@ -2535,6 +2605,7 @@ sub _pollMetadataPass {
 		_applySpotifyTransportEvents( $b, $client, $url, $playback, $state );
 		_applyPlaybackTransition( $playerId, $b, $client, $url, $playback );
 		_tracePlayerStatus( $b, $client );
+		_traceMidstreamPlayerProgress( $b, $client, $url, $playback );
 		_updateIdleDisconnectState( $b, $playback );
 		next if _maybeRestartIdleBridge( $playerId, $b, $client, $playback );
 		_publishMetadataForPlayer( $b, $client, $url, $state );

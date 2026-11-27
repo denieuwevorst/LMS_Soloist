@@ -38,12 +38,14 @@ BEGIN {
 	our $stream;
 	our @transitionClaims;
 	our @protocolMilestones;
+	our @midstreamStalls;
 	sub directStreamInfoForUrl { return $stream }
 	sub claimDirectStreamTransitionForUrl {
 		push @transitionClaims, [@_];
 		return { reason => 'track', resyncAt => 1 };
 	}
 	sub noteDelayTraceProtocolMilestone { push @protocolMilestones, [@_] }
+	sub noteMidstreamStall { push @midstreamStalls, [@_] }
 }
 
 require './StreamSemantics.pm';
@@ -155,6 +157,12 @@ ok(
 	!defined $staleRead && ( $! == EAGAIN || $! == EWOULDBLOCK ),
 	'starts catch-up instead of forwarding audio queued during an LMS read stall'
 );
+is( scalar @Plugins::SpotifySoloist::Plugin::midstreamStalls, 1, 'read gap emits one correlated midstream stall event' );
+is(
+	$Plugins::SpotifySoloist::Plugin::midstreamStalls[0]->[3],
+	'source',
+	'midstream stall event carries named diagnostic fields',
+);
 
 select undef, undef, undef, 0.30;
 $buffer = '';
@@ -162,6 +170,11 @@ my $catchupRead = $handler->sysread( $buffer, 32 );
 ok(
 	!defined $catchupRead && ( $! == EAGAIN || $! == EWOULDBLOCK ),
 	'finishes catch-up with the FIFO empty'
+);
+is(
+	scalar @Plugins::SpotifySoloist::Plugin::midstreamStalls,
+	1,
+	'catch-up does not flood duplicate midstream stall events',
 );
 
 syswrite( $writer, 'audio-live' ) == 10 or die "write live payload: $!";

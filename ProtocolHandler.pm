@@ -58,6 +58,28 @@ sub _noteDelayTraceProtocolMilestone {
 	$callback->( $playerId, $generation, $milestone, $at, $url );
 }
 
+sub _fifoAvailableBytes {
+	my ($self) = @_;
+	my $value = pack( 'I', 0 );
+	return ioctl( $self, 0x541B, $value ) ? unpack( 'I', $value ) : 'unknown';
+}
+
+sub _noteMidstreamStall {
+	my ( $self, %fields ) = @_;
+	return unless ${*$self}{delayDiagnostics};
+	return if ${*$self}{stallEventLogged};
+	my $callback =
+		Plugins::SpotifySoloist::Plugin->can('noteMidstreamStall')
+		or return;
+	${*$self}{stallEventLogged} = 1;
+	$callback->(
+		${*$self}{traceClientId},
+		${*$self}{streamGeneration} || 0,
+		${*$self}{url},
+		%fields,
+	);
+}
+
 # LMS only forwards a protocol handler's bufferThreshold to the player's STRM
 # command for remote streams. The bytes are still host-local, but this
 # classification is required to avoid the Touch's default full input-buffer
@@ -165,6 +187,7 @@ sub new {
 	${*$self}{maxReadGap} = 0;
 	${*$self}{firstSysreadLogged} = 0;
 	${*$self}{closeLogged} = 0;
+	${*$self}{stallEventLogged} = 0;
 
 	_delayTrace(
 		$self, 'protocol-handler-new',
@@ -247,6 +270,16 @@ sub sysread {
 			&& $gap >= STALE_READ_GAP_SECONDS
 			&& !${*$self}{staleDrainUntil}
 		) {
+			_noteMidstreamStall(
+				$self,
+				source => 'protocol-read-gap',
+				read_gap_ms => sprintf( '%.0f', $gap * 1000 ),
+				last_successful_read_age_ms => sprintf( '%.0f', $gap * 1000 ),
+				fifo_available_bytes => _fifoAvailableBytes($self),
+				transition_reason => ref ${*$self}{transition} eq 'HASH'
+					? ( ${*$self}{transition}->{reason} || 'unknown' )
+					: 'steady-state',
+			);
 			my $discarded = _drainFifo($self);
 			if ($discarded) {
 				${*$self}{staleDrainUntil} = $now + STALE_DRAIN_SECONDS;
@@ -308,6 +341,7 @@ sub sysread {
 	if ($read) {
 		${*$self}{readBytes} += $read;
 		${*$self}{lastAudioReadAt} = $now;
+		${*$self}{stallEventLogged} = 0;
 		if ( !${*$self}{firstAudioReadLogged} ) {
 			${*$self}{firstAudioReadLogged} = 1;
 			my $transition = ${*$self}{transition};

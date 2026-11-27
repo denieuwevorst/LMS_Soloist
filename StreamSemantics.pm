@@ -148,6 +148,32 @@ sub delayTraceTimingSummary {
 	return \%summary;
 }
 
+sub observePlayerProgressStall {
+	my ( $tracker, $elapsed, $now, $playing ) = @_;
+	return unless ref $tracker eq 'HASH';
+	if ( !$playing || !defined $elapsed ) {
+		%$tracker = ();
+		return;
+	}
+	if (
+		!defined $tracker->{elapsed}
+		|| abs( $elapsed - $tracker->{elapsed} ) > 0.01
+	) {
+		$tracker->{elapsed} = $elapsed;
+		$tracker->{progressAt} = $now;
+		$tracker->{stallLogged} = 0;
+		return;
+	}
+	return if $tracker->{stallLogged};
+	return unless defined $tracker->{progressAt}
+		&& $now - $tracker->{progressAt} >= 1;
+	$tracker->{stallLogged} = 1;
+	return {
+		gapMs => ( $now - $tracker->{progressAt} ) * 1000,
+		elapsed => $elapsed,
+	};
+}
+
 sub monotonicNow {
 	my $now = eval {
 		Time::HiRes::clock_gettime( Time::HiRes::CLOCK_MONOTONIC() );

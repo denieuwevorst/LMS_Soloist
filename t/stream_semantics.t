@@ -325,6 +325,48 @@ is( $timing->{open_to_wav_ms}, 58, 'transition timing measures first WAV availab
 is( $timing->{open_to_pcm_ms}, 69, 'transition timing measures first PCM availability' );
 is( $timing->{pcm_to_status_ms}, 104, 'transition timing measures player/device buffering' );
 is( $timing->{track_to_status_ms}, 430, 'transition timing reports total transition latency' );
+my $progressTrace = {};
+ok(
+	!Plugins::SpotifySoloist::StreamSemantics::observePlayerProgressStall(
+		$progressTrace, 10, 100, 1,
+	),
+	'first player progress observation establishes a baseline',
+);
+ok(
+	!Plugins::SpotifySoloist::StreamSemantics::observePlayerProgressStall(
+		$progressTrace, 10, 100.9, 1,
+	),
+	'unchanged player progress below one second is not a stall',
+);
+my $progressStall =
+	Plugins::SpotifySoloist::StreamSemantics::observePlayerProgressStall(
+		$progressTrace, 10, 101.1, 1,
+	);
+cmp_ok( $progressStall->{gapMs}, '>=', 1_000, 'one-second player progress stall is reported' );
+ok(
+	!Plugins::SpotifySoloist::StreamSemantics::observePlayerProgressStall(
+		$progressTrace, 10, 102, 1,
+	),
+	'player progress stall is logged once until progress resumes',
+);
+ok(
+	!Plugins::SpotifySoloist::StreamSemantics::observePlayerProgressStall(
+		$progressTrace, 10.5, 102.1, 1,
+	),
+	'resumed player progress clears the stall latch',
+);
+ok(
+	!Plugins::SpotifySoloist::StreamSemantics::observePlayerProgressStall(
+		$progressTrace, 0.1, 102.2, 1,
+	),
+	'natural elapsed reset is treated as progress rather than a stall',
+);
+ok(
+	!Plugins::SpotifySoloist::StreamSemantics::observePlayerProgressStall(
+		$progressTrace, undef, 103, 0,
+	),
+	'leaving active playback resets player progress tracking',
+);
 ok(
 	!Plugins::SpotifySoloist::StreamSemantics::isSoloistUrl(
 		'https://radio.example/stream.mp3'

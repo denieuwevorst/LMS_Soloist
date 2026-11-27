@@ -61,6 +61,14 @@ my $bufferKb = Plugins::SpotifySoloist::ProtocolHandler->bufferThreshold(
 	'soloist://player-0/soloist.wav',
 );
 is( $bufferKb, 35, 'PCM requests a 35 KiB Touch input-buffer threshold' );
+is(
+	Plugins::SpotifySoloist::ProtocolHandler->bufferThreshold(
+		undef,
+		'soloist://player-0/soloist.wav?g=7',
+	),
+	35,
+	'generation and recovery URLs retain the 35 KiB Touch input-buffer threshold',
+);
 cmp_ok(
 	$bufferKb * 1024 / ( 1_411_200 / 8 ),
 	'<',
