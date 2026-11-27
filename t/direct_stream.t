@@ -161,7 +161,7 @@ is( $handler->sysread( $buffer, 32 ), 9, 'reads audio after capture reconnects' 
 is( $buffer, 'audio-two', 'forwards restarted capture audio unchanged' );
 
 close $writer;
-close $handler;
+$handler->close;
 like(
 	join( "\n", @TestLogger::info ),
 	qr/milestone=protocol-handler-close .*generation=0/,
