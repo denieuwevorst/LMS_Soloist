@@ -10,7 +10,7 @@ use constant BACKWARD_SEEK_THRESHOLD_MS => 2_000;
 use constant TRACK_RESET_POSITION_MS     => 5_000;
 use constant TRACK_RESET_TIMEOUT_SECONDS => 0.75;
 use constant NATURAL_END_WINDOW_MS       => 3_000;
-use constant API_VERSION                  => 1;
+use constant API_VERSION                  => 2;
 
 sub apiVersion {
 	return API_VERSION;
@@ -172,6 +172,47 @@ sub observePlayerProgressStall {
 		gapMs => ( $now - $tracker->{progressAt} ) * 1000,
 		elapsed => $elapsed,
 	};
+}
+
+sub normalizeTransitionRestartBufferMs {
+	my ($value) = @_;
+	return ( 750, 'expected a whole number from 0 to 3000' )
+		unless defined $value && $value =~ /\A-?\d+\z/;
+	$value = int($value);
+	return ( 0, 'clamped to the minimum' ) if $value < 0;
+	return ( 3000, 'clamped to the maximum' ) if $value > 3000;
+	return ( $value, undef );
+}
+
+sub transitionBufferMsForUrl {
+	my ( $url, $milliseconds ) = @_;
+	my $parts = soloistUrlParts($url) or return 0;
+	return defined $parts->{generation} ? $milliseconds : 0;
+}
+
+sub transitionBufferKb {
+	my ( $format, $milliseconds ) = @_;
+	return unless ref $format eq 'HASH';
+	return $format->{bufferKb} unless $milliseconds;
+
+	my $bitrate;
+	if ( ( $format->{key} || '' ) eq 'pcm' ) {
+		$bitrate =
+			( $format->{sampleRate} || 44_100 )
+			* ( $format->{channels} || 2 )
+			* ( $format->{sampleSize} || $format->{sourceSampleSize} || 16 );
+	}
+	elsif ( ( $format->{key} || '' ) eq 'mp3' ) {
+		$bitrate = $format->{bitrateBps} || $format->{transcodeBitrateBps};
+	}
+	else {
+		# Live FLAC is variable-rate. Use the uncompressed S16 source rate as
+		# a conservative upper estimate so transitions never request too few
+		# bytes for the configured duration.
+		$bitrate = $format->{sourceBitrateBps} || 1_411_200;
+	}
+	my $kilobytes = int( ( $bitrate * $milliseconds + 8_192_000 - 1 ) / 8_192_000 );
+	return $kilobytes > 255 ? 255 : ( $kilobytes || 1 );
 }
 
 sub monotonicNow {

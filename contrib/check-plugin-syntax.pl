@@ -122,7 +122,10 @@ for my $symbol (
 		applySongFormat
 		applySongTiming
 		metadataForFormat
+		normalizeTransitionRestartBufferMs
 		observeTimelineTransition
+		transitionBufferKb
+		transitionBufferMsForUrl
 		timelineObservation
 		timelineResyncReady
 	)

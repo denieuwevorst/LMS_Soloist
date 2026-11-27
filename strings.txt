@@ -88,6 +88,12 @@ PLUGIN_SPOTIFYSOLOIST_IDLEDISCONNECT
 PLUGIN_SPOTIFYSOLOIST_IDLEDISCONNECT_DESC
 	EN	Restarts the Soloist instance after this many seconds paused, clearing its metadata and briefly releasing the Spotify Connect account and stale artwork. Set to 0 to keep it continuously connected.
 
+PLUGIN_SPOTIFYSOLOIST_TRANSITION_BUFFER
+	EN	Discontinuous track restart buffer
+
+PLUGIN_SPOTIFYSOLOIST_TRANSITION_BUFFER_DESC
+	EN	Buffer duration used only when a manual seek or discontinuous track change opens a generation-qualified stream URL. Default 750 ms; allowed range 0-3000 ms. Set to 0 to reuse the normal low-latency threshold. PCM uses its exact sample rate, channels, and sample width; MP3 uses the selected bitrate; variable-rate FLAC uses the uncompressed PCM rate as a conservative estimate. The player protocol limits the resulting threshold to 255 KiB. Initial playback and natural transitions are unchanged.
+
 PLUGIN_SPOTIFYSOLOIST_DELAYDIAGNOSTICS
 	EN	Trace playback startup delay
 

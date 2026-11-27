@@ -102,7 +102,7 @@ sub isRepeatingStream { 1 }
 sub bufferThreshold {
 	my ( $class, $client, $url ) = @_;
 	my $stream = Plugins::SpotifySoloist::Plugin::directStreamInfoForUrl($url);
-	return $stream ? $stream->{format}->{bufferKb} : 8;
+	return $stream ? $stream->{bufferKb} : 8;
 }
 
 sub scanUrl {
@@ -191,8 +191,9 @@ sub new {
 
 	_delayTrace(
 		$self, 'protocol-handler-new',
-		buffer_threshold_kb => $format->{bufferKb},
+		buffer_threshold_kb => $stream->{bufferKb},
 		content_type => $format->{contentType},
+		transition_restart_buffer_ms => $stream->{transitionBufferMs} || 0,
 		url => $url,
 	);
 
@@ -205,6 +206,10 @@ sub new {
 	$log->info(
 		"opened direct Soloist stream '$url' from '$fifo'"
 		. " as final $format->{contentType} output"
+		. " with $stream->{bufferKb} KiB input threshold"
+		. ( $stream->{transitionBufferMs}
+			? " for $stream->{transitionBufferMs}ms discontinuous restart buffering"
+			: '' )
 		. ( $initialDiscarded
 			? " after discarding $initialDiscarded bytes queued while the LMS reader was replaced"
 			: '' )

@@ -51,6 +51,16 @@ like( $plugin, qr/'lms-strm-requested'/, 'plugin traces the LMS playback handoff
 like( $plugin, qr/'player-first-status'/, 'plugin traces the first available player status' );
 like( $bridge, qr/SOLOIST_SHIM_DELAY_TRACE="\$SOLOIST_DELAY_DIAGNOSTICS"/, 'bridge forwards the diagnostic switch to the shim' );
 like( $settings . $html, qr/delayDiagnostics/, 'settings expose one delay diagnostic switch' );
+like(
+	$plugin . $settings . $html,
+	qr/transitionRestartBufferMs/,
+	'settings expose the global generation-only transition restart buffer',
+);
+like(
+	$html,
+	qr/name="pref_transitionRestartBufferMs".*?min="0".*?max="3000"/s,
+	'transition restart buffer UI enforces the supported range',
+);
 unlike( $settings . $html, qr/playerLiveRing|liveRing\./, 'settings expose no obsolete compatibility mode' );
 
 done_testing;

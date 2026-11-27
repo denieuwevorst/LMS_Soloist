@@ -22,6 +22,10 @@
 - Route Soloist through LMS's handler-specific STRM input threshold so a Touch
   starts after roughly 200 ms instead of filling its default ~1 MiB input
   buffer (about 5.8 seconds for 44.1 kHz stereo S16LE).
+- Add a global 0-3000 ms discontinuous track restart buffer (750 ms default)
+  for generation-qualified URLs only. Normal startup retains its low-latency
+  format threshold, natural transitions retain their handler, and format-aware
+  byte conversion is capped at LMS's 255 KiB STRM limit.
 - Associate first-player-status diagnostics with the exact opened stream
   generation, ignoring stale status from the outgoing handler. Add a derived
   transition-timing milestone that separates flush, handler replacement, PCM

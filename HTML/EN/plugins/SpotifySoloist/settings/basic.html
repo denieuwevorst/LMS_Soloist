@@ -163,6 +163,12 @@
 	<input name="pref_idleDisconnectSeconds" id="pref_idleDisconnectSeconds" type="number" min="0" step="1" value="[% prefs.pref_idleDisconnectSeconds %]"> seconds
 [% END %]
 
+[% WRAPPER setting title="PLUGIN_SPOTIFYSOLOIST_TRANSITION_BUFFER" desc="PLUGIN_SPOTIFYSOLOIST_TRANSITION_BUFFER_DESC" %]
+	<input name="pref_transitionRestartBufferMs" id="pref_transitionRestartBufferMs"
+		type="number" min="0" max="3000" step="1"
+		value="[% transitionRestartBufferMs %]"> ms
+[% END %]
+
 [% WRAPPER setting title="PLUGIN_SPOTIFYSOLOIST_DELAYDIAGNOSTICS" desc="PLUGIN_SPOTIFYSOLOIST_DELAYDIAGNOSTICS_DESC" %]
 	<input name="pref_delayDiagnostics" id="pref_delayDiagnostics" type="checkbox" [% IF prefs.pref_delayDiagnostics %]checked[% END %]>
 [% END %]

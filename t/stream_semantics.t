@@ -367,6 +367,91 @@ ok(
 	),
 	'leaving active playback resets player progress tracking',
 );
+is_deeply(
+	[ Plugins::SpotifySoloist::StreamSemantics::normalizeTransitionRestartBufferMs(undef) ],
+	[ 750, 'expected a whole number from 0 to 3000' ],
+	'missing transition buffer falls back to the recommended default',
+);
+is_deeply(
+	[ Plugins::SpotifySoloist::StreamSemantics::normalizeTransitionRestartBufferMs(-1) ],
+	[ 0, 'clamped to the minimum' ],
+	'negative transition buffer is clamped to zero',
+);
+is_deeply(
+	[ Plugins::SpotifySoloist::StreamSemantics::normalizeTransitionRestartBufferMs(3001) ],
+	[ 3000, 'clamped to the maximum' ],
+	'oversized transition buffer is clamped to three seconds',
+);
+is_deeply(
+	[ Plugins::SpotifySoloist::StreamSemantics::normalizeTransitionRestartBufferMs(750) ],
+	[ 750, undef ],
+	'valid transition buffer is preserved',
+);
+is(
+	Plugins::SpotifySoloist::StreamSemantics::transitionBufferMsForUrl(
+		'soloist://player-0/soloist.wav',
+		750,
+	),
+	0,
+	'normal Soloist URL does not enable transition restart buffering',
+);
+is(
+	Plugins::SpotifySoloist::StreamSemantics::transitionBufferMsForUrl(
+		'soloist://player-0/soloist.wav?g=7',
+		750,
+	),
+	750,
+	'generation-qualified URL enables transition restart buffering',
+);
+is(
+	Plugins::SpotifySoloist::StreamSemantics::transitionBufferKb(
+		{
+			key => 'pcm', sampleRate => 44_100, channels => 2,
+			sampleSize => 16, bufferKb => 35,
+		},
+		0,
+	),
+	35,
+	'zero transition buffer preserves the normal PCM threshold',
+);
+is(
+	Plugins::SpotifySoloist::StreamSemantics::transitionBufferKb(
+		{
+			key => 'pcm', sampleRate => 44_100, channels => 2,
+			sampleSize => 16, bufferKb => 35,
+		},
+		750,
+	),
+	130,
+	'PCM transition duration uses sample rate, channels, and sample width',
+);
+is(
+	Plugins::SpotifySoloist::StreamSemantics::transitionBufferKb(
+		{ key => 'mp3', bitrateBps => 320_000, bufferKb => 8 },
+		750,
+	),
+	30,
+	'MP3 transition duration uses the selected encoded bitrate',
+);
+is(
+	Plugins::SpotifySoloist::StreamSemantics::transitionBufferKb(
+		{ key => 'flac', sourceBitrateBps => 1_411_200, bufferKb => 24 },
+		750,
+	),
+	130,
+	'FLAC transition duration uses the conservative source-rate estimate',
+);
+is(
+	Plugins::SpotifySoloist::StreamSemantics::transitionBufferKb(
+		{
+			key => 'pcm', sampleRate => 44_100, channels => 2,
+			sampleSize => 16, bufferKb => 35,
+		},
+		3000,
+	),
+	255,
+	'transition threshold respects the one-byte player protocol limit',
+);
 ok(
 	!Plugins::SpotifySoloist::StreamSemantics::isSoloistUrl(
 		'https://radio.example/stream.mp3'

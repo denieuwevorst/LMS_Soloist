@@ -72,7 +72,7 @@ my $prefs = preferences('plugin.spotifysoloist');
 use constant STATE_LOOP_INTERVAL       => 0.5;  # seconds
 use constant INITIAL_STATE_LOOP_DELAY  => 0.1;  # seconds
 use constant STATE_LOOP_MAX_RETRY_DELAY => 30;  # seconds
-use constant STREAM_SEMANTICS_API_VERSION => 1;
+use constant STREAM_SEMANTICS_API_VERSION => 2;
 use constant IDLE_RESTART_DELAY        => 1;    # seconds
 use constant STATE_RESYNC_INTERVAL     => 30;   # seconds
 use constant TRACE_RESTART_DELAY       => 5;    # seconds
@@ -100,6 +100,7 @@ $prefs->init({
 	apiKey          => '',
 	autostart       => 1,
 	idleDisconnectSeconds => 30,
+	transitionRestartBufferMs => 750,
 	delayDiagnostics => 0,
 	selectedPlayers => {},                # { playerID => 1, ... }
 	playerFormatOverrides => {},          # { playerID => mp3|flac|pcm } (missing = global format)
@@ -119,7 +120,10 @@ sub _assertStreamSemanticsContract {
 		applySongFormat
 		applySongTiming
 		metadataForFormat
+		normalizeTransitionRestartBufferMs
 		observeTimelineTransition
+		transitionBufferKb
+		transitionBufferMsForUrl
 		timelineObservation
 		timelineResyncReady
 	);
@@ -152,6 +156,7 @@ my $soloistVersionProbeError = '';
 my %pendingBridgeStartRetries;
 my %lastBridgeFailureLog;
 my %lastBridgeFailureAt;
+my %transitionBufferWarningLogged;
 my %MP3_BITRATES = (
 	'96k'  => 96_000,
 	'128k' => 128_000,
@@ -262,6 +267,33 @@ sub normalizationForPlayer {
 
 sub delayDiagnosticsEnabled {
 	return $prefs->get('delayDiagnostics') ? 1 : 0;
+}
+
+sub transitionRestartBufferMs {
+	my ($value) = @_;
+	$value = $prefs->get('transitionRestartBufferMs') unless @_;
+	my ( $normalized, $warning ) =
+		Plugins::SpotifySoloist::StreamSemantics::normalizeTransitionRestartBufferMs(
+			$value,
+		);
+	my $valueLabel = defined $value ? $value : 'undefined';
+	if ( $warning && !$transitionBufferWarningLogged{"$valueLabel=>$normalized"}++ ) {
+		$log->warn(
+			"invalid transition restart buffer '$valueLabel'; $warning, using ${normalized}ms"
+		);
+	}
+	return $normalized;
+}
+
+sub transitionBufferKbForFormat {
+	my ( $format, $milliseconds ) = @_;
+	$milliseconds = transitionRestartBufferMs()
+		unless defined $milliseconds;
+	return $format->{bufferKb} unless $milliseconds;
+	return Plugins::SpotifySoloist::StreamSemantics::transitionBufferKb(
+		$format,
+		$milliseconds,
+	);
 }
 
 sub _delayTraceMilestone {
@@ -1261,9 +1293,19 @@ sub directStreamInfoForUrl {
 			Plugins::SpotifySoloist::StreamSemantics::isCurrentSoloistPlaybackUrl(
 				$url, streamUrlFor($bridge), $currentGeneration,
 			);
+		my $transitionBufferMs =
+			Plugins::SpotifySoloist::StreamSemantics::transitionBufferMsForUrl(
+				$url,
+				transitionRestartBufferMs(),
+			);
 		return {
 			fifoPath        => $bridge->{fifoPath},
 			format          => $format,
+			bufferKb        => transitionBufferKbForFormat(
+				$format,
+				$transitionBufferMs,
+			),
+			transitionBufferMs => $transitionBufferMs,
 			playerId        => $bridge->{playerId},
 			streamGeneration => $currentGeneration,
 			delayDiagnostics => delayDiagnosticsEnabled(),
@@ -1658,7 +1700,10 @@ sub _finishPcmTimelineResync {
 	$b->{suppressLyrionTransportUntil} = time() + 1;
 	_traceLmsStrmRequested(
 		$b, $client,
-		input_buffer_kb => $b->{formatSpec}->{bufferKb},
+		input_buffer_kb => transitionBufferKbForFormat(
+			$b->{formatSpec},
+		),
+		transition_restart_buffer_ms => transitionRestartBufferMs(),
 		path => 'generation-replacement',
 		output_format => $b->{format},
 		output_samplesize => $b->{format} eq 'mp3' ? 'compressed' : 16,
@@ -1792,7 +1837,10 @@ sub recoverDirectStreamAfterStall {
 		);
 		_traceLmsStrmRequested(
 			$liveBridge, $liveClient,
-			input_buffer_kb => $liveBridge->{formatSpec}->{bufferKb},
+			input_buffer_kb => transitionBufferKbForFormat(
+				$liveBridge->{formatSpec},
+			),
+			transition_restart_buffer_ms => transitionRestartBufferMs(),
 			path => 'stale-recovery',
 			output_format => $liveBridge->{format},
 			output_samplesize =>

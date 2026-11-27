@@ -25,7 +25,7 @@ sub prefs {
 		soloistBin managedSoloistUpdates managedSoloistArch
 		audioBackend pipewireSink pcmShimDir wsPortBase
 		format bitrate initialVolume deviceNameSuffix apiKey autostart
-		idleDisconnectSeconds delayDiagnostics
+		idleDisconnectSeconds transitionRestartBufferMs delayDiagnostics
 	) );
 }
 
@@ -43,6 +43,11 @@ sub handler {
 		$params->{pref_autostart} ||= 0;
 		$params->{pref_managedSoloistUpdates} ||= 0;
 		$params->{pref_delayDiagnostics} ||= 0;
+		my $transitionRestartBufferMs =
+			Plugins::SpotifySoloist::Plugin::transitionRestartBufferMs(
+				$params->{pref_transitionRestartBufferMs},
+			);
+		$params->{pref_transitionRestartBufferMs} = $transitionRestartBufferMs;
 
 		# Diff old vs new selection and start/stop exactly the players that
 		# changed -- same pattern ShairTunes2's Settings.pm uses (their
@@ -138,6 +143,10 @@ sub handler {
 		$prefs->set( 'managedSoloistUpdates', $newManagedUpdates );
 		$prefs->set( 'managedSoloistArch', $newManagedArch );
 		$prefs->set( 'delayDiagnostics', $newDelayDiagnostics );
+		$prefs->set(
+			'transitionRestartBufferMs',
+			$transitionRestartBufferMs,
+		);
 
 		Plugins::SpotifySoloist::Plugin::stopBridgeForPlayer($_)    for @toStop;
 		Plugins::SpotifySoloist::Plugin::startBridgeForPlayer($_)   for @toStart;
@@ -179,6 +188,8 @@ sub handler {
 			Plugins::SpotifySoloist::Plugin::normalizationForPlayer($id);
 	}
 	$params->{players} = \@players;
+	$params->{transitionRestartBufferMs} =
+		Plugins::SpotifySoloist::Plugin::transitionRestartBufferMs();
 	$params->{soloistBinaryStatus} = Plugins::SpotifySoloist::Plugin::soloistBinaryStatus();
 
 	return $callback->( $client, $params, $class->SUPER::handler( $client, $params ), @args );

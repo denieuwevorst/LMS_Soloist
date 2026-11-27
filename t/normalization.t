@@ -55,6 +55,7 @@ $Plugins::SpotifySoloist::Plugin::stream = {
 	format => {
 		bufferKb => 35,
 	},
+	bufferKb => 35,
 };
 my $bufferKb = Plugins::SpotifySoloist::ProtocolHandler->bufferThreshold(
 	undef,
@@ -67,7 +68,16 @@ is(
 		'soloist://player-0/soloist.wav?g=7',
 	),
 	35,
-	'generation and recovery URLs retain the 35 KiB Touch input-buffer threshold',
+	'generation URL uses the resolved transition threshold',
+);
+$Plugins::SpotifySoloist::Plugin::stream->{bufferKb} = 130;
+is(
+	Plugins::SpotifySoloist::ProtocolHandler->bufferThreshold(
+		undef,
+		'soloist://player-0/soloist.wav?g=7',
+	),
+	130,
+	'generation URL can use a larger persisted transition threshold',
 );
 cmp_ok(
 	$bufferKb * 1024 / ( 1_411_200 / 8 ),

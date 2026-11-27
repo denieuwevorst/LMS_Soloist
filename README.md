@@ -103,6 +103,7 @@ Configure:
 - **Audio backend**
 - the players that should receive a Spotify Connect device
 - the global or per-player stream format
+- **Discontinuous track restart buffer** (default 750 ms, range 0-3000 ms)
 
 Each selected player receives a stable control port and FIFO based on its saved
 slot.
@@ -281,8 +282,14 @@ Disable the switch after the test and save to return to normal logging.
 Soloist marks its host-local stream as remote only for LMS's STRM threshold
 selection: LMS ignores protocol-handler thresholds for local streams and would
 otherwise request the Touch's full input-buffer prefill. The explicit
-`input_buffer_kb` trace field is approximately 200 ms for each selected format;
-it does not enable internet-stream buffering in the bridge or audio source.
+`input_buffer_kb` trace field is approximately 200 ms for normal initial
+playback. Generation-qualified URLs used by manual/discontinuous changes use
+the configurable restart duration instead; `0` preserves the normal threshold.
+PCM is calculated from its exact sample layout, MP3 from the selected bitrate,
+and variable-rate FLAC from the uncompressed S16 rate as a conservative upper
+estimate. LMS's STRM protocol caps the result at 255 KiB. This does not enable
+internet-stream buffering in the bridge or audio source, and natural
+transitions keep their current handler.
 
 ## Stream formats
 
