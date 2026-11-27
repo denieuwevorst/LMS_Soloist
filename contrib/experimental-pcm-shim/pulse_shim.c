@@ -8,7 +8,7 @@
  *
  * Environment:
  *   SOLOIST_SHIM_OUT     path to FIFO / unix socket / file   (/tmp/soloist-pcm.fifo)
- *   SOLOIST_SHIM_FORMAT  s16 | s24 | s32 (interleaved stereo LE)   (s24, packed)
+ *   SOLOIST_SHIM_FORMAT  s16 | s24 | s32 (interleaved stereo LE)   (s16)
  *   SOLOIST_SHIM_RATE    output rate in Hz, 0 = pass through       (44100)
  *   SOLOIST_SHIM_LOG     0 quiet, 1 info, 2 trace API calls         (0)
  *   SOLOIST_SHIM_RING_MS bounded live-edge ring depth               (200)
@@ -59,7 +59,7 @@ static void cfg_init(void)
     const char *e;
     snprintf(cfg.out, sizeof cfg.out, "%s",
              (e = getenv("SOLOIST_SHIM_OUT")) && *e ? e : "/tmp/soloist-pcm.fifo");
-    cfg.bytes = 3;
+    cfg.bytes = 2;
     if ((e = getenv("SOLOIST_SHIM_FORMAT"))) {
         if (!strcmp(e, "s16")) cfg.bytes = 2;
         else if (!strcmp(e, "s32")) cfg.bytes = 4;
