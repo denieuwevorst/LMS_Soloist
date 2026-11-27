@@ -267,6 +267,64 @@ ok(
 	),
 	'canonical startup URL cannot reopen an older active generation',
 );
+my $generationTrace = {
+	generation => 17,
+	strmRequestedAt => 10,
+};
+ok(
+	!Plugins::SpotifySoloist::StreamSemantics::delayTracePlayerStatusReady(
+		$generationTrace,
+		'soloist://player-3/soloist.wav?g=16',
+		'soloist://player-3/soloist.wav',
+		17,
+	),
+	'stale status before the new handler opens is not first status for the generation',
+);
+$generationTrace->{handlerOpenedAt} = 11;
+ok(
+	!Plugins::SpotifySoloist::StreamSemantics::delayTracePlayerStatusReady(
+		$generationTrace,
+		'soloist://player-3/soloist.wav?g=16',
+		'soloist://player-3/soloist.wav',
+		17,
+	),
+	'status from the outgoing handler is ignored after the replacement handler opens',
+);
+ok(
+	Plugins::SpotifySoloist::StreamSemantics::delayTracePlayerStatusReady(
+		$generationTrace,
+		'soloist://player-3/soloist.wav?g=17',
+		'soloist://player-3/soloist.wav',
+		17,
+	),
+	'post-open status on the exact generation is eligible as first player status',
+);
+my $timing = Plugins::SpotifySoloist::StreamSemantics::delayTraceTimingSummary({
+	startedAt => 20,
+	generationFlushAt => 20.010,
+	strmRequestedAt => 20.012,
+	oldHandlerClosedAt => 20.013,
+	handlerOpenedAt => 20.257,
+	firstWavAt => 20.315,
+	firstPcmAt => 20.326,
+	playerStatusAt => 20.430,
+});
+is( $timing->{category}, 'handler_reopen', 'transition timing classifies the largest phase' );
+is( $timing->{track_at}, '20.000', 'transition timing includes the track milestone time' );
+is( $timing->{flush_at}, '20.010', 'transition timing includes the flush milestone time' );
+is( $timing->{strm_at}, '20.012', 'transition timing includes the STRM milestone time' );
+is( $timing->{close_at}, '20.013', 'transition timing includes the close milestone time' );
+is( $timing->{open_at}, '20.257', 'transition timing includes the open milestone time' );
+is( $timing->{wav_at}, '20.315', 'transition timing includes the WAV milestone time' );
+is( $timing->{pcm_at}, '20.326', 'transition timing includes the PCM milestone time' );
+is( $timing->{status_at}, '20.430', 'transition timing includes the status milestone time' );
+is( $timing->{track_to_flush_ms}, 10, 'transition timing measures generation flush latency' );
+is( $timing->{flush_to_strm_ms}, 2, 'transition timing measures STRM handoff latency' );
+is( $timing->{close_to_open_ms}, 244, 'transition timing measures LMS handler replacement latency' );
+is( $timing->{open_to_wav_ms}, 58, 'transition timing measures first WAV availability' );
+is( $timing->{open_to_pcm_ms}, 69, 'transition timing measures first PCM availability' );
+is( $timing->{pcm_to_status_ms}, 104, 'transition timing measures player/device buffering' );
+is( $timing->{track_to_status_ms}, 430, 'transition timing reports total transition latency' );
 ok(
 	!Plugins::SpotifySoloist::StreamSemantics::isSoloistUrl(
 		'https://radio.example/stream.mp3'

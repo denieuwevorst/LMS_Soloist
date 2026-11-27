@@ -312,10 +312,63 @@ sub _startDelayTrace {
 	};
 }
 
+sub _traceLmsStrmRequested {
+	my ( $b, $client, %fields ) = @_;
+	return unless delayDiagnosticsEnabled();
+	my $generation = $b->{streamGeneration} || 0;
+	my $trace = $b->{delayTrace};
+	if ( !$trace || ( $trace->{generation} || 0 ) != $generation ) {
+		$trace = $b->{delayTrace} = { generation => $generation };
+	}
+	$trace->{playerStatusLogged} = 0;
+	delete $trace->{handlerOpenedAt};
+	delete $trace->{handlerUrl};
+	$trace->{strmRequestedAt} =
+		_delayTraceMilestone( $b, $client, 'lms-strm-requested', %fields );
+}
+
+sub noteDelayTraceProtocolMilestone {
+	my ( $playerId, $handlerGeneration, $milestone, $at, $url ) = @_;
+	return unless delayDiagnosticsEnabled();
+	my $b = $bridges{$playerId} or return;
+	my $trace = $b->{delayTrace} or return;
+	my $generation = $b->{streamGeneration} || 0;
+	return unless ( $trace->{generation} || 0 ) == $generation;
+	if ( $milestone eq 'handler-close' ) {
+		return unless $generation > 0
+			&& $handlerGeneration == $generation - 1;
+		$trace->{oldHandlerClosedAt} //= $at;
+		return;
+	}
+	return unless $handlerGeneration == $generation;
+	return unless
+		Plugins::SpotifySoloist::StreamSemantics::isCurrentSoloistPlaybackUrl(
+			$url, streamUrlFor($b), $generation,
+		);
+	if ( $milestone eq 'handler-open' ) {
+		$trace->{handlerOpenedAt} = $at;
+		$trace->{handlerUrl} = $url;
+	}
+	elsif ( $milestone eq 'wav-prefix' ) {
+		$trace->{firstWavAt} //= $at;
+	}
+	elsif ( $milestone eq 'first-pcm' ) {
+		$trace->{firstPcmAt} //= $at;
+	}
+}
+
 sub _tracePlayerStatus {
 	my ( $b, $client ) = @_;
 	my $trace = $b->{delayTrace} or return;
 	return if $trace->{playerStatusLogged};
+	my $playingUrl = eval { Slim::Player::Playlist::url($client) };
+	return unless
+		Plugins::SpotifySoloist::StreamSemantics::delayTracePlayerStatusReady(
+			$trace,
+			$playingUrl,
+			streamUrlFor($b),
+			$b->{streamGeneration} || 0,
+		);
 	return unless _clientIsOnOwnSoloistStream(
 		$client, _playbackStreamUrlFor($b),
 	);
@@ -323,11 +376,22 @@ sub _tracePlayerStatus {
 	return unless $playing;
 	my $elapsed = eval { $client->master->songElapsedSeconds() };
 	$trace->{playerStatusLogged} = 1;
+	$trace->{playerStatusAt} =
+		Plugins::SpotifySoloist::StreamSemantics::monotonicNow();
 	_delayTraceMilestone(
 		$b, $client, 'player-first-status',
 		playing => $playing,
 		elapsed_s => defined $elapsed ? sprintf( '%.3f', $elapsed ) : 'unknown',
 	);
+	if (
+		my $summary =
+			Plugins::SpotifySoloist::StreamSemantics::delayTraceTimingSummary($trace)
+	) {
+		_delayTraceMilestone(
+			$b, $client, 'transition-timing',
+			%$summary,
+		);
+	}
 }
 
 sub _fileFingerprint {
@@ -1510,16 +1574,20 @@ sub _finishPcmTimelineResync {
 			$pending->{url},
 		)
 	);
-	_delayTraceMilestone(
+	my $flushAt = _delayTraceMilestone(
 		$b, $client, 'generation-flush-complete',
 		request => $requestId,
 		shim_ack => $acknowledged ? 'yes' : 'timeout-degraded',
 		reason => $pending->{transition}->{reason},
 		url => $pending->{url},
 	);
+	$b->{delayTrace}->{generationFlushAt} = $flushAt
+		if $b->{delayTrace}
+		&& ( $b->{delayTrace}->{generation} || 0 )
+			== ( $b->{streamGeneration} || 0 );
 	$b->{suppressLyrionTransportUntil} = time() + 1;
-	_delayTraceMilestone(
-		$b, $client, 'lms-strm-requested',
+	_traceLmsStrmRequested(
+		$b, $client,
 		input_buffer_kb => $b->{formatSpec}->{bufferKb},
 		path => 'generation-replacement',
 		output_format => $b->{format},
@@ -1652,8 +1720,8 @@ sub recoverDirectStreamAfterStall {
 			discarded_bytes => $discarded || 0,
 			url => $replacementUrl,
 		);
-		_delayTraceMilestone(
-			$liveBridge, $liveClient, 'lms-strm-requested',
+		_traceLmsStrmRequested(
+			$liveBridge, $liveClient,
 			input_buffer_kb => $liveBridge->{formatSpec}->{bufferKb},
 			path => 'stale-recovery',
 			output_format => $liveBridge->{format},
@@ -2242,8 +2310,8 @@ sub _applyPlaybackTransition {
 			. ' through the direct LMS stream'
 		);
 		$b->{suppressLyrionTransportUntil} = time() + 1;
-		_delayTraceMilestone(
-			$b, $client, 'lms-strm-requested',
+		_traceLmsStrmRequested(
+			$b, $client,
 			input_buffer_kb => $b->{formatSpec}->{bufferKb},
 			path => 'initial-play',
 			output_format => $b->{format},

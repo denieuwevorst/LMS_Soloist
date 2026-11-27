@@ -28,6 +28,7 @@ sub _delayTrace {
 	my $canonical =
 		Plugins::SpotifySoloist::StreamSemantics::canonicalSoloistUrl($url)
 		|| $url;
+	my $now = Plugins::SpotifySoloist::StreamSemantics::monotonicNow();
 	my @details = (
 		'trace_client_id=' . ( ${*$self}{traceClientId} || 'unknown' ),
 		'generation=' . ( ${*$self}{streamGeneration} || 0 ),
@@ -41,11 +42,11 @@ sub _delayTrace {
 	$log->warn(
 		sprintf(
 			'[delay-trace] milestone=%s monotonic=%.3f %s',
-			$milestone,
-			Plugins::SpotifySoloist::StreamSemantics::monotonicNow(),
+			$milestone, $now,
 			join( ' ', @details ),
 		)
 	);
+	return $now;
 }
 
 # LMS only forwards a protocol handler's bufferThreshold to the player's STRM
@@ -176,11 +177,16 @@ sub new {
 			? " after discarding $initialDiscarded bytes queued while the LMS reader was replaced"
 			: '' )
 	);
-	_delayTrace(
+	my $openedAt = _delayTrace(
 		$self, 'protocol-handler-open',
 		content_type => $format->{contentType},
 		conversion => $format->{key} eq 'pcm' ? 'pcm-direct' : 'lms-transcoder',
 		url => $url,
+	);
+	Plugins::SpotifySoloist::Plugin::noteDelayTraceProtocolMilestone(
+		$stream->{playerId},
+		${*$self}{streamGeneration} || 0,
+		'handler-open', $openedAt, $url,
 	);
 	return $self;
 }
@@ -207,10 +213,15 @@ sub sysread {
 		}
 		if ( !${*$self}{wavPrefixLogged} ) {
 			${*$self}{wavPrefixLogged} = 1;
-			_delayTrace(
+			my $wavAt = _delayTrace(
 				$self, 'protocol-wav-prefix',
 				bytes => length($chunk),
 				content_type => ${*$self}{contentType} || 'unknown',
+			);
+			Plugins::SpotifySoloist::Plugin::noteDelayTraceProtocolMilestone(
+				${*$self}{traceClientId},
+				${*$self}{streamGeneration} || 0,
+				'wav-prefix', $wavAt, ${*$self}{url},
 			);
 		}
 		return length $chunk;
@@ -312,12 +323,17 @@ sub sysread {
 						: '',
 				)
 			);
-			_delayTrace(
+			my $pcmAt = _delayTrace(
 				$self, 'protocol-first-pcm-read',
 				bytes => $read,
 				handler_open_to_pcm_ms =>
 					sprintf( '%.0f', ( $now - ( ${*$self}{openedAt} || $now ) ) * 1000 ),
 				content_type => ${*$self}{contentType} || 'unknown',
+			);
+			Plugins::SpotifySoloist::Plugin::noteDelayTraceProtocolMilestone(
+				${*$self}{traceClientId},
+				${*$self}{streamGeneration} || 0,
+				'first-pcm', $pcmAt, ${*$self}{url},
 			);
 		}
 	}
@@ -354,7 +370,13 @@ sub close {
 	);
 	if ( !${*$self}{closeLogged} ) {
 		${*$self}{closeLogged} = 1;
-		_delayTrace( $self, 'protocol-handler-close', url => $url );
+		my $closedAt =
+			_delayTrace( $self, 'protocol-handler-close', url => $url );
+		Plugins::SpotifySoloist::Plugin::noteDelayTraceProtocolMilestone(
+			${*$self}{traceClientId},
+			${*$self}{streamGeneration} || 0,
+			'handler-close', $closedAt, $url,
+		);
 	}
 	my $closed = $self->SUPER::close();
 	# Preserve the existing bounded replacement interval so downstream decoder

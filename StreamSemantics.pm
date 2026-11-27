@@ -66,6 +66,88 @@ sub isCurrentSoloistPlaybackUrl {
 		: !defined $parts->{generation};
 }
 
+sub delayTracePlayerStatusReady {
+	my ( $trace, $playingUrl, $canonical, $generation ) = @_;
+	return 0 unless ref $trace eq 'HASH';
+	return 0 unless defined $trace->{strmRequestedAt}
+		&& defined $trace->{handlerOpenedAt};
+	return 0 unless ( $trace->{generation} || 0 ) == ( $generation || 0 );
+	return isCurrentSoloistPlaybackUrl( $playingUrl, $canonical, $generation );
+}
+
+sub delayTraceTimingSummary {
+	my ($trace) = @_;
+	return unless ref $trace eq 'HASH';
+	return unless defined $trace->{startedAt}
+		&& defined $trace->{strmRequestedAt}
+		&& defined $trace->{handlerOpenedAt}
+		&& defined $trace->{firstPcmAt}
+		&& defined $trace->{playerStatusAt};
+
+	my %phaseMs = (
+		pre_flush => (
+			$trace->{strmRequestedAt} - $trace->{startedAt}
+		) * 1000,
+		handler_reopen => (
+			$trace->{handlerOpenedAt} - $trace->{strmRequestedAt}
+		) * 1000,
+		pcm_availability => (
+			$trace->{firstPcmAt} - $trace->{handlerOpenedAt}
+		) * 1000,
+		player_buffer => (
+			$trace->{playerStatusAt} - $trace->{firstPcmAt}
+		) * 1000,
+	);
+	my ($category) =
+		sort { $phaseMs{$b} <=> $phaseMs{$a} } keys %phaseMs;
+	my %summary = (
+		category => $category,
+		track_at => sprintf( '%.3f', $trace->{startedAt} ),
+		strm_at => sprintf( '%.3f', $trace->{strmRequestedAt} ),
+		open_at => sprintf( '%.3f', $trace->{handlerOpenedAt} ),
+		pcm_at => sprintf( '%.3f', $trace->{firstPcmAt} ),
+		status_at => sprintf( '%.3f', $trace->{playerStatusAt} ),
+		track_to_strm_ms => sprintf( '%.0f', $phaseMs{pre_flush} ),
+		strm_to_open_ms => sprintf( '%.0f', $phaseMs{handler_reopen} ),
+		open_to_pcm_ms => sprintf( '%.0f', $phaseMs{pcm_availability} ),
+		pcm_to_status_ms => sprintf( '%.0f', $phaseMs{player_buffer} ),
+		track_to_status_ms => sprintf(
+			'%.0f',
+			( $trace->{playerStatusAt} - $trace->{startedAt} ) * 1000,
+		),
+	);
+	if ( defined $trace->{generationFlushAt} ) {
+		$summary{flush_at} = sprintf( '%.3f', $trace->{generationFlushAt} );
+		$summary{track_to_flush_ms} = sprintf(
+			'%.0f',
+			( $trace->{generationFlushAt} - $trace->{startedAt} ) * 1000,
+		);
+		$summary{flush_to_strm_ms} = sprintf(
+			'%.0f',
+			( $trace->{strmRequestedAt} - $trace->{generationFlushAt} ) * 1000,
+		);
+	}
+	if ( defined $trace->{oldHandlerClosedAt} ) {
+		$summary{close_at} = sprintf( '%.3f', $trace->{oldHandlerClosedAt} );
+		$summary{strm_to_close_ms} = sprintf(
+			'%.0f',
+			( $trace->{oldHandlerClosedAt} - $trace->{strmRequestedAt} ) * 1000,
+		);
+		$summary{close_to_open_ms} = sprintf(
+			'%.0f',
+			( $trace->{handlerOpenedAt} - $trace->{oldHandlerClosedAt} ) * 1000,
+		);
+	}
+	if ( defined $trace->{firstWavAt} ) {
+		$summary{wav_at} = sprintf( '%.3f', $trace->{firstWavAt} );
+		$summary{open_to_wav_ms} = sprintf(
+			'%.0f',
+			( $trace->{firstWavAt} - $trace->{handlerOpenedAt} ) * 1000,
+		);
+	}
+	return \%summary;
+}
+
 sub monotonicNow {
 	my $now = eval {
 		Time::HiRes::clock_gettime( Time::HiRes::CLOCK_MONOTONIC() );

@@ -22,6 +22,10 @@
 - Route Soloist through LMS's handler-specific STRM input threshold so a Touch
   starts after roughly 200 ms instead of filling its default ~1 MiB input
   buffer (about 5.8 seconds for 44.1 kHz stereo S16LE).
+- Associate first-player-status diagnostics with the exact opened stream
+  generation, ignoring stale status from the outgoing handler. Add a derived
+  transition-timing milestone that separates flush, handler replacement, PCM
+  availability, and player/device buffering without changing playback.
 
 - Add an optional startup-delay trace that correlates Spotify playing/URI
   observation, shim first PCM output, protocol-handler WAV/audio reads,

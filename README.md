@@ -264,11 +264,17 @@ generation and canonical `soloist://` URL. Interpret adjacent intervals as:
   pipeline. For FLAC/MP3, `protocol-handler-open conversion=lms-transcoder`
   identifies the LMS converter path; LMS does not expose the converter's first
   stdin write through the plugin API.
-- `lms-strm-requested` to `player-first-status`: the first player status LMS
-  exposes after handing playback to the player, covering network/output
-  buffering. The plugin API cannot observe the lower-level socket `strm` packet
-  or hardware DAC directly.
+- `lms-strm-requested` to `player-first-status`: the first playing status after
+  the exact requested generation's protocol handler has opened. Status from the
+  outgoing handler is ignored, so replacement traces cannot reuse stale elapsed
+  time.
 - `player-first-status` to the noted audible time: device-side output latency.
+- `transition-timing`: one derived summary for the generation. It reports the
+  track-to-flush, flush-to-STRM, STRM-to-close, close-to-open, open-to-WAV,
+  open-to-PCM, PCM-to-status, and total gaps that are observable through LMS,
+  and classifies the largest interval as `pre_flush`, `handler_reopen`,
+  `pcm_availability`, or `player_buffer`. The plugin API cannot observe the
+  lower-level socket `strm` packet or hardware DAC directly.
 
 Disable the switch after the test and save to return to normal logging.
 

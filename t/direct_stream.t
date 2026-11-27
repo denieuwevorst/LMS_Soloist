@@ -37,11 +37,13 @@ BEGIN {
 	package Plugins::SpotifySoloist::Plugin;
 	our $stream;
 	our @transitionClaims;
+	our @protocolMilestones;
 	sub directStreamInfoForUrl { return $stream }
 	sub claimDirectStreamTransitionForUrl {
 		push @transitionClaims, [@_];
 		return { reason => 'track', resyncAt => 1 };
 	}
+	sub noteDelayTraceProtocolMilestone { push @protocolMilestones, [@_] }
 }
 
 require './StreamSemantics.pm';
@@ -99,6 +101,15 @@ like(
 	join( "\n", @TestLogger::info ),
 	qr/milestone=protocol-handler-open .*trace_client_id=test-player-0 .*generation=0 .*canonical=soloist:\/\/player-0\/soloist\.wav/,
 	'diagnostic open milestone carries canonical URL and generation',
+);
+is_deeply(
+	[
+		@{
+			$Plugins::SpotifySoloist::Plugin::protocolMilestones[0]
+		}[ 0 .. 2 ]
+	],
+	[ 'test-player-0', 0, 'handler-open' ],
+	'protocol open associates the handler with the exact trace generation',
 );
 is( $handler->contentType, 'wav', 'declares the LMS WAV content type' );
 is( $handler->getStreamBitrate(2_000_000), 1_411_200, 'declares PCM bitrate' );
