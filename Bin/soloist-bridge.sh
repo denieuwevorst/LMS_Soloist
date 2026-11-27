@@ -441,6 +441,7 @@ start_encoder() {
 		pcm)
 			log "starting persistent S32LE -> dithered S16LE bridge converter"
 			"$FFMPEG_BIN" -nostdin -hide_banner -loglevel warning -y \
+				-analyzeduration 0 -probesize 32 \
 				-f s32le -ar 44100 -ac 2 -blocksize 4096 -i "$SOLOIST_PCM_SHIM_FIFO" \
 				-map 0:a:0 -af aresample=osf=s16:dither_method=triangular \
 				-flush_packets 1 -f s16le "$FIFO_PATH" 4>&- &
@@ -448,6 +449,7 @@ start_encoder() {
 		flac)
 			log "starting persistent S32LE -> 16-bit FLAC bridge converter"
 			"$FFMPEG_BIN" -nostdin -hide_banner -loglevel warning -y \
+				-analyzeduration 0 -probesize 32 \
 				-f s32le -ar 44100 -ac 2 -blocksize 4096 -i "$SOLOIST_PCM_SHIM_FIFO" \
 				-map 0:a:0 -af aresample=osf=s16:dither_method=triangular \
 				-c:a flac -sample_fmt s16 -compression_level 0 \
@@ -456,6 +458,7 @@ start_encoder() {
 		mp3)
 			log "starting persistent S32LE -> MP3 ${BITRATE} bridge converter"
 			"$FFMPEG_BIN" -nostdin -hide_banner -loglevel warning -y \
+				-analyzeduration 0 -probesize 32 \
 				-f s32le -ar 44100 -ac 2 -blocksize 4096 -i "$SOLOIST_PCM_SHIM_FIFO" \
 				-map 0:a:0 -c:a libmp3lame -b:a "$BITRATE" \
 				-flush_packets 1 -f mp3 "$FIFO_PATH" 4>&- &

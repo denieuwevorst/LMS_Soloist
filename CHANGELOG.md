@@ -11,6 +11,9 @@
   test starts the converter before the LMS-facing reader, keeps PCM source
   audio absent for five seconds, and then requires first final bytes within
   500 ms while the converter remains alive.
+- Disable ffmpeg's default input analysis/probing window for the explicitly
+  described raw S32LE source. Without this, the converter could consume about
+  five seconds of live audio before opening the final PCM/FLAC/MP3 FIFO.
 - Replace LMS-owned realtime S32 conversion with one persistent bridge-side
   converter. Field logs from the current `2026-11-22.1-s32le` build showed
   repeated 200-205 ms LMS consumer gaps and real live-edge drops during steady

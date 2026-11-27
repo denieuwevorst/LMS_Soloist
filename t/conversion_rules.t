@@ -25,6 +25,11 @@ like(
 );
 like(
 	$bridge,
+	qr/-analyzeduration 0 -probesize 32.*?-f s32le/s,
+	'bridge bypasses ffmpeg raw-input analysis before opening the final FIFO',
+);
+like(
+	$bridge,
 	qr/aresample=osf=s16:dither_method=triangular.*?-c:a flac -sample_fmt s16 -compression_level 0.*?-f flac "\$FIFO_PATH"/s,
 	'bridge emits Touch-compatible 16-bit FLAC',
 );

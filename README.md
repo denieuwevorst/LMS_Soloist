@@ -55,6 +55,9 @@ triangular-dithered to S16LE, FLAC is explicitly 16-bit, and MP3 uses the
 configured fixed bitrate. The protocol handler therefore exposes a native
 final stream and LMS does not launch a second realtime converter. This avoids
 the recurring roughly 200 ms LMS transcoder input stalls observed in the field.
+The raw source format is declared explicitly with probing and analysis
+disabled, so ffmpeg opens the selected final stream as soon as source frames
+arrive instead of collecting its default multi-second analysis window.
 The shim's 200 ms live-edge ring and 64 KiB S32LE source FIFO remain bounded.
 
 The handler opens the final FIFO nonblocking in read/write mode. Discontinuous
