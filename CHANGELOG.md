@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Add an optional startup-delay trace that correlates Spotify playing/URI
+  observation, shim first PCM output, protocol-handler WAV/audio reads,
+  LMS playback handoff, generation-flush completion, and first available
+  player status by monotonic timestamp, canonical URL, and stream generation.
+  The trace is milestone-only and does not change buffering or log PCM data.
 - Restore the field-proven S16LE direct source: Soloist writes through the
   native shim's bounded live-edge ring into one bridge-lifetime guarded FIFO,
   and the protocol handler supplies a truthful 44.1 kHz, stereo, 16-bit WAV

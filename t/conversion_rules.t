@@ -44,6 +44,11 @@ like( $plugin, qr/sourceSampleSize\s*=>\s*16/, 'source metadata publishes 16-bit
 like( $plugin, qr/sourceBlockAlign\s*=>\s*4/, 'source metadata publishes stereo S16 frame alignment' );
 like( $handler, qr/\$\{\*\$self\}\{prefix\}\s*=\s*_wavHeader\(\)/, 'every LMS source generation starts with a truthful S16 WAV header' );
 like( $plugin, qr/INITIAL_STATE_LOOP_DELAY\s+=>\s+0\.1/, 'initial playback observation remains prompt' );
+like( $plugin, qr/milestone=%s monotonic=%.3f/, 'plugin delay milestones share a monotonic timestamp format' );
+like( $plugin, qr/'lms-strm-requested'/, 'plugin traces the LMS playback handoff' );
+like( $plugin, qr/'player-first-status'/, 'plugin traces the first available player status' );
+like( $bridge, qr/SOLOIST_SHIM_DELAY_TRACE="\$SOLOIST_DELAY_DIAGNOSTICS"/, 'bridge forwards the diagnostic switch to the shim' );
+like( $settings . $html, qr/delayDiagnostics/, 'settings expose one delay diagnostic switch' );
 unlike( $settings . $html, qr/playerLiveRing|liveRing\./, 'settings expose no obsolete compatibility mode' );
 
 done_testing;

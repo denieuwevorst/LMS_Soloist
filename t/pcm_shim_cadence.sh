@@ -53,6 +53,7 @@ PY
 	SOLOIST_SHIM_RING_MS=200 \
 	SOLOIST_SHIM_MODE="$mode" \
 	SOLOIST_SHIM_LOG=1 \
+	SOLOIST_SHIM_DELAY_TRACE=1 \
 	"$shim/marker_client" 6 >"$log" 2>&1
 	wait "$reader"
 	exec 9>&-
@@ -68,7 +69,8 @@ if maximum > 0.080:
     raise SystemExit(f"{sys.argv[2]} wall-clock PCM gap was {maximum * 1000:.1f} ms")
 print(f"{sys.argv[2]} wall-clock output max gap={maximum * 1000:.1f} ms")
 PY
-	grep -q "loaded build 2026-11-27.1-s16le: mode=$mode" "$log"
+	grep -q "loaded build 2026-11-27.2-delaytrace: mode=$mode" "$log"
+	[ "$(grep -c 'milestone=shim-first-pcm-write' "$log")" -eq 1 ]
 	grep -q "runtime summary: mode=$mode" "$log"
 	if grep -Eq 'live-edge drop|stream underflow' "$log"; then
 		cat "$log" >&2

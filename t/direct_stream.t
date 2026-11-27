@@ -23,7 +23,8 @@ BEGIN {
 	package TestLogger;
 	sub debug { }
 	sub error { }
-	sub info { }
+	our @info;
+	sub info { push @info, $_[1] }
 
 	package Slim::Utils::Strings;
 	sub import {
@@ -63,6 +64,7 @@ plan skip_all => "mkfifo unavailable: " . ( $@ || $! )
 
 $Plugins::SpotifySoloist::Plugin::stream = {
 	fifoPath => $fifo,
+	delayDiagnostics => 1,
 	format   => {
 		key           => 'pcm',
 		contentType   => 'wav',
@@ -86,6 +88,11 @@ my $handler = Plugins::SpotifySoloist::ProtocolHandler->new({
 	song => $song,
 });
 ok( $handler, 'opens the direct FIFO stream' );
+like(
+	join( "\n", @TestLogger::info ),
+	qr/milestone=protocol-handler-open .*generation=0 .*canonical=soloist:\/\/player-0\/soloist\.wav/,
+	'diagnostic open milestone carries canonical URL and generation',
+);
 is( $handler->contentType, 'wav', 'declares the LMS WAV content type' );
 is( $handler->getStreamBitrate(2_000_000), 1_411_200, 'declares PCM bitrate' );
 is( $song->samplerate, 44100, 'sets PCM sample rate' );
@@ -102,10 +109,20 @@ is( $handler->sysread( $buffer, 44 ), 44, 'prepends a complete WAV header' );
 is( substr( $buffer, 0, 4 ), 'RIFF', 'WAV header has RIFF marker' );
 is( substr( $buffer, 8, 8 ), 'WAVEfmt ', 'WAV header has format marker' );
 is( substr( $buffer, 36, 4 ), 'data', 'WAV header has data marker' );
+like(
+	join( "\n", @TestLogger::info ),
+	qr/milestone=protocol-first-wav-bytes .*generation=0 .*bytes=44/,
+	'diagnostic trace records the first WAV bytes once',
+);
 
 $buffer = '';
 is( $handler->sysread( $buffer, 32 ), 9, 'reads FIFO audio after the header' );
 is( $buffer, 'audio-one', 'forwards FIFO audio unchanged' );
+like(
+	join( "\n", @TestLogger::info ),
+	qr/milestone=protocol-first-pcm-read .*generation=0 .*bytes=9/,
+	'diagnostic trace records the first FIFO audio read',
+);
 
 select undef, undef, undef, 1.05;
 syswrite( $writer, 'stale-audio' ) == 11 or die "write stale payload: $!";
@@ -145,6 +162,11 @@ is( $buffer, 'audio-two', 'forwards restarted capture audio unchanged' );
 
 close $writer;
 close $handler;
+like(
+	join( "\n", @TestLogger::info ),
+	qr/milestone=protocol-handler-close .*generation=0/,
+	'diagnostic trace records handler closure',
+);
 
 $Plugins::SpotifySoloist::Plugin::stream->{streamGeneration} = 7;
 my $generationSong = TestSong->new;

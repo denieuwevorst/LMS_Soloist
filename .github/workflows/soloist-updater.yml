@@ -130,7 +130,7 @@ jobs:
             "$work/soloist" --version \
             >"$work/version.txt" 2>&1
           cat "$work/version.txt"
-          grep -q 'loaded build 2026-11-27.1-s16le' "$work/version.txt"
+          grep -q 'loaded build 2026-11-27.2-delaytrace' "$work/version.txt"
           grep -Eq 'build [0-9]{10}|[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z' \
             "$work/version.txt"
 
@@ -168,6 +168,6 @@ jobs:
             --library-path "$PWD/Bin/${{ matrix.directory }}:$PWD/Bin/${{ matrix.directory }}/glibc" \
             "$work/soloist" --version >"$work/version.txt" 2>&1
           cat "$work/version.txt"
-          grep -q 'loaded build 2026-11-27.1-s16le' "$work/version.txt"
+          grep -q 'loaded build 2026-11-27.2-delaytrace' "$work/version.txt"
           grep -Eq 'build [0-9]{10}|[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z' \
             "$work/version.txt"

@@ -25,7 +25,7 @@ sub prefs {
 		soloistBin managedSoloistUpdates managedSoloistArch
 		audioBackend pipewireSink pcmShimDir wsPortBase
 		format bitrate initialVolume deviceNameSuffix apiKey autostart
-		idleDisconnectSeconds
+		idleDisconnectSeconds delayDiagnostics
 	) );
 }
 
@@ -42,6 +42,7 @@ sub handler {
 	if ( $params->{saveSettings} ) {
 		$params->{pref_autostart} ||= 0;
 		$params->{pref_managedSoloistUpdates} ||= 0;
+		$params->{pref_delayDiagnostics} ||= 0;
 
 		# Diff old vs new selection and start/stop exactly the players that
 		# changed -- same pattern ShairTunes2's Settings.pm uses (their
@@ -71,6 +72,8 @@ sub handler {
 		my $newManagedUpdates = $params->{pref_managedSoloistUpdates} ? 1 : 0;
 		my $oldManagedArch = $prefs->get('managedSoloistArch') || 'auto';
 		my $newManagedArch = $params->{pref_managedSoloistArch} || 'auto';
+		my $oldDelayDiagnostics = $prefs->get('delayDiagnostics') ? 1 : 0;
+		my $newDelayDiagnostics = $params->{pref_delayDiagnostics} ? 1 : 0;
 		$newManagedArch = 'auto' unless $newManagedArch =~ /^(?:auto|x86_64|arm32|arm64)$/;
 		my @toStart;
 		my @toStop;
@@ -115,6 +118,7 @@ sub handler {
 					$oldBackend ne $newBackend ||
 					$oldPcmShimDir ne $newPcmShimDir ||
 					$oldNormalization != $newNormalization ||
+					$oldDelayDiagnostics != $newDelayDiagnostics ||
 					( $oldManagedUpdates && !$newManagedUpdates ) ||
 					(
 						$newFormat eq 'mp3' &&
@@ -133,6 +137,7 @@ sub handler {
 		$prefs->set( 'bitrate', $newBitrate );
 		$prefs->set( 'managedSoloistUpdates', $newManagedUpdates );
 		$prefs->set( 'managedSoloistArch', $newManagedArch );
+		$prefs->set( 'delayDiagnostics', $newDelayDiagnostics );
 
 		Plugins::SpotifySoloist::Plugin::stopBridgeForPlayer($_)    for @toStop;
 		Plugins::SpotifySoloist::Plugin::startBridgeForPlayer($_)   for @toStart;

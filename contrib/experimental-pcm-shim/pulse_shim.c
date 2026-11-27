@@ -49,7 +49,7 @@
 
 static struct {
     char out[512], control[512], ack[512];
-    int bytes, rate, log, max_tlength_ms, ring_ms, compat;
+    int bytes, rate, log, max_tlength_ms, ring_ms, compat, delay_trace;
     uint64_t counter_base_frames;
 } cfg;
 static pthread_once_t cfg_once = PTHREAD_ONCE_INIT;
@@ -67,6 +67,7 @@ static void cfg_init(void)
     cfg.rate = 44100;
     if ((e = getenv("SOLOIST_SHIM_RATE"))) cfg.rate = atoi(e);
     cfg.log = (e = getenv("SOLOIST_SHIM_LOG")) ? atoi(e) : 0;
+    cfg.delay_trace = (e = getenv("SOLOIST_SHIM_DELAY_TRACE")) ? atoi(e) : 0;
     cfg.max_tlength_ms = (e = getenv("SOLOIST_SHIM_MAX_TLENGTH_MS")) ? atoi(e) : 0;
     cfg.ring_ms = (e = getenv("SOLOIST_SHIM_RING_MS")) ? atoi(e) : 200;
     if (cfg.ring_ms < 20) cfg.ring_ms = 20;
@@ -88,7 +89,7 @@ __attribute__((constructor))
 static void shim_loaded(void)
 {
     CFG();
-    fprintf(stderr, "[soloist-shim] loaded build 2026-11-27.1-s16le: mode=%s out=%s format=%dB rate=%d ring_ms=%d max_tlength_ms=%d control=%s\n",
+    fprintf(stderr, "[soloist-shim] loaded build 2026-11-27.2-delaytrace: mode=%s out=%s format=%dB rate=%d ring_ms=%d max_tlength_ms=%d control=%s\n",
         cfg.compat ? "compat" : "live-ring",
         cfg.out, cfg.bytes, cfg.rate, cfg.ring_ms, cfg.max_tlength_ms,
         cfg.control[0] ? cfg.control : "off");
@@ -113,6 +114,8 @@ static struct {
     uint64_t eagain_count, partial_count, max_wait_ns, max_queued_usec;
     unsigned char pending[8];
     size_t pending_len;
+    unsigned long traced_generation;
+    int traced_generation_valid;
 } out = {
     .lk = PTHREAD_MUTEX_INITIALIZER,
     .fd = -1
@@ -271,6 +274,14 @@ static void out_write(pa_stream *s, const unsigned char *b, size_t len,
         n = out.is_sock ? send(out.fd, b + off, chunk, MSG_NOSIGNAL)
                         : write(out.fd, b + off, chunk);
         if (n > 0) {
+            if (cfg.delay_trace &&
+                (!out.traced_generation_valid ||
+                 out.traced_generation != generation)) {
+                out.traced_generation = generation;
+                out.traced_generation_valid = 1;
+                LOG(1, "[delay-trace] milestone=shim-first-pcm-write monotonic=%.3f audio_generation=%lu bytes=%zd",
+                    now_ns() / 1000000000.0, generation, n);
+            }
             if ((size_t) n < chunk) out.partial_count++;
             off += (size_t) n;
             if ((size_t) n % frame_size) {

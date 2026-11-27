@@ -88,6 +88,12 @@ PLUGIN_SPOTIFYSOLOIST_IDLEDISCONNECT
 PLUGIN_SPOTIFYSOLOIST_IDLEDISCONNECT_DESC
 	EN	Restarts the Soloist instance after this many seconds paused, clearing its metadata and briefly releasing the Spotify Connect account and stale artwork. Set to 0 to keep it continuously connected.
 
+PLUGIN_SPOTIFYSOLOIST_DELAYDIAGNOSTICS
+	EN	Trace playback startup delay
+
+PLUGIN_SPOTIFYSOLOIST_DELAYDIAGNOSTICS_DESC
+	EN	Log one timestamped milestone per startup stage and stream generation. Enable only for a controlled delay test; normal per-byte audio is never logged.
+
 PLUGIN_SPOTIFYSOLOIST_STARTALL
 	EN	Start all selected
 

@@ -21,6 +21,32 @@ use constant STALE_DRAIN_SECONDS    => 0.25;
 use constant MAX_DRAIN_BYTES        => 4 * 1024 * 1024;
 use constant CONVERTER_CLOSE_GRACE_SECONDS => 0.12;
 
+sub _delayTrace {
+	my ( $self, $milestone, %fields ) = @_;
+	return unless ${*$self}{delayDiagnostics};
+	my $url = ${*$self}{url} || '';
+	my $canonical =
+		Plugins::SpotifySoloist::StreamSemantics::canonicalSoloistUrl($url)
+		|| $url;
+	my @details = (
+		'generation=' . ( ${*$self}{streamGeneration} || 0 ),
+		"canonical=$canonical",
+	);
+	push @details, map {
+		my $value = defined $fields{$_} ? $fields{$_} : 'unknown';
+		$value =~ s/[\r\n\s]+/_/g;
+		"$_=$value";
+	} sort keys %fields;
+	$log->info(
+		sprintf(
+			'[delay-trace] milestone=%s monotonic=%.3f %s',
+			$milestone,
+			Plugins::SpotifySoloist::StreamSemantics::monotonicNow(),
+			join( ' ', @details ),
+		)
+	);
+}
+
 # The bytes originate from a per-player FIFO on the LMS host. Marking this as
 # remote makes LMS apply its internet-stream bufferSecs delay before playback.
 sub isRemote { 0 }
@@ -102,6 +128,7 @@ sub new {
 	${*$self}{formatKey} = $format->{key};
 	${*$self}{bitrate} = $format->{sourceBitrateBps} || 1_411_200;
 	${*$self}{streamGeneration} = $stream->{streamGeneration} || 0;
+	${*$self}{delayDiagnostics} = $stream->{delayDiagnostics} ? 1 : 0;
 	${*$self}{transition} =
 		Plugins::SpotifySoloist::Plugin::claimDirectStreamTransitionForUrl(
 			$url,
@@ -132,6 +159,12 @@ sub new {
 			? " after discarding $initialDiscarded bytes queued while the LMS reader was replaced"
 			: '' )
 	);
+	_delayTrace(
+		$self, 'protocol-handler-open',
+		content_type => $format->{contentType},
+		conversion => $format->{key} eq 'pcm' ? 'pcm-direct' : 'lms-transcoder',
+		url => $url,
+	);
 	return $self;
 }
 
@@ -147,6 +180,14 @@ sub sysread {
 		}
 		else {
 			$_[1] = $chunk;
+		}
+		if ( !${*$self}{wavPrefixLogged} ) {
+			${*$self}{wavPrefixLogged} = 1;
+			_delayTrace(
+				$self, 'protocol-first-wav-bytes',
+				bytes => length($chunk),
+				content_type => ${*$self}{contentType} || 'unknown',
+			);
 		}
 		return length $chunk;
 	}
@@ -247,6 +288,13 @@ sub sysread {
 						: '',
 				)
 			);
+			_delayTrace(
+				$self, 'protocol-first-pcm-read',
+				bytes => $read,
+				handler_open_to_pcm_ms =>
+					sprintf( '%.0f', ( $now - ( ${*$self}{openedAt} || $now ) ) * 1000 ),
+				content_type => ${*$self}{contentType} || 'unknown',
+			);
 		}
 	}
 	_logReadSummary( $self, $now );
@@ -278,13 +326,12 @@ sub close {
 	my $url = ${*$self}{url} || 'unknown Soloist stream';
 	$log->info(
 		"closing direct Soloist protocol handler for '$url'"
-		. '; the bridge keeps Soloist alive and restarts the final converter if needed'
+		. '; the bridge keeps Soloist and the guarded S16 FIFO alive'
 	);
+	_delayTrace( $self, 'protocol-handler-close', url => $url );
 	my $closed = $self->SUPER::close();
-	# Leave a bounded reader-free window so the old ffmpeg writer observes
-	# EPIPE before LMS opens the replacement handler. This guarantees a clean
-	# PCM timeline and fresh FLAC/MP3 headers instead of relying on a scheduler
-	# race between close and reopen.
+	# Preserve the existing bounded replacement interval so downstream decoder
+	# state is cleared before LMS opens the next generation.
 	select undef, undef, undef, CONVERTER_CLOSE_GRACE_SECONDS;
 	return $closed;
 }

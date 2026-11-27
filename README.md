@@ -225,6 +225,40 @@ LMS service environment only when trace-level Pulse API calls are needed.
 See `contrib/experimental-pcm-shim/README.md` for build details, supported
 environment variables, and limitations.
 
+### Measuring startup delay
+
+Enable **Trace playback startup delay** in the plugin settings and save. This
+restarts enabled bridges once so the shim and LMS-side trace use the same
+switch. The trace writes one `[delay-trace]` line per milestone and generation;
+it never logs PCM payloads.
+
+Run one controlled test:
+
+1. Start with Spotify paused or idle and the player stopped.
+2. Press Play on one track and note the wall-clock second when sound becomes
+   audible.
+3. Let it play for 10 seconds, then stop.
+4. Copy the log lines from `milestone=spotify-playing` through
+   `milestone=player-first-status`, plus the audible wall-clock time.
+
+All automated milestones use monotonic seconds and include the stream
+generation and canonical `soloist://` URL. Interpret adjacent intervals as:
+
+- `spotify-playing` to `shim-first-pcm-write`: Soloist/source startup.
+- `shim-first-pcm-write` to `protocol-first-pcm-read`: FIFO and LMS source
+  reader startup.
+- `protocol-first-pcm-read` to `lms-strm-requested`: LMS source/conversion
+  pipeline. For FLAC/MP3, `protocol-handler-open conversion=lms-transcoder`
+  identifies the LMS converter path; LMS does not expose the converter's first
+  stdin write through the plugin API.
+- `lms-strm-requested` to `player-first-status`: the first player status LMS
+  exposes after handing playback to the player, covering network/output
+  buffering. The plugin API cannot observe the lower-level socket `strm` packet
+  or hardware DAC directly.
+- `player-first-status` to the noted audible time: device-side output latency.
+
+Disable the switch after the test and save to return to normal logging.
+
 ## Stream formats
 
 - **PCM/WAV** - raw 44.1 kHz, stereo, 16-bit PCM at exactly 1,411,200 bps;

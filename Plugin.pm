@@ -98,6 +98,7 @@ $prefs->init({
 	apiKey          => '',
 	autostart       => 1,
 	idleDisconnectSeconds => 30,
+	delayDiagnostics => 0,
 	selectedPlayers => {},                # { playerID => 1, ... }
 	playerFormatOverrides => {},          # { playerID => mp3|flac|pcm } (missing = global format)
 	playerNormalization => {},            # { playerID => 0|1 } (missing = enabled for compatibility)
@@ -221,6 +222,71 @@ sub normalizationForPlayer {
 	return Plugins::SpotifySoloist::SoloistPrefs::normalizationForPlayer(
 		$prefs->get('playerNormalization'),
 		$playerId,
+	);
+}
+
+sub delayDiagnosticsEnabled {
+	return $prefs->get('delayDiagnostics') ? 1 : 0;
+}
+
+sub _delayTraceMilestone {
+	my ( $b, $client, $milestone, %fields ) = @_;
+	return unless delayDiagnosticsEnabled();
+	my $now = Plugins::SpotifySoloist::StreamSemantics::monotonicNow();
+	my $generation = $b->{streamGeneration} || 0;
+	my $url = _playbackStreamUrlFor($b);
+	my $canonical =
+		Plugins::SpotifySoloist::StreamSemantics::canonicalSoloistUrl($url) || $url;
+	my @details = (
+		"player=" . ( $client ? $client->name : ( $b->{playerId} || 'unknown' ) ),
+		"generation=$generation",
+		"canonical=$canonical",
+	);
+	push @details, map {
+		my $value = defined $fields{$_} ? $fields{$_} : 'unknown';
+		$value =~ s/[\r\n\s]+/_/g;
+		"$_=$value";
+	} sort keys %fields;
+	$log->info(
+		sprintf(
+			'[delay-trace] milestone=%s monotonic=%.3f %s',
+			$milestone, $now, join( ' ', @details ),
+		)
+	);
+	return $now;
+}
+
+sub _startDelayTrace {
+	my ( $b, $client, $state ) = @_;
+	return unless delayDiagnosticsEnabled();
+	my $timeline =
+		Plugins::SpotifySoloist::StreamSemantics::timelineObservation($state);
+	$b->{delayTrace} = {
+		generation => $b->{streamGeneration} || 0,
+		startedAt  => _delayTraceMilestone(
+			$b, $client, 'spotify-playing',
+			uri => $timeline->{uri} || '',
+			position_ms => defined $timeline->{positionMs}
+				? $timeline->{positionMs} : 'unknown',
+		),
+	};
+}
+
+sub _tracePlayerStatus {
+	my ( $b, $client ) = @_;
+	my $trace = $b->{delayTrace} or return;
+	return if $trace->{playerStatusLogged};
+	return unless _clientIsOnOwnSoloistStream(
+		$client, _playbackStreamUrlFor($b),
+	);
+	my $playing = eval { $client->isPlaying(1) } ? 1 : 0;
+	return unless $playing;
+	my $elapsed = eval { $client->master->songElapsedSeconds() };
+	$trace->{playerStatusLogged} = 1;
+	_delayTraceMilestone(
+		$b, $client, 'player-first-status',
+		playing => $playing,
+		elapsed_s => defined $elapsed ? sprintf( '%.3f', $elapsed ) : 'unknown',
 	);
 }
 
@@ -1023,6 +1089,7 @@ sub directStreamInfoForUrl {
 			fifoPath        => $bridge->{fifoPath},
 			format          => $format,
 			streamGeneration => $currentGeneration,
+			delayDiagnostics => delayDiagnosticsEnabled(),
 		};
 	}
 	return;
@@ -1245,7 +1312,9 @@ sub _startBridge {
 	local $ENV{SOLOIST_PCM_SHIM_ACK} = $cfg->{pcmShimAck};
 	local $ENV{SOLOIST_PCM_SHIM_RING_MS} = 200;
 	local $ENV{SOLOIST_PCM_SHIM_LOG} = 1;
-	local $ENV{SOLOIST_PCM_SHIM_BUILD} = '2026-11-27.1-s16le';
+	local $ENV{SOLOIST_DELAY_DIAGNOSTICS} =
+		delayDiagnosticsEnabled() ? 1 : 0;
+	local $ENV{SOLOIST_PCM_SHIM_BUILD} = '2026-11-27.2-delaytrace';
 	local $ENV{SOLOIST_RUNTIME_LIB_DIR} = $cfg->{runtimeDir};
 	local $ENV{SOLOIST_RUNTIME_LOADER}  = $cfg->{runtimeLoader};
 
@@ -1398,7 +1467,21 @@ sub _finishPcmTimelineResync {
 			$pending->{url},
 		)
 	);
+	_delayTraceMilestone(
+		$b, $client, 'generation-flush-complete',
+		request => $requestId,
+		shim_ack => $acknowledged ? 'yes' : 'timeout-degraded',
+		reason => $pending->{transition}->{reason},
+		url => $pending->{url},
+	);
 	$b->{suppressLyrionTransportUntil} = time() + 1;
+	_delayTraceMilestone(
+		$b, $client, 'lms-strm-requested',
+		path => 'generation-replacement',
+		output_format => $b->{format},
+		output_samplesize => $b->{format} eq 'mp3' ? 'compressed' : 16,
+		url => $pending->{url},
+	);
 	$client->execute( [ 'playlist', 'play', $pending->{url} ] );
 }
 
@@ -1940,6 +2023,13 @@ sub _observeSpotifyTimeline {
 			. "transition on " . $client->name
 			. " ($transition->{fromUri} -> $transition->{toUri})"
 		);
+		_delayTraceMilestone(
+			$b, $client, 'spotify-uri-transition',
+			reason => $transition->{reason},
+			resync => 'no',
+			from_uri => $transition->{fromUri} || '',
+			to_uri => $transition->{toUri} || '',
+		);
 		return;
 	}
 
@@ -1967,6 +2057,13 @@ sub _observeSpotifyTimeline {
 				? $transition->{previousPositionMs} : 'unknown',
 			defined $position ? $position : 'unknown',
 		)
+	);
+	_delayTraceMilestone(
+		$b, $client, 'spotify-uri-transition',
+		reason => $transition->{reason},
+		resync => 'yes',
+		from_uri => $transition->{fromUri} || '',
+		to_uri => $transition->{toUri} || '',
 	);
 }
 
@@ -2015,6 +2112,7 @@ sub _applySpotifyTransportEvents {
 		resyncAt   => $now,
 		generation => $b->{streamGeneration},
 	};
+	_startDelayTrace( $b, $client, $state );
 	if ( $b->{backend} eq 'pcm-shim' ) {
 		my $generation = $b->{streamGeneration};
 		my $requestId = ++$b->{shimRequestId};
@@ -2080,11 +2178,19 @@ sub _applyPlaybackTransition {
 	if ( $playback->{reallyPlayingHere} && !$playback->{wasPlayingHere} ) {
 		return unless _directStreamReady($b);
 
+		_startDelayTrace( $b, $client, $b->{lastPlaybackState} || {} );
 		$log->info(
 			'auto-tuning ' . $client->name . ' to its Spotify Soloist instance'
 			. ' through the direct LMS stream'
 		);
 		$b->{suppressLyrionTransportUntil} = time() + 1;
+		_delayTraceMilestone(
+			$b, $client, 'lms-strm-requested',
+			path => 'initial-play',
+			output_format => $b->{format},
+			output_samplesize => $b->{format} eq 'mp3' ? 'compressed' : 16,
+			url => $url,
+		);
 		$client->execute( [ 'playlist', 'play', $url ] );
 		$b->{notPlayingSince} = undef;
 		$b->{pausedSince} = undef;
@@ -2303,6 +2409,7 @@ sub pollMetadata {
 		_observeSpotifyTimeline( $b, $client, $state, $playback );
 		_applySpotifyTransportEvents( $b, $client, $url, $playback, $state );
 		_applyPlaybackTransition( $playerId, $b, $client, $url, $playback );
+		_tracePlayerStatus( $b, $client );
 		_updateIdleDisconnectState( $b, $playback );
 		next if _maybeRestartIdleBridge( $playerId, $b, $client, $playback );
 		_publishMetadataForPlayer( $b, $client, $url, $state );
