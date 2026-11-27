@@ -49,6 +49,15 @@ sub _delayTrace {
 	return $now;
 }
 
+sub _noteDelayTraceProtocolMilestone {
+	my ( $playerId, $generation, $milestone, $at, $url ) = @_;
+	return unless defined $at;
+	my $callback =
+		Plugins::SpotifySoloist::Plugin->can('noteDelayTraceProtocolMilestone')
+		or return;
+	$callback->( $playerId, $generation, $milestone, $at, $url );
+}
+
 # LMS only forwards a protocol handler's bufferThreshold to the player's STRM
 # command for remote streams. The bytes are still host-local, but this
 # classification is required to avoid the Touch's default full input-buffer
@@ -183,7 +192,7 @@ sub new {
 		conversion => $format->{key} eq 'pcm' ? 'pcm-direct' : 'lms-transcoder',
 		url => $url,
 	);
-	Plugins::SpotifySoloist::Plugin::noteDelayTraceProtocolMilestone(
+	_noteDelayTraceProtocolMilestone(
 		$stream->{playerId},
 		${*$self}{streamGeneration} || 0,
 		'handler-open', $openedAt, $url,
@@ -218,7 +227,7 @@ sub sysread {
 				bytes => length($chunk),
 				content_type => ${*$self}{contentType} || 'unknown',
 			);
-			Plugins::SpotifySoloist::Plugin::noteDelayTraceProtocolMilestone(
+			_noteDelayTraceProtocolMilestone(
 				${*$self}{traceClientId},
 				${*$self}{streamGeneration} || 0,
 				'wav-prefix', $wavAt, ${*$self}{url},
@@ -330,7 +339,7 @@ sub sysread {
 					sprintf( '%.0f', ( $now - ( ${*$self}{openedAt} || $now ) ) * 1000 ),
 				content_type => ${*$self}{contentType} || 'unknown',
 			);
-			Plugins::SpotifySoloist::Plugin::noteDelayTraceProtocolMilestone(
+			_noteDelayTraceProtocolMilestone(
 				${*$self}{traceClientId},
 				${*$self}{streamGeneration} || 0,
 				'first-pcm', $pcmAt, ${*$self}{url},
@@ -372,7 +381,7 @@ sub close {
 		${*$self}{closeLogged} = 1;
 		my $closedAt =
 			_delayTrace( $self, 'protocol-handler-close', url => $url );
-		Plugins::SpotifySoloist::Plugin::noteDelayTraceProtocolMilestone(
+		_noteDelayTraceProtocolMilestone(
 			${*$self}{traceClientId},
 			${*$self}{streamGeneration} || 0,
 			'handler-close', $closedAt, $url,
