@@ -230,7 +230,10 @@ environment variables, and limitations.
 Enable **Trace playback startup delay** in the plugin settings and save. This
 restarts enabled bridges once so the shim and LMS-side trace use the same
 switch. The trace writes one `[delay-trace]` line per milestone and generation;
-it never logs PCM payloads.
+it never logs PCM payloads. Bridge/shim milestones are written to the player's
+`bridge.log`; plugin/protocol/player milestones are written to the LMS
+`server.log` and remain visible at the default plugin log level while the switch
+is enabled.
 
 Run one controlled test:
 

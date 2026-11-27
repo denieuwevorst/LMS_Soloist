@@ -9,6 +9,8 @@
   `applySongFormat` helper. Metadata polling now retries unexpected runtime
   failures with bounded backoff and logs one error until recovery instead of
   flooding `server.log`.
+- Keep opt-in plugin/protocol delay milestones visible in `server.log` at the
+  default plugin log level; bridge/shim milestones remain in `bridge.log`.
 
 - Add an optional startup-delay trace that correlates Spotify playing/URI
   observation, shim first PCM output, protocol-handler WAV/audio reads,

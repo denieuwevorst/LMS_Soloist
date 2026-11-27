@@ -282,7 +282,7 @@ sub _delayTraceMilestone {
 		$value =~ s/[\r\n\s]+/_/g;
 		"$_=$value";
 	} sort keys %fields;
-	$log->info(
+	$log->warn(
 		sprintf(
 			'[delay-trace] milestone=%s monotonic=%.3f %s',
 			$milestone, $now, join( ' ', @details ),
