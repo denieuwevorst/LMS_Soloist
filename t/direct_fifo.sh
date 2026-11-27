@@ -27,7 +27,9 @@ first="$(dd bs=1 count=5 <&4 2>/dev/null)"
 # Replacing the protocol handler closes the only reader. The next old-timeline
 # write terminates the converter instead of leaking buffered data forward.
 exec 4<&-
-printf 'old!!' >&5
+# Force the forwarding process to issue an output write after the reader has
+# gone away; a tiny stdio-sized payload can remain buffered inside `cat`.
+dd if=/dev/zero bs=4096 count=1 >&5 2>/dev/null
 for _try in $(seq 1 100); do
 	kill -0 "$converter_pid" 2>/dev/null || break
 	sleep 0.01
