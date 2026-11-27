@@ -46,6 +46,11 @@ is(
 	'soloist streams override LMS remote replay gain with unity gain',
 );
 is(
+	Plugins::SpotifySoloist::ProtocolHandler->isRemote(),
+	0,
+	'host-local Soloist FIFO bypasses LMS internet-stream buffering',
+);
+is(
 	Plugins::SpotifySoloist::ProtocolHandler->isRepeatingStream(),
 	1,
 	'soloist streams identify as continuous so DSTM does not queue a next song',

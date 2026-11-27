@@ -21,7 +21,9 @@ use constant STALE_DRAIN_SECONDS    => 0.25;
 use constant MAX_DRAIN_BYTES        => 4 * 1024 * 1024;
 use constant CONVERTER_CLOSE_GRACE_SECONDS => 0.12;
 
-sub isRemote { 1 }
+# The bytes originate from a per-player FIFO on the LMS host. Marking this as
+# remote makes LMS apply its internet-stream bufferSecs delay before playback.
+sub isRemote { 0 }
 sub canSeek { 0 }
 sub canHandleTranscode { 0 }
 sub isAudioURL { 1 }

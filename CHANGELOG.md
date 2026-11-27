@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+- Treat the host-local `soloist://` FIFO as a local stream. Marking it remote
+  made LMS apply the configured internet-stream buffer before autostart (five
+  seconds in the field report); encoded streams eventually played, while
+  direct PCM could remain silent behind the incompatible remote output-buffer
+  target. PCM, FLAC, and MP3 now start as soon as final bytes are available.
+- Add field-equivalent ffmpeg/FIFO startup coverage for all three formats. The
+  test starts the converter before the LMS-facing reader, keeps PCM source
+  audio absent for five seconds, and then requires first final bytes within
+  500 ms while the converter remains alive.
 - Replace LMS-owned realtime S32 conversion with one persistent bridge-side
   converter. Field logs from the current `2026-11-22.1-s32le` build showed
   repeated 200-205 ms LMS consumer gaps and real live-edge drops during steady

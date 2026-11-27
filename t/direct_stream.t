@@ -87,6 +87,7 @@ my $handler = Plugins::SpotifySoloist::ProtocolHandler->new({
 	transcoder => $pcmTranscoder,
 });
 ok( $handler, 'opens the direct FIFO stream' );
+ok( !$handler->isRemote, 'treats the host-local FIFO as a local stream without internet buffering' );
 is( $handler->contentType, 'pcm', 'declares final native PCM content' );
 is( $handler->getStreamBitrate(3_000_000), 1_411_200, 'declares final S16LE bitrate' );
 is( $song->samplerate, 44100, 'sets PCM sample rate' );

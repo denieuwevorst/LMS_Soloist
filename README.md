@@ -63,6 +63,9 @@ terminates the final converter writer, and the supervisor starts a clean
 converter for the replacement generation while Soloist and the bridge remain
 alive. PCM drains only queued raw samples; FLAC/MP3 preserve the fresh encoder
 header instead of treating it as stale data.
+Because this FIFO is hosted by LMS, `soloist://` is a local stream. LMS starts
+playback from the bridge's low-latency final bytes instead of applying the
+configured remote/internet-stream delay.
 For discontinuous PCM changes, LMS reopens a generation-qualified playback URL
 such as `soloist://player-0/soloist.wav?g=4`. The canonical per-player URL stays
 stable for metadata and settings, while the token forces LMS to replace the

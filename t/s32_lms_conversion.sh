@@ -64,5 +64,6 @@ bits="$(ffprobe -v error -select_streams a:0 \
 }
 
 python3 "$(dirname "$0")/lms_converter_cadence.py"
+python3 "$(dirname "$0")/bridge_encoder_startup.py"
 
-echo "bridge conversion produced dithered S16LE/16-bit FLAC output with sustained source cadence"
+echo "bridge conversion produced prompt PCM/FLAC/MP3 output with sustained source cadence"
