@@ -15,7 +15,7 @@ CHANNELS = 2
 SOURCE_FRAME_BYTES = 8
 PCM_FRAME_BYTES = 4
 CHUNK_FRAMES = 441
-RUN_SECONDS = 8
+RUN_SECONDS = 10
 
 
 def bridge_command(source, output_format):
@@ -62,6 +62,18 @@ def bridge_command(source, output_format):
             "1",
             "-f",
             "flac",
+            "-",
+        ]
+    if output_format == "mp3":
+        return common + [
+            "-c:a",
+            "libmp3lame",
+            "-b:a",
+            "320k",
+            "-flush_packets",
+            "1",
+            "-f",
+            "mp3",
             "-",
         ]
     raise ValueError(output_format)
@@ -143,7 +155,9 @@ def run_format(output_format, recurring_reader_stalls):
             if output_bytes != expected:
                 raise SystemExit(f"PCM output width mismatch: {output_bytes} != {expected}")
         elif output_bytes < 1024:
-            raise SystemExit(f"FLAC converter produced implausibly little output: {output_bytes}")
+            raise SystemExit(
+                f"{output_format} converter produced implausibly little output: {output_bytes}"
+            )
 
         after = resource.getrusage(resource.RUSAGE_CHILDREN)
         cpu = (after.ru_utime - before.ru_utime) + (after.ru_stime - before.ru_stime)
@@ -156,7 +170,8 @@ def run_format(output_format, recurring_reader_stalls):
 
 def main():
     run_format("pcm", recurring_reader_stalls=True)
-    run_format("flac", recurring_reader_stalls=False)
+    run_format("flac", recurring_reader_stalls=True)
+    run_format("mp3", recurring_reader_stalls=True)
 
 
 if __name__ == "__main__":

@@ -25,7 +25,7 @@
 #                     SOLOIST_PCM_SHIM_LOG
 #                     SOLOIST_PCM_SHIM_RING_MS SOLOIST_PCM_SHIM_CONTROL
 #                     SOLOIST_PCM_SHIM_ACK
-#                     SOLOIST_RUNTIME_LIB_DIR SOLOIST_RUNTIME_LOADER
+#                     SOLOIST_RUNTIME_LIB_DIR SOLOIST_RUNTIME_LOADER PERL_BIN
 
 set -u
 
@@ -36,6 +36,7 @@ set -u
 FORMAT="${FORMAT:-mp3}"
 BITRATE="${BITRATE:-320k}"
 FFMPEG_BIN="${FFMPEG_BIN:-ffmpeg}"
+PERL_BIN="${PERL_BIN:-perl}"
 SOLOIST_AUDIO_BACKEND="${SOLOIST_AUDIO_BACKEND:-pcm-shim}"
 PIPEWIRE_SINK="${PIPEWIRE_SINK:-}"
 SOLOIST_INITIAL_VOLUME="${SOLOIST_INITIAL_VOLUME:-100}"
@@ -53,6 +54,8 @@ SOLOIST_PCM_SHIM_BUILD="${SOLOIST_PCM_SHIM_BUILD:-2026-11-22.1-s32le}"
 SOLOIST_RUNTIME_LIB_DIR="${SOLOIST_RUNTIME_LIB_DIR:-}"
 SOLOIST_RUNTIME_LOADER="${SOLOIST_RUNTIME_LOADER:-}"
 WS_ENDPOINT="127.0.0.1:${WS_PORT}"
+SCRIPT_DIR="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
+FIFO_READER_WAIT="${SCRIPT_DIR}/wait-for-fifo-reader.pl"
 
 mkdir -p "$SOLOIST_DATA_DIR" "$SOLOIST_CACHE_DIR"
 
@@ -163,6 +166,14 @@ SOLOIST_AUDIO_TARGET_DESC=""
 
 if ! command -v "$FFMPEG_BIN" >/dev/null 2>&1; then
 	log "ERROR: ffmpeg is required for bridge-side S32LE conversion but '$FFMPEG_BIN' is unavailable"
+	exit 1
+fi
+if ! command -v "$PERL_BIN" >/dev/null 2>&1; then
+	log "ERROR: Perl is required for final FIFO reader detection but '$PERL_BIN' is unavailable"
+	exit 1
+fi
+if [ ! -r "$FIFO_READER_WAIT" ]; then
+	log "ERROR: final FIFO reader detector is unavailable at '$FIFO_READER_WAIT'"
 	exit 1
 fi
 
@@ -440,6 +451,7 @@ start_encoder() {
 	case "$FORMAT" in
 		pcm)
 			log "starting persistent S32LE -> dithered S16LE bridge converter"
+			log "converter command: ${FFMPEG_BIN} -analyzeduration 0 -probesize 32 -f s32le -ar 44100 -ac 2 -blocksize 4096 -i ${SOLOIST_PCM_SHIM_FIFO} -af aresample=osf=s16:dither_method=triangular -flush_packets 1 -f s16le ${FIFO_PATH}"
 			"$FFMPEG_BIN" -nostdin -hide_banner -loglevel warning -y \
 				-analyzeduration 0 -probesize 32 \
 				-f s32le -ar 44100 -ac 2 -blocksize 4096 -i "$SOLOIST_PCM_SHIM_FIFO" \
@@ -448,6 +460,7 @@ start_encoder() {
 			;;
 		flac)
 			log "starting persistent S32LE -> 16-bit FLAC bridge converter"
+			log "converter command: ${FFMPEG_BIN} -analyzeduration 0 -probesize 32 -f s32le -ar 44100 -ac 2 -blocksize 4096 -i ${SOLOIST_PCM_SHIM_FIFO} -af aresample=osf=s16:dither_method=triangular -c:a flac -sample_fmt s16 -compression_level 0 -flush_packets 1 -f flac ${FIFO_PATH}"
 			"$FFMPEG_BIN" -nostdin -hide_banner -loglevel warning -y \
 				-analyzeduration 0 -probesize 32 \
 				-f s32le -ar 44100 -ac 2 -blocksize 4096 -i "$SOLOIST_PCM_SHIM_FIFO" \
@@ -457,6 +470,7 @@ start_encoder() {
 			;;
 		mp3)
 			log "starting persistent S32LE -> MP3 ${BITRATE} bridge converter"
+			log "converter command: ${FFMPEG_BIN} -analyzeduration 0 -probesize 32 -f s32le -ar 44100 -ac 2 -blocksize 4096 -i ${SOLOIST_PCM_SHIM_FIFO} -c:a libmp3lame -b:a ${BITRATE} -flush_packets 1 -f mp3 ${FIFO_PATH}"
 			"$FFMPEG_BIN" -nostdin -hide_banner -loglevel warning -y \
 				-analyzeduration 0 -probesize 32 \
 				-f s32le -ar 44100 -ac 2 -blocksize 4096 -i "$SOLOIST_PCM_SHIM_FIFO" \
@@ -465,21 +479,45 @@ start_encoder() {
 			;;
 	esac
 	ENCODER_PID=$!
+	ENCODER_STARTED_AT="$(date +%s)"
 	log "bridge converter started: pid=${ENCODER_PID} source=${SOLOIST_PCM_SHIM_FIFO} output=${FIFO_PATH}"
 }
 
 encoder_supervisor() {
 	CUR_ENCODER_PID=""
-	trap '[ -n "$CUR_ENCODER_PID" ] && kill "$CUR_ENCODER_PID" 2>/dev/null; exit 0' TERM INT
+	CUR_DRAIN_PID=""
+	CUR_WAITER_PID=""
+	trap '
+		[ -n "$CUR_ENCODER_PID" ] && kill "$CUR_ENCODER_PID" 2>/dev/null
+		[ -n "$CUR_DRAIN_PID" ] && kill "$CUR_DRAIN_PID" 2>/dev/null
+		[ -n "$CUR_WAITER_PID" ] && kill "$CUR_WAITER_PID" 2>/dev/null
+		exit 0
+	' TERM INT
 
 	while kill -0 "$SOLOIST_PID" 2>/dev/null; do
+		log "no LMS final FIFO reader yet; draining S32LE source at the live edge"
+		cat "$SOLOIST_PCM_SHIM_FIFO" > /dev/null 4>&- &
+		CUR_DRAIN_PID=$!
+		"$PERL_BIN" "$FIFO_READER_WAIT" "$FIFO_PATH" "$SOLOIST_PID" 4>&- &
+		CUR_WAITER_PID=$!
+		wait "$CUR_WAITER_PID" 2>/dev/null
+		READER_STATUS=$?
+		CUR_WAITER_PID=""
+		kill "$CUR_DRAIN_PID" 2>/dev/null
+		wait "$CUR_DRAIN_PID" 2>/dev/null
+		CUR_DRAIN_PID=""
+		if [ "$READER_STATUS" -ne 0 ]; then
+			break
+		fi
+		log "LMS final FIFO reader detected; switching source from standby drain to converter"
 		start_encoder
 		CUR_ENCODER_PID=$ENCODER_PID
 		wait "$CUR_ENCODER_PID" 2>/dev/null
 		ENCODER_STATUS=$?
+		ENCODER_RUNTIME=$(( $(date +%s) - ENCODER_STARTED_AT ))
 		CUR_ENCODER_PID=""
 		if kill -0 "$SOLOIST_PID" 2>/dev/null; then
-			log "bridge converter exited with status ${ENCODER_STATUS} -- restarting in 50ms"
+			log "bridge converter exited with status ${ENCODER_STATUS} after ${ENCODER_RUNTIME}s -- returning to standby source drain"
 			sleep 0.05
 		fi
 	done

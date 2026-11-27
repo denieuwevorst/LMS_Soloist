@@ -3,6 +3,7 @@
 import errno
 import os
 import selectors
+import shutil
 import struct
 import subprocess
 import tempfile
@@ -14,6 +15,8 @@ RATE = 44100
 CHANNELS = 2
 CHUNK_FRAMES = 441
 MAX_FIRST_BYTE_SECONDS = 0.5
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+FIFO_READER_WAIT = os.path.join(ROOT, "Bin", "wait-for-fifo-reader.pl")
 
 
 def bridge_command(source, output, output_format):
@@ -82,15 +85,14 @@ def bridge_command(source, output, output_format):
     raise ValueError(output_format)
 
 
-def write_source(source_fd, started, start_time, stop):
+def write_source(source_fd, started, start_time, stop, write_durations):
     frame = struct.pack("<ii", 0x10000000, -0x10000000)
     chunk = frame * CHUNK_FRAMES
     deadline = time.monotonic()
     start_time.append(time.monotonic())
     started.set()
-    for _ in range(100):
-        if stop.is_set():
-            return
+    while not stop.is_set():
+        write_started = time.monotonic()
         view = memoryview(chunk)
         while view and not stop.is_set():
             try:
@@ -100,6 +102,7 @@ def write_source(source_fd, started, start_time, stop):
                 time.sleep(0.001)
             except BrokenPipeError:
                 return
+        write_durations.append(time.monotonic() - write_started)
         deadline += 0.01
         delay = deadline - time.monotonic()
         if delay > 0:
@@ -114,47 +117,77 @@ def measure_format(output_format, source_delay):
         os.mkfifo(output)
 
         source_fd = os.open(source, os.O_RDWR | os.O_NONBLOCK)
-        process = subprocess.Popen(
-            bridge_command(source, output, output_format),
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.PIPE,
-        )
+        process = None
+        drainer = None
+        waiter = None
         output_fd = None
         producer = None
         stop = threading.Event()
         try:
-            time.sleep(0.1)
-            if process.poll() is not None:
-                stderr = process.stderr.read().decode("utf-8", "replace")
-                raise SystemExit(
-                    f"{output_format} converter exited before LMS opened its FIFO: {stderr}"
-                )
-
-            output_fd = os.open(output, os.O_RDONLY | os.O_NONBLOCK)
-            time.sleep(source_delay)
-            if process.poll() is not None:
-                stderr = process.stderr.read().decode("utf-8", "replace")
-                raise SystemExit(
-                    f"{output_format} converter exited while waiting for source audio: {stderr}"
-                )
-
             started = threading.Event()
             start_time = []
+            write_durations = []
             producer = threading.Thread(
                 target=write_source,
-                args=(source_fd, started, start_time, stop),
+                args=(source_fd, started, start_time, stop, write_durations),
                 daemon=True,
+            )
+            drainer = subprocess.Popen(
+                ["cat", source],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.PIPE,
+            )
+            waiter = subprocess.Popen(
+                [
+                    os.environ.get("PERL", "perl"),
+                    FIFO_READER_WAIT,
+                    output,
+                    str(os.getpid()),
+                ],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.PIPE,
             )
             producer.start()
             started.wait(timeout=1)
             if not start_time:
                 raise SystemExit(f"{output_format} source producer did not start")
-            source_started = start_time[0]
+            time.sleep(source_delay)
+            if drainer.poll() is not None:
+                stderr = drainer.stderr.read().decode("utf-8", "replace")
+                raise SystemExit(
+                    f"{output_format} standby source drainer exited before LMS reader: {stderr}"
+                )
+            if waiter.poll() is not None:
+                stderr = waiter.stderr.read().decode("utf-8", "replace")
+                raise SystemExit(
+                    f"{output_format} reader detector exited before LMS reader: {stderr}"
+                )
+            if max(write_durations, default=0) >= 0.2:
+                raise SystemExit(
+                    f"{output_format} source blocked for "
+                    f"{max(write_durations) * 1000:.1f} ms without an LMS reader"
+                )
+
+            reader_opened = time.monotonic()
+            output_fd = os.open(output, os.O_RDONLY | os.O_NONBLOCK)
+            waiter_status = waiter.wait(timeout=1)
+            if waiter_status:
+                stderr = waiter.stderr.read().decode("utf-8", "replace")
+                raise SystemExit(
+                    f"{output_format} reader detector failed ({waiter_status}): {stderr}"
+                )
+            drainer.terminate()
+            drainer.wait(timeout=1)
+            process = subprocess.Popen(
+                bridge_command(source, output, output_format),
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.PIPE,
+            )
 
             selector = selectors.DefaultSelector()
             selector.register(output_fd, selectors.EVENT_READ)
             first = b""
-            deadline = source_started + MAX_FIRST_BYTE_SECONDS
+            deadline = reader_opened + MAX_FIRST_BYTE_SECONDS
             while time.monotonic() < deadline and not first:
                 for _, _ in selector.select(0.01):
                     try:
@@ -162,7 +195,7 @@ def measure_format(output_format, source_delay):
                     except BlockingIOError:
                         pass
 
-            latency = time.monotonic() - source_started
+            latency = time.monotonic() - reader_opened
             if not first:
                 raise SystemExit(
                     f"{output_format} produced no final FIFO bytes within "
@@ -185,22 +218,32 @@ def measure_format(output_format, source_delay):
             stop.set()
             if producer is not None:
                 producer.join(timeout=2)
+            if waiter is not None and waiter.poll() is None:
+                waiter.terminate()
+                waiter.wait(timeout=2)
+            if drainer is not None and drainer.poll() is None:
+                drainer.terminate()
+                drainer.wait(timeout=2)
             if output_fd is not None:
                 os.close(output_fd)
             os.close(source_fd)
-            if process.poll() is None:
+            if process is not None and process.poll() is None:
                 process.terminate()
-            try:
-                process.wait(timeout=2)
-            except subprocess.TimeoutExpired:
-                process.kill()
-                process.wait(timeout=2)
+            if process is not None:
+                try:
+                    process.wait(timeout=2)
+                except subprocess.TimeoutExpired:
+                    process.kill()
+                    process.wait(timeout=2)
 
 
 def main():
+    for command in ("ffmpeg", "cat", os.environ.get("PERL", "perl")):
+        if not shutil.which(command):
+            raise SystemExit(f"{command} is required for the FIFO startup test")
     measure_format("pcm", source_delay=5.0)
-    measure_format("flac", source_delay=0.1)
-    measure_format("mp3", source_delay=0.1)
+    measure_format("flac", source_delay=5.0)
+    measure_format("mp3", source_delay=5.0)
 
 
 if __name__ == "__main__":

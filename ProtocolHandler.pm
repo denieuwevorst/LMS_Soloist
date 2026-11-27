@@ -105,8 +105,9 @@ sub new {
 	${*$self}{transition} =
 		Plugins::SpotifySoloist::Plugin::claimDirectStreamTransitionForUrl(
 			$url,
-			${*$self}{streamGeneration},
+			${*$self}{streamGeneration} || 0,
 		);
+	${*$self}{openedAt} = Time::HiRes::time();
 	${*$self}{firstAudioReadLogged} = 0;
 	${*$self}{prefix} = $format->{key} eq 'pcm' ? _wavHeader() : '';
 	${*$self}{lastAudioReadAt} = undef;
@@ -222,24 +223,28 @@ sub sysread {
 	if ($read) {
 		${*$self}{readBytes} += $read;
 		${*$self}{lastAudioReadAt} = $now;
-		if (
-			!${*$self}{firstAudioReadLogged}
-			&& ${*$self}{streamGeneration}
-			&& ref ${*$self}{transition} eq 'HASH'
-		) {
+		if ( !${*$self}{firstAudioReadLogged} ) {
 			${*$self}{firstAudioReadLogged} = 1;
 			my $transition = ${*$self}{transition};
-			my $readAt =
-				Plugins::SpotifySoloist::StreamSemantics::monotonicNow();
+			my $readAt = ref $transition eq 'HASH'
+				? Plugins::SpotifySoloist::StreamSemantics::monotonicNow()
+				: $now;
 			$log->info(
 				sprintf(
-					'read first PCM audio for stream generation %d at monotonic %.3f '
-					. '(%d bytes, reason=%s, resync_to_first_audio_ms=%.0f)',
-					${*$self}{streamGeneration},
+					'read first final %s audio for stream generation %d at monotonic %.3f '
+					. '(%d bytes, handler_open_to_first_audio_ms=%.0f%s)',
+					${*$self}{contentType} || 'unknown',
+					${*$self}{streamGeneration} || 0,
 					$readAt,
 					$read,
-					$transition->{reason} || 'unknown',
-					( $readAt - ( $transition->{resyncAt} || $readAt ) ) * 1000,
+					( $now - ( ${*$self}{openedAt} || $now ) ) * 1000,
+					ref $transition eq 'HASH'
+						? sprintf(
+							', reason=%s, resync_to_first_audio_ms=%.0f',
+							$transition->{reason} || 'unknown',
+							( $readAt - ( $transition->{resyncAt} || $readAt ) ) * 1000,
+						)
+						: '',
 				)
 			);
 		}

@@ -13,6 +13,7 @@ sub slurp {
 my $types = slurp('custom-types.conf');
 my $convert = slurp('custom-convert.conf');
 my $bridge = slurp('Bin/soloist-bridge.sh');
+my $plugin = slurp('Plugin.pm');
 my $settings = slurp('Settings.pm');
 my $html = slurp('HTML/EN/plugins/SpotifySoloist/settings/basic.html');
 
@@ -45,6 +46,21 @@ like(
 );
 like( $bridge, qr/SOLOIST_PCM_SHIM_FIFO/, 'bridge owns a separate S32LE source FIFO' );
 like( $bridge, qr/encoder_supervisor/, 'bridge supervises the persistent converter' );
+like(
+	$bridge,
+	qr/cat "\$SOLOIST_PCM_SHIM_FIFO" > \/dev\/null.*?"\$PERL_BIN" "\$FIFO_READER_WAIT"/s,
+	'bridge drains the S32 source until an LMS final FIFO reader exists',
+);
+like(
+	$plugin,
+	qr/INITIAL_STATE_LOOP_DELAY\s+=>\s+0\.1.*?time\(\) \+ INITIAL_STATE_LOOP_DELAY/s,
+	'plugin starts playback-state observation without the former five-second delay',
+);
+like(
+	$plugin,
+	qr/pcm\s*=>\s*\{.*?wireExt\s*=>\s*'wav'.*?contentType\s*=>\s*'wav'/s,
+	'PCM handler advertises the WAV container that it prefixes',
+);
 like(
 	slurp('ProtocolHandler.pm'),
 	qr/CONVERTER_CLOSE_GRACE_SECONDS\s+=>\s+0\.12/,

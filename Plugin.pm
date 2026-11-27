@@ -70,6 +70,7 @@ my $log = Slim::Utils::Log->addLogCategory({
 my $prefs = preferences('plugin.spotifysoloist');
 
 use constant STATE_LOOP_INTERVAL       => 0.5;  # seconds
+use constant INITIAL_STATE_LOOP_DELAY  => 0.1;  # seconds
 use constant IDLE_RESTART_DELAY        => 1;    # seconds
 use constant STATE_RESYNC_INTERVAL     => 30;   # seconds
 use constant TRACE_RESTART_DELAY       => 5;    # seconds
@@ -147,7 +148,7 @@ my %FORMAT_SPECS = (
 	pcm => {
 		wireExt       => 'wav',
 		displayFormat => 'WAV',
-		contentType   => 'pcm',
+		contentType   => 'wav',
 		bufferKb      => 35,
 	},
 );
@@ -887,7 +888,11 @@ sub initPlugin {
 	}
 
 	Slim::Utils::Timers::setTimer( undef, time() + 10, \&checkManagedSoloistUpdate );
-	Slim::Utils::Timers::setTimer( undef, time() + 5, \&pollMetadata );
+	Slim::Utils::Timers::setTimer(
+		undef,
+		time() + INITIAL_STATE_LOOP_DELAY,
+		\&pollMetadata,
+	);
 }
 
 sub shutdownPlugin {
@@ -1224,6 +1229,7 @@ sub _startBridge {
 	local $ENV{FORMAT}            = $cfg->{format};
 	local $ENV{BITRATE}           = $cfg->{formatSpec}->{encoderBitrate} || '320k';
 	local $ENV{FFMPEG_BIN}        = 'ffmpeg';
+	local $ENV{PERL_BIN}          = $^X;
 	local $ENV{SOLOIST_INITIAL_VOLUME} = _initialVolume();
 	local $ENV{WS_PORT}           = $cfg->{wsPort};
 	local $ENV{DEVICE_NAME}       = $cfg->{deviceName};

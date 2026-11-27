@@ -67,7 +67,7 @@ $Plugins::SpotifySoloist::Plugin::stream = {
 	fifoPath => $fifo,
 	format   => {
 		key           => 'pcm',
-		contentType   => 'pcm',
+		contentType   => 'wav',
 		displayFormat => 'WAV',
 		bitrateBps    => 1_411_200,
 		bitrateLabel  => '1411.2 kbps',
@@ -88,7 +88,7 @@ my $handler = Plugins::SpotifySoloist::ProtocolHandler->new({
 });
 ok( $handler, 'opens the direct FIFO stream' );
 ok( !$handler->isRemote, 'treats the host-local FIFO as a local stream without internet buffering' );
-is( $handler->contentType, 'pcm', 'declares final native PCM content' );
+is( $handler->contentType, 'wav', 'declares the WAV container that the handler prefixes' );
 is( $handler->getStreamBitrate(3_000_000), 1_411_200, 'declares final S16LE bitrate' );
 is( $song->samplerate, 44100, 'sets PCM sample rate' );
 is( $song->samplesize, 16, 'sets Touch-compatible PCM output sample size after converter selection' );

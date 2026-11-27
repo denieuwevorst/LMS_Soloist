@@ -2,15 +2,24 @@
 
 ## Unreleased
 
-- Treat the host-local `soloist://` FIFO as a local stream. Marking it remote
-  made LMS apply the configured internet-stream buffer before autostart (five
-  seconds in the field report); encoded streams eventually played, while
-  direct PCM could remain silent behind the incompatible remote output-buffer
-  target. PCM, FLAC, and MP3 now start as soon as final bytes are available.
-- Add field-equivalent ffmpeg/FIFO startup coverage for all three formats. The
-  test starts the converter before the LMS-facing reader, keeps PCM source
-  audio absent for five seconds, and then requires first final bytes within
-  500 ms while the converter remains alive.
+- Fix the bridge FIFO open-order deadlock exposed by repeated exact
+  353,440-byte S32LE drops. ffmpeg previously blocked opening `audio.fifo`
+  before it could consume `pcm-shim.fifo`. The bridge now continuously drains
+  the S32 source while no LMS reader exists, detects the handler reader
+  nonblocking, then atomically switches from the standby drain to the final
+  converter. Handler replacement returns to the drain until the next reader.
+- Advertise the handler-framed PCM stream as WAV instead of raw PCM, matching
+  its 16-bit RIFF header and selecting LMS's WAV-to-PCM stream handling.
+- Start the metadata/playback observer after 100 ms instead of waiting five
+  seconds after plugin initialization, so the first Spotify playback can open
+  its LMS handler promptly.
+- Add field-equivalent startup coverage for PCM, FLAC, and MP3: source audio
+  flows for five seconds with no LMS reader, the standby drain must prevent
+  source backpressure, and first final bytes must arrive within 500 ms after
+  the reader opens. Sustained ten-second coverage applies recurring 205 ms
+  final-reader stalls to all formats.
+- Treat the host-local `soloist://` FIFO as a local stream so LMS does not apply
+  internet-stream buffering after the handler opens.
 - Disable ffmpeg's default input analysis/probing window for the explicitly
   described raw S32LE source. Without this, the converter could consume about
   five seconds of live audio before opening the final PCM/FLAC/MP3 FIFO.

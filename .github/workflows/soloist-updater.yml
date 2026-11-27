@@ -114,7 +114,7 @@ jobs:
           timeout 30 sh t/pcm_shim_converter_stall.sh
           timeout 30 sh t/pcm_shim_generation_survival.sh
           timeout 30 sh t/pcm_shim_natural_end.sh
-          timeout 30 sh t/s32_lms_conversion.sh
+          timeout 90 sh t/s32_lms_conversion.sh
           timeout 30 sh t/private_loader_preload.sh
       - name: Validate current official Soloist build
         run: |

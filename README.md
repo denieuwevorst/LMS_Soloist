@@ -49,23 +49,25 @@ Spotify
   -> player
 ```
 
-The shim writes one continuous S32LE source into a bridge-owned FIFO. A
-persistent ffmpeg process converts that source once, before LMS: PCM is
-triangular-dithered to S16LE, FLAC is explicitly 16-bit, and MP3 uses the
-configured fixed bitrate. The protocol handler therefore exposes a native
-final stream and LMS does not launch a second realtime converter. This avoids
-the recurring roughly 200 ms LMS transcoder input stalls observed in the field.
+The shim writes one continuous S32LE source into a bridge-owned FIFO. While LMS
+has no final-stream reader, the bridge drains that source to `/dev/null` so
+Soloist never blocks behind an unopened output FIFO. As soon as the
+`soloist://` handler opens, the supervisor replaces the standby drain with
+ffmpeg: PCM is triangular-dithered to S16LE, FLAC is explicitly 16-bit, and MP3
+uses the configured fixed bitrate. LMS does not launch a second realtime
+converter.
 The raw source format is declared explicitly with probing and analysis
 disabled, so ffmpeg opens the selected final stream as soon as source frames
 arrive instead of collecting its default multi-second analysis window.
 The shim's 200 ms live-edge ring and 64 KiB S32LE source FIFO remain bounded.
 
-The handler opens the final FIFO nonblocking in read/write mode. Discontinuous
+The handler opens the final FIFO nonblocking in read/write mode. That reader is
+the signal to start the final converter, avoiding the FIFO open-order deadlock
+where ffmpeg waited for LMS and stopped consuming S32LE. Discontinuous
 generation flushes preserve the request/ack protocol. Closing the old handler
-terminates the final converter writer, and the supervisor starts a clean
-converter for the replacement generation while Soloist and the bridge remain
-alive. PCM drains only queued raw samples; FLAC/MP3 preserve the fresh encoder
-header instead of treating it as stale data.
+terminates the final converter writer, returns the source to its standby drain,
+and starts a clean converter when the replacement handler opens. PCM drains
+only queued raw samples; FLAC/MP3 preserve the fresh encoder header.
 Because this FIFO is hosted by LMS, `soloist://` is a local stream. LMS starts
 playback from the bridge's low-latency final bytes instead of applying the
 configured remote/internet-stream delay.
@@ -234,8 +236,9 @@ environment variables, and limitations.
 ## Stream formats
 
 - **PCM/WAV** - the bridge converts the S32LE source to dithered 44.1 kHz
-  stereo S16LE at exactly 1,411,200 bps. The Squeezebox Touch therefore
-  receives a supported 16-bit PCM stream, never raw S32LE.
+  stereo S16LE at exactly 1,411,200 bps. The protocol handler adds one truthful
+  streaming WAV header and advertises the stream as WAV, so the Squeezebox
+  Touch receives supported 16-bit PCM, never raw S32LE.
 - **FLAC** - lossless bridge conversion from the same S32LE source, explicitly
   bounded to 16-bit for hardware-player compatibility.
 - **MP3** - bridge conversion from S32LE at the configured fixed bitrate

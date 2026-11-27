@@ -135,8 +135,8 @@ is(
 my $pcmFormat = {
 	key           => 'pcm',
 	displayFormat => 'WAV',
-	contentType   => 'pcm',
-	outputContentType => 'pcm',
+	contentType   => 'wav',
+	outputContentType => 'wav',
 	bitrateBps    => 1_411_200,
 	bitrateLabel  => '1411.2 kbps',
 	sampleRate    => 44_100,
@@ -152,7 +152,7 @@ is_deeply(
 	{
 		type       => 'Spotify Soloist (WAV, 1411.2 kbps, 44.1 kHz, 16-bit, stereo)',
 		format     => 'WAV',
-		ct         => 'pcm',
+		ct         => 'wav',
 		bitrate    => '1411.2 kbps',
 		samplerate => 44_100,
 		samplesize => 16,
