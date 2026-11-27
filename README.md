@@ -244,6 +244,16 @@ Run one controlled test:
 4. Copy the log lines from `milestone=spotify-playing` through
    `milestone=player-first-status`, plus the audible wall-clock time.
 
+For one player slot, the minimal read-only capture is:
+
+```sh
+grep '\[delay-trace\].*canonical=soloist://player-0/' /var/log/squeezeboxserver/server.log
+grep '\[delay-trace\]' /var/lib/squeezeboxserver/cache/plugin-spotifysoloist/cache/player_0/bridge.log
+```
+
+Replace `player-0` with the configured slot. LMS-side lines also include
+`trace_client_id=<player MAC>` so simultaneous players can be separated.
+
 All automated milestones use monotonic seconds and include the stream
 generation and canonical `soloist://` URL. Interpret adjacent intervals as:
 
@@ -261,6 +271,12 @@ generation and canonical `soloist://` URL. Interpret adjacent intervals as:
 - `player-first-status` to the noted audible time: device-side output latency.
 
 Disable the switch after the test and save to return to normal logging.
+
+Soloist marks its host-local stream as remote only for LMS's STRM threshold
+selection: LMS ignores protocol-handler thresholds for local streams and would
+otherwise request the Touch's full input-buffer prefill. The explicit
+`input_buffer_kb` trace field is approximately 200 ms for each selected format;
+it does not enable internet-stream buffering in the bridge or audio source.
 
 ## Stream formats
 

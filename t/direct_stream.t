@@ -65,6 +65,7 @@ plan skip_all => "mkfifo unavailable: " . ( $@ || $! )
 
 $Plugins::SpotifySoloist::Plugin::stream = {
 	fifoPath => $fifo,
+	playerId => 'test-player-0',
 	delayDiagnostics => 1,
 	format   => {
 		key           => 'pcm',
@@ -91,7 +92,12 @@ my $handler = Plugins::SpotifySoloist::ProtocolHandler->new({
 ok( $handler, 'opens the direct FIFO stream' );
 like(
 	join( "\n", @TestLogger::info ),
-	qr/milestone=protocol-handler-open .*generation=0 .*canonical=soloist:\/\/player-0\/soloist\.wav/,
+	qr/milestone=protocol-handler-new .*trace_client_id=test-player-0 .*generation=0 .*canonical=soloist:\/\/player-0\/soloist\.wav/,
+	'diagnostic creation milestone identifies the LMS client and generation',
+);
+like(
+	join( "\n", @TestLogger::info ),
+	qr/milestone=protocol-handler-open .*trace_client_id=test-player-0 .*generation=0 .*canonical=soloist:\/\/player-0\/soloist\.wav/,
 	'diagnostic open milestone carries canonical URL and generation',
 );
 is( $handler->contentType, 'wav', 'declares the LMS WAV content type' );
@@ -112,7 +118,12 @@ is( substr( $buffer, 8, 8 ), 'WAVEfmt ', 'WAV header has format marker' );
 is( substr( $buffer, 36, 4 ), 'data', 'WAV header has data marker' );
 like(
 	join( "\n", @TestLogger::info ),
-	qr/milestone=protocol-first-wav-bytes .*generation=0 .*bytes=44/,
+	qr/milestone=protocol-first-sysread .*trace_client_id=test-player-0 .*requested_bytes=44/,
+	'diagnostic trace records the first LMS read request',
+);
+like(
+	join( "\n", @TestLogger::info ),
+	qr/milestone=protocol-wav-prefix .*generation=0 .*bytes=44/,
 	'diagnostic trace records the first WAV bytes once',
 );
 
@@ -163,10 +174,16 @@ is( $buffer, 'audio-two', 'forwards restarted capture audio unchanged' );
 
 close $writer;
 $handler->close;
+$handler->close;
 like(
 	join( "\n", @TestLogger::info ),
 	qr/milestone=protocol-handler-close .*generation=0/,
 	'diagnostic trace records handler closure',
+);
+is(
+	scalar( grep { /milestone=protocol-handler-close/ } @TestLogger::info ),
+	1,
+	'duplicate LMS close callbacks emit one close milestone',
 );
 
 $Plugins::SpotifySoloist::Plugin::stream->{streamGeneration} = 7;

@@ -78,7 +78,9 @@ jobs:
       - name: Check POSIX shell syntax
         run: |
           dash -n Bin/extract-soloist-update.sh
+          dash -n Bin/find-soloist-owner.sh
           dash -n Bin/soloist-bridge.sh
+          dash -n t/bridge_ownership.sh
       - name: Test managed update extractor
         run: |
           set -eu
@@ -123,6 +125,7 @@ jobs:
             t/stale_catchup.t \
             t/direct_stream.t
           timeout 30 sh t/direct_fifo.sh
+          timeout 30 sh t/bridge_ownership.sh
           timeout 30 sh t/pcm_shim_cadence.sh
           timeout 30 sh t/pcm_shim_smooth_soak.sh
           timeout 30 sh t/pcm_shim_live_ring.sh

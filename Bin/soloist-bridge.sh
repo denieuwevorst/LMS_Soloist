@@ -101,6 +101,10 @@ SOLOIST_PID=""
 SILENCE_PID=""
 CAPTURE_PID=""
 SINK_ROUTER_PID=""
+BRIDGE_OWNER_DIR="${SOLOIST_CACHE_DIR}/bridge-owner"
+BRIDGE_OWNER_PID_FILE="${BRIDGE_OWNER_DIR}/pid"
+OWNS_BRIDGE_LOCK=0
+ADOPTED_SOLOIST=0
 
 cleanup() {
 	reason="${1:-unspecified cleanup}"
@@ -112,6 +116,13 @@ cleanup() {
 	[ -n "$SILENCE_PID" ]    && kill "$SILENCE_PID"    2>/dev/null
 	[ -n "$SOLOIST_PID" ]    && kill "$SOLOIST_PID"    2>/dev/null
 	wait 2>/dev/null
+	if [ "$OWNS_BRIDGE_LOCK" = "1" ]; then
+		owner_pid="$(cat "$BRIDGE_OWNER_PID_FILE" 2>/dev/null || true)"
+		if [ "$owner_pid" = "$$" ]; then
+			rm -f "$BRIDGE_OWNER_PID_FILE"
+			rmdir "$BRIDGE_OWNER_DIR" 2>/dev/null || true
+		fi
+	fi
 	exit "$status"
 }
 trap 'status=$?; cleanup "shell EXIT status $status" "$status"' EXIT
@@ -119,6 +130,42 @@ trap 'cleanup "received TERM" 143' TERM
 trap 'cleanup "received INT" 130' INT
 
 log() { echo "[soloist-bridge] $*" >&2; }
+
+acquire_bridge_owner() {
+	while :; do
+		if mkdir "$BRIDGE_OWNER_DIR" 2>/dev/null; then
+			printf '%s\n' "$$" > "$BRIDGE_OWNER_PID_FILE"
+			OWNS_BRIDGE_LOCK=1
+			log "acquired bridge ownership for data directory '$SOLOIST_DATA_DIR' (pid $$)"
+			return
+		fi
+
+		owner_pid="$(cat "$BRIDGE_OWNER_PID_FILE" 2>/dev/null || true)"
+		if [ -n "$owner_pid" ] && kill -0 "$owner_pid" 2>/dev/null; then
+			log "bridge owner pid $owner_pid is already supervising '$SOLOIST_DATA_DIR'; waiting instead of starting a duplicate"
+			while kill -0 "$owner_pid" 2>/dev/null; do
+				sleep 1
+			done
+			log "previous bridge owner pid $owner_pid exited; taking ownership"
+		else
+			log "removing stale bridge ownership for '$SOLOIST_DATA_DIR' (recorded pid ${owner_pid:-unknown})"
+		fi
+		rm -f "$BRIDGE_OWNER_PID_FILE"
+		rmdir "$BRIDGE_OWNER_DIR" 2>/dev/null || true
+	done
+}
+
+acquire_bridge_owner
+
+OWNER_FINDER="$(dirname "$_SELF_PATH")/find-soloist-owner.sh"
+EXISTING_SOLOIST_PID=""
+if [ -f "$OWNER_FINDER" ]; then
+	EXISTING_SOLOIST_PID="$(sh "$OWNER_FINDER" "$SOLOIST_DATA_DIR" 2>/dev/null || true)"
+fi
+if [ -n "$EXISTING_SOLOIST_PID" ] && kill -0 "$EXISTING_SOLOIST_PID" 2>/dev/null; then
+	ADOPTED_SOLOIST=1
+	log "adopting existing Soloist pid $EXISTING_SOLOIST_PID for data directory '$SOLOIST_DATA_DIR'; no duplicate process will be started"
+fi
 
 case "$SOLOIST_AUDIO_BACKEND" in
 	pulse)
@@ -214,7 +261,9 @@ elif [ "$SOLOIST_AUDIO_BACKEND" = "pcm-shim" ]; then
 	CAPTURE_MODE="pcm-shim-s16le-direct"
 	SOLOIST_AUDIO_TARGET_DESC="pcm-shim S16LE direct FIFO ${FIFO_PATH}"
 	log "holding S16LE direct FIFO read/write guard on fd 3 for bridge lifetime"
-	rm -f "$SOLOIST_PCM_SHIM_CONTROL" "$SOLOIST_PCM_SHIM_ACK"
+	if [ "$ADOPTED_SOLOIST" != "1" ]; then
+		rm -f "$SOLOIST_PCM_SHIM_CONTROL" "$SOLOIST_PCM_SHIM_ACK"
+	fi
 	log "using experimental pcm-shim backend from '${SOLOIST_PCM_SHIM_DIR}', raw PCM output=${SOLOIST_SHIM_OUTPUT}"
 	if command -v sha1sum >/dev/null 2>&1; then
 		SHIM_FINGERPRINT="$(wc -c < "$SOLOIST_PCM_SHIM_LIB") bytes sha1=$(sha1sum "$SOLOIST_PCM_SHIM_LIB" | awk '{print $1}')"
@@ -234,64 +283,68 @@ fi
 # 2. Launch Soloist
 # ---------------------------------------------------------------------------
 log "starting soloist: device='${DEVICE_NAME}' backend=${SOLOIST_AUDIO_BACKEND} target='${SOLOIST_AUDIO_TARGET_DESC}' ws=${WS_ENDPOINT} data-dir=${SOLOIST_DATA_DIR}"
-if [ -n "$SOLOIST_RUNTIME_LOADER" ]; then
-	if [ ! -f "$SOLOIST_RUNTIME_LOADER" ] || [ ! -x "$SOLOIST_RUNTIME_LOADER" ]; then
-		log "ERROR: bundled Soloist runtime loader is unavailable at '$SOLOIST_RUNTIME_LOADER'"
-		exit 1
-	fi
-	if [ ! -d "$SOLOIST_RUNTIME_LIB_DIR" ]; then
-		log "ERROR: bundled Soloist runtime directory is unavailable at '$SOLOIST_RUNTIME_LIB_DIR'"
-		exit 1
-	fi
-	if [ "$SOLOIST_AUDIO_BACKEND" = "pcm-shim" ]; then
-		SOLOIST_LIBRARY_PATH="${SOLOIST_PCM_SHIM_DIR}:${SOLOIST_RUNTIME_LIB_DIR}"
-		set -- "$SOLOIST_RUNTIME_LOADER" \
-			--preload "$SOLOIST_PCM_SHIM_LIB" \
-			--library-path "$SOLOIST_LIBRARY_PATH" \
-			"$SOLOIST_BIN"
-	else
-		SOLOIST_LIBRARY_PATH="$SOLOIST_RUNTIME_LIB_DIR"
-		set -- "$SOLOIST_RUNTIME_LOADER" --library-path "$SOLOIST_LIBRARY_PATH" "$SOLOIST_BIN"
-	fi
+if [ "$ADOPTED_SOLOIST" = "1" ]; then
+	SOLOIST_PID="$EXISTING_SOLOIST_PID"
 else
-	set -- "$SOLOIST_BIN"
-fi
-
-if [ "$SOLOIST_AUDIO_BACKEND" = "pcm-shim" ]; then
-	SOLOIST_SHIM_MAX_TLENGTH_MS="${SOLOIST_SHIM_MAX_TLENGTH_MS:-0}"
 	if [ -n "$SOLOIST_RUNTIME_LOADER" ]; then
-		SOLOIST_LD_PRELOAD=""
+		if [ ! -f "$SOLOIST_RUNTIME_LOADER" ] || [ ! -x "$SOLOIST_RUNTIME_LOADER" ]; then
+			log "ERROR: bundled Soloist runtime loader is unavailable at '$SOLOIST_RUNTIME_LOADER'"
+			exit 1
+		fi
+		if [ ! -d "$SOLOIST_RUNTIME_LIB_DIR" ]; then
+			log "ERROR: bundled Soloist runtime directory is unavailable at '$SOLOIST_RUNTIME_LIB_DIR'"
+			exit 1
+		fi
+		if [ "$SOLOIST_AUDIO_BACKEND" = "pcm-shim" ]; then
+			SOLOIST_LIBRARY_PATH="${SOLOIST_PCM_SHIM_DIR}:${SOLOIST_RUNTIME_LIB_DIR}"
+			set -- "$SOLOIST_RUNTIME_LOADER" \
+				--preload "$SOLOIST_PCM_SHIM_LIB" \
+				--library-path "$SOLOIST_LIBRARY_PATH" \
+				"$SOLOIST_BIN"
+		else
+			SOLOIST_LIBRARY_PATH="$SOLOIST_RUNTIME_LIB_DIR"
+			set -- "$SOLOIST_RUNTIME_LOADER" --library-path "$SOLOIST_LIBRARY_PATH" "$SOLOIST_BIN"
+		fi
 	else
-		SOLOIST_LD_PRELOAD="$SOLOIST_PCM_SHIM_LIB${LD_PRELOAD:+:${LD_PRELOAD}}"
+		set -- "$SOLOIST_BIN"
 	fi
-	env \
-		LD_LIBRARY_PATH="$SOLOIST_LD_LIBRARY_PATH" \
-		LD_PRELOAD="$SOLOIST_LD_PRELOAD" \
-		SOLOIST_SHIM_OUT="$SOLOIST_SHIM_OUTPUT" \
-		SOLOIST_SHIM_FORMAT=s16 \
-		SOLOIST_SHIM_RATE=44100 \
-		SOLOIST_SHIM_LOG="$SOLOIST_PCM_SHIM_LOG" \
-		SOLOIST_SHIM_DELAY_TRACE="$SOLOIST_DELAY_DIAGNOSTICS" \
-		SOLOIST_SHIM_RING_MS="$SOLOIST_PCM_SHIM_RING_MS" \
-		SOLOIST_SHIM_CONTROL="$SOLOIST_PCM_SHIM_CONTROL" \
-		SOLOIST_SHIM_ACK="$SOLOIST_PCM_SHIM_ACK" \
-		SOLOIST_SHIM_MAX_TLENGTH_MS="$SOLOIST_SHIM_MAX_TLENGTH_MS" \
+
+	if [ "$SOLOIST_AUDIO_BACKEND" = "pcm-shim" ]; then
+		SOLOIST_SHIM_MAX_TLENGTH_MS="${SOLOIST_SHIM_MAX_TLENGTH_MS:-0}"
+		if [ -n "$SOLOIST_RUNTIME_LOADER" ]; then
+			SOLOIST_LD_PRELOAD=""
+		else
+			SOLOIST_LD_PRELOAD="$SOLOIST_PCM_SHIM_LIB${LD_PRELOAD:+:${LD_PRELOAD}}"
+		fi
+		env \
+			LD_LIBRARY_PATH="$SOLOIST_LD_LIBRARY_PATH" \
+			LD_PRELOAD="$SOLOIST_LD_PRELOAD" \
+			SOLOIST_SHIM_OUT="$SOLOIST_SHIM_OUTPUT" \
+			SOLOIST_SHIM_FORMAT=s16 \
+			SOLOIST_SHIM_RATE=44100 \
+			SOLOIST_SHIM_LOG="$SOLOIST_PCM_SHIM_LOG" \
+			SOLOIST_SHIM_DELAY_TRACE="$SOLOIST_DELAY_DIAGNOSTICS" \
+			SOLOIST_SHIM_RING_MS="$SOLOIST_PCM_SHIM_RING_MS" \
+			SOLOIST_SHIM_CONTROL="$SOLOIST_PCM_SHIM_CONTROL" \
+			SOLOIST_SHIM_ACK="$SOLOIST_PCM_SHIM_ACK" \
+			SOLOIST_SHIM_MAX_TLENGTH_MS="$SOLOIST_SHIM_MAX_TLENGTH_MS" \
+			"$@" \
+			--device-name "$DEVICE_NAME" \
+			--api-key "$SOLOIST_API_KEY" \
+			--data-dir "$SOLOIST_DATA_DIR" \
+			--cache-dir "$SOLOIST_CACHE_DIR" \
+			--ws "$WS_ENDPOINT" &
+	else
 		"$@" \
-		--device-name "$DEVICE_NAME" \
-		--api-key "$SOLOIST_API_KEY" \
-		--data-dir "$SOLOIST_DATA_DIR" \
-		--cache-dir "$SOLOIST_CACHE_DIR" \
-		--ws "$WS_ENDPOINT" &
-else
-	"$@" \
 		--device-name "$DEVICE_NAME" \
 		--api-key "$SOLOIST_API_KEY" \
 		--data-dir "$SOLOIST_DATA_DIR" \
 		--cache-dir "$SOLOIST_CACHE_DIR" \
 		--ws "$WS_ENDPOINT" \
 		--pipewire-device "$PIPEWIRE_SINK" &
+	fi
+	SOLOIST_PID=$!
 fi
-SOLOIST_PID=$!
 
 # Poll for actual readiness instead of blindly sleeping a fixed amount.
 # Soloist writes ws.port when its control WebSocket is really listening,
@@ -442,14 +495,27 @@ capture_supervisor() {
 log "direct LMS S16LE stream ready: ${FIFO_PATH} (requested output=${FORMAT}, conversion owned by LMS)"
 if [ "$SOLOIST_AUDIO_BACKEND" = "pcm-shim" ]; then
 	log "pcm-shim writes S16LE directly to ${FIFO_PATH}; monitoring Soloist process"
-	wait "$SOLOIST_PID" 2>/dev/null
-	code=$?
+	if [ "$ADOPTED_SOLOIST" = "1" ]; then
+		while kill -0 "$SOLOIST_PID" 2>/dev/null; do
+			sleep 1
+		done
+		code=0
+	else
+		wait "$SOLOIST_PID" 2>/dev/null
+		code=$?
+	fi
 else
 	capture_supervisor
-	wait "$SOLOIST_PID" 2>/dev/null
-	code=$?
+	if [ "$ADOPTED_SOLOIST" = "1" ]; then
+		code=0
+	else
+		wait "$SOLOIST_PID" 2>/dev/null
+		code=$?
+	fi
 fi
-if [ "$code" = "10" ]; then
+if [ "$ADOPTED_SOLOIST" = "1" ]; then
+	log "adopted soloist pid $SOLOIST_PID exited"
+elif [ "$code" = "10" ]; then
 	log "soloist build expired (exit code 10) -- install a newer build"
 else
 	log "soloist exited (code $code)"

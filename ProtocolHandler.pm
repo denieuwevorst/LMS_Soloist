@@ -29,6 +29,7 @@ sub _delayTrace {
 		Plugins::SpotifySoloist::StreamSemantics::canonicalSoloistUrl($url)
 		|| $url;
 	my @details = (
+		'trace_client_id=' . ( ${*$self}{traceClientId} || 'unknown' ),
 		'generation=' . ( ${*$self}{streamGeneration} || 0 ),
 		"canonical=$canonical",
 	);
@@ -47,9 +48,11 @@ sub _delayTrace {
 	);
 }
 
-# The bytes originate from a per-player FIFO on the LMS host. Marking this as
-# remote makes LMS apply its internet-stream bufferSecs delay before playback.
-sub isRemote { 0 }
+# LMS only forwards a protocol handler's bufferThreshold to the player's STRM
+# command for remote streams. The bytes are still host-local, but this
+# classification is required to avoid the Touch's default full input-buffer
+# prefill (about 1 MiB / 5.8 seconds for S16LE).
+sub isRemote { 1 }
 sub canSeek { 0 }
 sub canHandleTranscode { 0 }
 sub isAudioURL { 1 }
@@ -124,6 +127,11 @@ sub new {
 		$format->{key} eq 'pcm' ? _drainFifo($self) : 0;
 	${*$self}{url} = $url;
 	${*$self}{client} = $args->{client};
+	${*$self}{traceClientId} =
+		$stream->{playerId}
+		|| eval { $args->{client}->master->id }
+		|| eval { $args->{client}->id }
+		|| 'unknown';
 	${*$self}{contentType} = $format->{contentType};
 	${*$self}{formatKey} = $format->{key};
 	${*$self}{bitrate} = $format->{sourceBitrateBps} || 1_411_200;
@@ -145,6 +153,15 @@ sub new {
 	${*$self}{readBytes} = 0;
 	${*$self}{wouldBlockReads} = 0;
 	${*$self}{maxReadGap} = 0;
+	${*$self}{firstSysreadLogged} = 0;
+	${*$self}{closeLogged} = 0;
+
+	_delayTrace(
+		$self, 'protocol-handler-new',
+		buffer_threshold_kb => $format->{bufferKb},
+		content_type => $format->{contentType},
+		url => $url,
+	);
 
 	my $song = $args->{song};
 	Plugins::SpotifySoloist::StreamSemantics::applySongFormat(
@@ -170,6 +187,13 @@ sub new {
 
 sub sysread {
 	my ( $self, undef, $length, $offset ) = @_;
+	if ( !${*$self}{firstSysreadLogged} ) {
+		${*$self}{firstSysreadLogged} = 1;
+		_delayTrace(
+			$self, 'protocol-first-sysread',
+			requested_bytes => $length,
+		);
+	}
 	my $prefix = ${*$self}{prefix};
 
 	if ( length $prefix ) {
@@ -184,7 +208,7 @@ sub sysread {
 		if ( !${*$self}{wavPrefixLogged} ) {
 			${*$self}{wavPrefixLogged} = 1;
 			_delayTrace(
-				$self, 'protocol-first-wav-bytes',
+				$self, 'protocol-wav-prefix',
 				bytes => length($chunk),
 				content_type => ${*$self}{contentType} || 'unknown',
 			);
@@ -328,7 +352,10 @@ sub close {
 		"closing direct Soloist protocol handler for '$url'"
 		. '; the bridge keeps Soloist and the guarded S16 FIFO alive'
 	);
-	_delayTrace( $self, 'protocol-handler-close', url => $url );
+	if ( !${*$self}{closeLogged} ) {
+		${*$self}{closeLogged} = 1;
+		_delayTrace( $self, 'protocol-handler-close', url => $url );
+	}
 	my $closed = $self->SUPER::close();
 	# Preserve the existing bounded replacement interval so downstream decoder
 	# state is cleared before LMS opens the next generation.

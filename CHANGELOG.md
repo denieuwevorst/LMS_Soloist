@@ -11,6 +11,17 @@
   flooding `server.log`.
 - Keep opt-in plugin/protocol delay milestones visible in `server.log` at the
   default plugin log level; bridge/shim milestones remain in `bridge.log`.
+- Prevent duplicate per-player supervisors from repeatedly launching Soloist
+  against an already-owned data directory. Bridge ownership is atomic, an
+  orphaned matching Soloist process is adopted by exact `--data-dir`, and a
+  second supervisor waits for the live owner instead of retrying every five
+  seconds.
+- Correlate protocol creation, first LMS read, WAV prefix, audio read,
+  recovery, playback request, player status, and close milestones with the
+  exact LMS client ID, canonical URL, generation, and monotonic time.
+- Route Soloist through LMS's handler-specific STRM input threshold so a Touch
+  starts after roughly 200 ms instead of filling its default ~1 MiB input
+  buffer (about 5.8 seconds for 44.1 kHz stereo S16LE).
 
 - Add an optional startup-delay trace that correlates Spotify playing/URI
   observation, shim first PCM output, protocol-handler WAV/audio reads,

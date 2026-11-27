@@ -31,7 +31,8 @@ BEGIN {
 	$INC{'Slim/Utils/Strings.pm'} = __FILE__;
 
 	package Plugins::SpotifySoloist::Plugin;
-	sub directStreamInfoForUrl { return }
+	our $stream;
+	sub directStreamInfoForUrl { return $stream }
 }
 
 require './ProtocolHandler.pm';
@@ -47,8 +48,30 @@ is(
 );
 is(
 	Plugins::SpotifySoloist::ProtocolHandler->isRemote(),
-	0,
-	'host-local Soloist FIFO bypasses LMS internet-stream buffering',
+	1,
+	'Soloist opts into the LMS handler-specific player buffer threshold',
+);
+$Plugins::SpotifySoloist::Plugin::stream = {
+	format => {
+		bufferKb => 35,
+	},
+};
+my $bufferKb = Plugins::SpotifySoloist::ProtocolHandler->bufferThreshold(
+	undef,
+	'soloist://player-0/soloist.wav',
+);
+is( $bufferKb, 35, 'PCM requests a 35 KiB Touch input-buffer threshold' );
+cmp_ok(
+	$bufferKb * 1024 / ( 1_411_200 / 8 ),
+	'<',
+	0.25,
+	'PCM threshold requires less than 250 ms of source audio',
+);
+cmp_ok(
+	1024 * 1024 / ( 1_411_200 / 8 ),
+	'>',
+	5,
+	'the bypassed 1 MiB Touch prefill explains the field five-second delay',
 );
 is(
 	Plugins::SpotifySoloist::ProtocolHandler->isRepeatingStream(),

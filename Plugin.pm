@@ -274,6 +274,11 @@ sub _delayTraceMilestone {
 		Plugins::SpotifySoloist::StreamSemantics::canonicalSoloistUrl($url) || $url;
 	my @details = (
 		"player=" . ( $client ? $client->name : ( $b->{playerId} || 'unknown' ) ),
+		"trace_client_id=" . (
+			$client
+				? ( eval { $client->master->id } || eval { $client->id } || 'unknown' )
+				: ( $b->{playerId} || 'unknown' )
+		),
 		"generation=$generation",
 		"canonical=$canonical",
 	);
@@ -1125,6 +1130,7 @@ sub directStreamInfoForUrl {
 		return {
 			fifoPath        => $bridge->{fifoPath},
 			format          => $format,
+			playerId        => $bridge->{playerId},
 			streamGeneration => $currentGeneration,
 			delayDiagnostics => delayDiagnosticsEnabled(),
 		};
@@ -1514,6 +1520,7 @@ sub _finishPcmTimelineResync {
 	$b->{suppressLyrionTransportUntil} = time() + 1;
 	_delayTraceMilestone(
 		$b, $client, 'lms-strm-requested',
+		input_buffer_kb => $b->{formatSpec}->{bufferKb},
 		path => 'generation-replacement',
 		output_format => $b->{format},
 		output_samplesize => $b->{format} eq 'mp3' ? 'compressed' : 16,
@@ -1640,6 +1647,20 @@ sub recoverDirectStreamAfterStall {
 			. " stale bytes (generation=$generation, url=$replacementUrl)"
 		);
 		$liveBridge->{suppressLyrionTransportUntil} = time() + 1;
+		_delayTraceMilestone(
+			$liveBridge, $liveClient, 'stream-recover-requested',
+			discarded_bytes => $discarded || 0,
+			url => $replacementUrl,
+		);
+		_delayTraceMilestone(
+			$liveBridge, $liveClient, 'lms-strm-requested',
+			input_buffer_kb => $liveBridge->{formatSpec}->{bufferKb},
+			path => 'stale-recovery',
+			output_format => $liveBridge->{format},
+			output_samplesize =>
+				$liveBridge->{format} eq 'mp3' ? 'compressed' : 16,
+			url => $replacementUrl,
+		);
 		$liveClient->execute( [ 'playlist', 'play', $replacementUrl ] );
 	} );
 }
@@ -2223,6 +2244,7 @@ sub _applyPlaybackTransition {
 		$b->{suppressLyrionTransportUntil} = time() + 1;
 		_delayTraceMilestone(
 			$b, $client, 'lms-strm-requested',
+			input_buffer_kb => $b->{formatSpec}->{bufferKb},
 			path => 'initial-play',
 			output_format => $b->{format},
 			output_samplesize => $b->{format} eq 'mp3' ? 'compressed' : 16,
