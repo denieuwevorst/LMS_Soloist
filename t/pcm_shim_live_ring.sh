@@ -20,6 +20,7 @@ make -C "$shim" clean marker_client >/dev/null
 exec 9<>"$fifo"
 LD_LIBRARY_PATH="$shim" \
 SOLOIST_SHIM_OUT="$fifo" \
+SOLOIST_SHIM_FORMAT=s16 \
 SOLOIST_SHIM_RATE=44100 \
 SOLOIST_SHIM_RING_MS=100 \
 SOLOIST_SHIM_CONTROL="$control" \
@@ -44,18 +45,18 @@ while True:
         break
 deadline = time.monotonic() + 1
 data = b""
-while len(data) < 8 and time.monotonic() < deadline:
+while len(data) < 4 and time.monotonic() < deadline:
     try:
-        data += os.read(fd, 8 - len(data))
+        data += os.read(fd, 4 - len(data))
     except BlockingIOError:
         time.sleep(0.005)
 os.close(fd)
-if len(data) != 8:
+if len(data) != 4:
     raise SystemExit("no live PCM frame after draining")
-left, right = struct.unpack("<ii", data)
+left, right = struct.unpack("<hh", data)
 if left != right:
     raise SystemExit("stereo frame alignment was lost")
-print(left >> 16)
+print(left)
 PY
 )"
 [ "$marker" -ge 60 ]
@@ -85,11 +86,11 @@ kill -0 "$client_pid"
 
 # Replacing the LMS reader leaves the same shim/Soloist capture process alive.
 exec 8<"$fifo"
-dd bs=8 count=1 <&8 >/dev/null 2>&1
+dd bs=4 count=1 <&8 >/dev/null 2>&1
 exec 8<&-
 sleep 0.05
 exec 8<"$fifo"
-dd bs=8 count=1 <&8 >/dev/null 2>&1
+dd bs=4 count=1 <&8 >/dev/null 2>&1
 kill -0 "$client_pid"
 exec 8<&-
 

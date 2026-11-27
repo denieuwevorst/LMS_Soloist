@@ -10,10 +10,11 @@ trap 'rm -rf "$tmp"' EXIT INT TERM
 mkdir "$tmp"
 make -C "$shim" clean marker_client >/dev/null
 
-run_s32() {
-	fifo="$tmp/s32.fifo"
-	raw="$tmp/s32.raw"
-	log="$tmp/s32.log"
+run_mode() {
+	mode="$1"
+	fifo="$tmp/$mode.fifo"
+	raw="$tmp/$mode.raw"
+	log="$tmp/$mode.log"
 	mkfifo "$fifo"
 	exec 9<>"$fifo"
 
@@ -21,7 +22,9 @@ run_s32() {
 	reader=$!
 	LD_LIBRARY_PATH="$shim" \
 	SOLOIST_SHIM_OUT="$fifo" \
+	SOLOIST_SHIM_FORMAT=s16 \
 	SOLOIST_SHIM_RATE=44100 \
+	SOLOIST_SHIM_MODE="$mode" \
 	SOLOIST_SHIM_LOG=1 \
 	SOLOIST_SHIM_TEST_COUNTER_BASE_FRAMES=1073741000 \
 	MARKER_INPUT_FLOAT32=1 \
@@ -39,20 +42,21 @@ run_s32() {
 	[ "$(grep -c 'reason=pulse-flush' "$log")" -ge 6 ]
 	if grep -q 'drain index mismatch' "$log"; then
 		cat "$log" >&2
-		echo "S32LE exposed inconsistent Pulse input-byte indexes" >&2
+		echo "$mode exposed inconsistent Pulse input-byte indexes" >&2
 		exit 1
 	fi
 	[ "$(grep -Ec '\[marker-client\] track (1|2|3) drained' "$log")" -eq 3 ]
 	if grep -q 'stream underflow:' "$log"; then
 		cat "$log" >&2
-		echo "S32LE emitted a premature underflow across natural track endings" >&2
+		echo "$mode emitted a premature underflow across natural track endings" >&2
 		exit 1
 	fi
 	bytes="$(wc -c <"$raw")"
 	[ "$bytes" -gt 0 ]
-	[ $((bytes % 8)) -eq 0 ]
-	[ "$bytes" -le $((3 * 2 * 44100 * 8)) ]
+	[ $((bytes % 4)) -eq 0 ]
+	[ "$bytes" -le $((3 * 2 * 44100 * 4)) ]
 }
 
-run_s32
-echo "live-ring S32LE drained and resumed across repeated natural track endings"
+run_mode live-ring
+run_mode compat
+echo "live-ring and compatibility modes drained and resumed across repeated natural track endings"

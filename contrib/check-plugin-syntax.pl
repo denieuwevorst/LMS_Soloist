@@ -136,19 +136,17 @@ die "Cached Soloist ctl command was assembled incorrectly\n"
 my $syntaxPrefs = Slim::Utils::Prefs::preferences('plugin.spotifysoloist');
 $syntaxPrefs->set( 'bitrate', '192k' );
 my $mp3Format = Plugins::SpotifySoloist::Plugin::currentFormatSpec('mp3');
-die "MP3 format metadata did not select the configured bridge bitrate\n"
+die "MP3 format metadata did not select the configured LMS bitrate\n"
 		unless $mp3Format->{bitrateBps} == 192_000
 			&& $mp3Format->{bitrateLabel} eq '192 kbps'
-			&& $mp3Format->{encoderBitrate} eq '192k'
-			&& $mp3Format->{contentType} eq 'mp3'
+				&& $mp3Format->{contentType} eq 's16m192'
 			&& $mp3Format->{bitrateValid};
 $syntaxPrefs->set( 'bitrate', 'not-a-rate' );
 $mp3Format = Plugins::SpotifySoloist::Plugin::currentFormatSpec('mp3');
 die "Invalid MP3 bitrate did not fall back consistently\n"
 		unless $mp3Format->{bitrateBps} == 320_000
 			&& $mp3Format->{bitrateLabel} eq '320 kbps'
-			&& $mp3Format->{encoderBitrate} eq '320k'
-			&& $mp3Format->{contentType} eq 'mp3'
+				&& $mp3Format->{contentType} eq 's16m320'
 			&& !$mp3Format->{bitrateValid};
 my $flacFormat = Plugins::SpotifySoloist::Plugin::currentFormatSpec('flac');
 die "FLAC format metadata fabricated a fixed bitrate\n"

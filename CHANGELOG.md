@@ -2,76 +2,19 @@
 
 ## Unreleased
 
-- Fix the bridge FIFO open-order deadlock exposed by repeated exact
-  353,440-byte S32LE drops. ffmpeg previously blocked opening `audio.fifo`
-  before it could consume `pcm-shim.fifo`. The bridge now continuously drains
-  the S32 source while no LMS reader exists, detects the handler reader
-  nonblocking, then atomically switches from the standby drain to the final
-  converter. Handler replacement returns to the drain until the next reader.
-- Advertise the handler-framed PCM stream as WAV instead of raw PCM, matching
-  its 16-bit RIFF header and selecting LMS's WAV-to-PCM stream handling.
-- Start the metadata/playback observer after 100 ms instead of waiting five
-  seconds after plugin initialization, so the first Spotify playback can open
-  its LMS handler promptly.
-- Add field-equivalent startup coverage for PCM, FLAC, and MP3: source audio
-  flows for five seconds with no LMS reader, the standby drain must prevent
-  source backpressure, and first final bytes must arrive within 500 ms after
-  the reader opens. Sustained ten-second coverage applies recurring 205 ms
-  final-reader stalls to all formats.
-- Treat the host-local `soloist://` FIFO as a local stream so LMS does not apply
-  internet-stream buffering after the handler opens.
-- Disable ffmpeg's default input analysis/probing window for the explicitly
-  described raw S32LE source. Without this, the converter could consume about
-  five seconds of live audio before opening the final PCM/FLAC/MP3 FIFO.
-- Replace LMS-owned realtime S32 conversion with one persistent bridge-side
-  converter. Field logs from the current `2026-11-22.1-s32le` build showed
-  repeated 200-205 ms LMS consumer gaps and real live-edge drops during steady
-  playback even with the 64 KiB FIFO. The shim now feeds a separate S32LE source
-  FIFO; the bridge emits final dithered S16LE PCM, 16-bit FLAC, or fixed-bitrate
-  MP3, and the protocol handler exposes that native format without a second LMS
-  transcoder.
-- Preserve the request-ID generation flush protocol across the new source FIFO.
-  Discontinuous handler replacement terminates the old final converter and
-  starts a clean process for the new generation while Soloist and the bridge
-  remain alive. A bounded 120 ms reader-free close window removes the FIFO
-  close/open race. PCM alone drains queued raw output; FLAC/MP3 preserve their
-  fresh encoder headers. Natural transitions retain the existing process.
-- Add sustained cadence coverage with recurring 205 ms final-reader pauses,
-  exact PCM frame totals, and source-write gap bounds below the shim's 200 ms
-  live-edge budget.
-- Increase the S32LE source FIFO from 16 KiB (46.4 ms) to 64 KiB (185.8 ms).
-  Field diagnostics showed the former LMS ffmpeg reader pausing for 117.7 ms immediately
-  after startup, overflowing the smaller queue and forcing an audible live-edge
-  drop. The 200 ms userspace live-edge limit remains unchanged.
-- Add realtime cadence coverage using the exact PCM/FLAC ffmpeg commands, plus
-  a 120 ms converter-startup stall regression that requires zero FIFO pressure,
-  drops, or underflows and bounded oldest-audio age. Flush PCM packets promptly
-  and cap ffmpeg FIFO reads at 4096 bytes instead of accepting its roughly
-  100 ms default streaming-WAV input batches. The exact-command cadence test
-  bounds PCM output gaps below 120 ms and FLAC output gaps below 180 ms.
-- Fix the S32 conversion regression that allowed cached track metadata to
-  remain 32-bit. PCM now uses low-latency triangular
-  dithering to S16LE, FLAC is explicitly encoded at 16-bit, and the
-  generation-qualified RemoteTrack is changed to truthful output metadata
-  after converter selection. Hardware players such as Squeezebox Touch can no
-  longer receive raw S32LE or a 32-bit `strm` declaration.
-- Restore the PCM startup threshold to 35 KB for the 1,411,200 bps converted
-  output, avoiding the doubled startup buffer introduced with S32 source
-  accounting.
-- Replace all compatibility/legacy shim branches with one validated
-  `live-ring-s32le` path. Soloist float32 is converted to 44.1 kHz stereo
-  S32LE, kept within the 200 ms live-edge ring, and written directly to the
-  per-player FIFO using 8-byte output frames.
-- Keep final PCM, FLAC, and MP3 conversion out of LMS. Empty plugin
-  `custom-types.conf`/`custom-convert.conf` files ensure native final streams do
-  not select a second transcoder; a missing bridge ffmpeg dependency fails
-  explicitly before playback.
-- Remove the per-player compatibility-mode setting, stale preference handling,
-  ffmpeg path setting, environment variables, tests, and diagnostics. Existing
-  saved compatibility values are ignored safely.
-- Advertise truthful final stream properties. PCM uses a streaming S16LE WAV
-  header at 44.1 kHz stereo, 16-bit, 4-byte block alignment, and 1,411,200 bps.
-- Qualify playback URLs with a monotonically increasing `?g=` token for
+- Restore the field-proven S16LE direct source: Soloist writes through the
+  native shim's bounded live-edge ring into one bridge-lifetime guarded FIFO,
+  and the protocol handler supplies a truthful 44.1 kHz, stereo, 16-bit WAV
+  stream. PCM uses no ffmpeg process.
+- Move FLAC and MP3 encoding back into LMS conversion rules. The bridge always
+  exposes the same S16LE source and never launches ffmpeg or owns an
+  intermediate encoder FIFO; missing converters surface as LMS conversion
+  errors instead of silently changing architecture.
+- Retain generation-qualified discontinuity URLs, request-ID flush
+  acknowledgements, 64-bit frame accounting, natural-end recovery, exact shim
+  preload/map verification, and prompt local-stream startup from the later
+  experiments.
+- Qualify PCM playback URLs with a monotonically increasing `?g=` token for
   manual track/playlist changes, Next/Previous, meaningful backward seeks, and
   stale-stream recovery. LMS can no longer optimize the same-URL replay into a
   no-op, so it closes the old handler and flushes downstream player buffers.
@@ -79,7 +22,8 @@
   natural gapless transitions retain the current URL and handler.
 - Use 64-bit input frames as the canonical Pulse accounting unit, converting
   to input bytes only for Pulse indexes and independently to output bytes for
-  the FIFO.
+  the FIFO. This fixes float32-input to s16-output flush accounting that could
+  otherwise leave a 2:1 phantom buffered duration near track end.
 - Advance Pulse read-index accounting whenever queued PCM is flushed or
   discarded, preventing cumulative generation flushes from making Soloist
   believe several seconds remain buffered near natural track end. Drain
@@ -94,15 +38,23 @@
   exact `LD_PRELOAD` on native runtimes), ensuring it is mapped before Soloist
   chooses an audio backend. Official x86_64, ARMv7, and ARM64 runtime tests now
   require the constructor build marker.
+- Preserve Soloist's compatibility-mode Pulse writable-size, callback, and
+  prebuffer contract in live-edge mode while independently discarding audio
+  only when its wall-clock presentation age exceeds the configured budget.
+  This combines the smooth field behavior of compatibility mode with bounded
+  stale latency.
 - Verify the selected PCM shim build marker and Soloist's actual mapped
   `libpulse.so.0` before playback, enable diagnostic summaries by default, and
   log the exact cause of every bridge shutdown or safety restart. Repeated
   rapid generation flushes now assert same-process survival in both modes.
+- Add a per-player PCM compatibility switch for same-host A/B testing. It
+  restores the pre-ring Pulse buffering and sink-wait contract while preserving
+  direct final-FIFO delivery, generation flushes, and handler replacement.
 - Identify the exact shim build, mode, path, size, and SHA-1 at startup. Add
   five-second summaries for Pulse producer callbacks/writes, underflows, ring
   fill/drops, writer scheduling gaps, sink pressure, and LMS read cadence.
-- Add continuous wall-clock cadence tests for the single S32LE live-ring path;
-  byte-completeness alone is no longer treated as proof of smooth audio.
+- Add continuous wall-clock cadence tests for both live-ring and compatibility
+  modes; byte-completeness alone is no longer treated as proof of smooth audio.
 - Fix stuttering under ordinary scheduler jitter by retaining and retrying the
   current PCM chunk while the 200 ms live-edge ring still has budget. Temporary
   FIFO backpressure no longer drops audio immediately; oldest audio is dropped

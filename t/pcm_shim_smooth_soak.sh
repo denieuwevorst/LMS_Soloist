@@ -16,17 +16,17 @@ mkfifo "$fifo"
 make -C "$shim" clean marker_client >/dev/null
 
 # Match the bridge guard, then consume faster than real time in bursts with
-# deliberate 220 ms scheduler gaps. Those gaps exceed the 64 KiB FIFO alone,
-# but leave only about 34 ms for the 200 ms userspace retry budget to absorb.
+# deliberate 120 ms scheduler gaps. Those gaps exceed the 16 KiB FIFO alone,
+# but remain inside the 200 ms userspace live-edge budget.
 exec 9<>"$fifo"
 python3 - "$fifo" "$raw" <<'PY' &
 import os, sys, time
 fifo, output = sys.argv[1:]
-target = 5 * 44100 * 8
+target = 5 * 44100 * 4
 fd = os.open(fifo, os.O_RDONLY | os.O_NONBLOCK)
 data = bytearray()
-next_pause = 44100 * 8 // 4
-deadline = time.monotonic() + 12
+next_pause = 44100 * 4 // 4
+deadline = time.monotonic() + 8
 while len(data) < target and time.monotonic() < deadline:
     try:
         chunk = os.read(fd, min(16384, target - len(data)))
@@ -38,8 +38,8 @@ while len(data) < target and time.monotonic() < deadline:
         continue
     data.extend(chunk)
     if len(data) >= next_pause:
-        time.sleep(0.220)
-        next_pause += 44100 * 8 // 4
+        time.sleep(0.120)
+        next_pause += 44100 * 4 // 4
 os.close(fd)
 with open(output, "wb") as handle:
     handle.write(data)
@@ -50,6 +50,7 @@ reader_pid=$!
 
 LD_LIBRARY_PATH="$shim" \
 SOLOIST_SHIM_OUT="$fifo" \
+SOLOIST_SHIM_FORMAT=s16 \
 SOLOIST_SHIM_RATE=44100 \
 SOLOIST_SHIM_RING_MS=200 \
 SOLOIST_SHIM_LOG=1 \
@@ -61,7 +62,7 @@ client_pid=""
 wait "$reader_pid"
 reader_pid=""
 
-[ "$(wc -c < "$raw")" -eq 1764000 ]
+[ "$(wc -c < "$raw")" -eq 882000 ]
 if grep -Eq 'live-edge drop|stream underflow' "$tmp/client.log"; then
 	cat "$tmp/client.log" >&2
 	echo "steady-state soak dropped or underflowed audio" >&2
@@ -72,13 +73,11 @@ grep -q 'output pressure: eagain=' "$tmp/client.log"
 python3 - "$raw" "$tmp/client.log" <<'PY'
 import re, struct, sys
 raw = open(sys.argv[1], "rb").read()
-frames = struct.iter_unpack("<ii", raw)
+frames = struct.iter_unpack("<hh", raw)
 last = -1
 for left, right in frames:
     if left != right:
         raise SystemExit("stereo frame alignment was lost")
-    left >>= 16
-    right >>= 16
     if left < last:
         raise SystemExit(f"PCM marker moved backward: {left} < {last}")
     if left > last + 1 and last >= 0:

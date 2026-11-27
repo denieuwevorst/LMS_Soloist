@@ -28,10 +28,10 @@ The former ALSA/apulse loopback backend has been removed. Existing
 Spotify
   -> Soloist
   -> per-player Pulse/PipeWire null sink
-  -> parec S32LE capture
+  -> parec S16LE
   -> per-player FIFO
   -> soloist:// protocol handler
-  -> LMS S16LE/FLAC/MP3 conversion
+  -> LMS conversion/streaming pipeline
   -> player
 ```
 
@@ -42,35 +42,27 @@ Spotify
   -> Soloist
   -> custom libpulse.so.0
   -> 200 ms bounded live-edge PCM ring
-  -> per-player bridge source FIFO (S32LE)
-  -> persistent bridge ffmpeg conversion
-  -> per-player LMS FIFO (S16LE PCM / 16-bit FLAC / MP3)
+  -> per-player LMS FIFO (S16LE)
   -> soloist:// protocol handler
+  -> LMS conversion/streaming pipeline
   -> player
 ```
 
-The shim writes one continuous S32LE source into a bridge-owned FIFO. While LMS
-has no final-stream reader, the bridge drains that source to `/dev/null` so
-Soloist never blocks behind an unopened output FIFO. As soon as the
-`soloist://` handler opens, the supervisor replaces the standby drain with
-ffmpeg: PCM is triangular-dithered to S16LE, FLAC is explicitly 16-bit, and MP3
-uses the configured fixed bitrate. LMS does not launch a second realtime
-converter.
-The raw source format is declared explicitly with probing and analysis
-disabled, so ffmpeg opens the selected final stream as soon as source frames
-arrive instead of collecting its default multi-second analysis window.
-The shim's 200 ms live-edge ring and 64 KiB S32LE source FIFO remain bounded.
+The bridge does not run ffmpeg or a forwarding `cat` process. The shim writes
+directly to the bridge-lifetime guarded LMS FIFO, and the protocol handler adds
+a streaming S16LE WAV header when LMS opens it. PCM follows LMS's native WAV
+path; LMS-owned conversion rules encode FLAC or MP3 when selected. The shim's 200 ms live-edge ring
+isolates Soloist from the FIFO writer. Short reader scheduling gaps are retried
+inside that budget without dropping audio; a sustained slow reader drops the
+oldest complete PCM frames only after the budget is exhausted, so a stall
+cannot turn into multi-second delayed playback. Together with the deliberately
+small final FIFO, PCM buffering remains bounded to approximately 300 ms. LMS
+may still use its own conversion rules when a player cannot consume WAV
+directly.
 
-The handler opens the final FIFO nonblocking in read/write mode. That reader is
-the signal to start the final converter, avoiding the FIFO open-order deadlock
-where ffmpeg waited for LMS and stopped consuming S32LE. Discontinuous
-generation flushes preserve the request/ack protocol. Closing the old handler
-terminates the final converter writer, returns the source to its standby drain,
-and starts a clean converter when the replacement handler opens. PCM drains
-only queued raw samples; FLAC/MP3 preserve the fresh encoder header.
-Because this FIFO is hosted by LMS, `soloist://` is a local stream. LMS starts
-playback from the bridge's low-latency final bytes instead of applying the
-configured remote/internet-stream delay.
+The handler opens the FIFO nonblocking in read/write mode. Keeping one local
+writer open prevents a temporary capture-process exit from appearing as EOF to
+LMS; the bridge can restart capture and continue through the same stream.
 For discontinuous PCM changes, LMS reopens a generation-qualified playback URL
 such as `soloist://player-0/soloist.wav?g=4`. The canonical per-player URL stays
 stable for metadata and settings, while the token forces LMS to replace the
@@ -83,7 +75,7 @@ Common requirements:
 
 - Lyrion Music Server 8.0 or newer
 - Spotify Soloist and a valid Soloist API key
-- ffmpeg for MP3 or FLAC bridge output
+- an LMS-visible ffmpeg converter for FLAC or MP3 output
 
 Pulse backend requirements:
 
@@ -186,22 +178,19 @@ In the plugin settings:
 2. Keep the automatically populated architecture-specific shim directory. For
    a custom build, set **Experimental PCM shim directory** to the directory
    containing the built `libpulse.so.0`.
-3. Select **PCM/WAV**, **FLAC**, or **MP3** as the LMS output format.
+3. Select **PCM/WAV** for native WAV delivery, or MP3/FLAC for LMS-owned
+   conversion from the same S16LE source.
 4. Save and restart the affected bridges.
 
-The bridge sets `LD_LIBRARY_PATH` only for the Soloist process and points
-`SOLOIST_SHIM_OUT` at the per-player S32LE source FIFO. The bridge converts to
-the selected final format and writes the LMS-facing FIFO. On discontinuous
-Spotify URI changes or meaningful backward seeks, the plugin atomically
-publishes a flush request to the shim. The bridge observes the shim's internal
-acknowledgement and only then plays the new generation-qualified URL. The
-handler close/open lifecycle restarts the final converter, discards its buffered
-old timeline, and supplies a fresh encoded header where required. The handler
-leaves a bounded 120 ms reader-free close window so the old writer reliably
-observes EPIPE before LMS reopens the FIFO. This orders source-ring flushing
-before downstream handler/player replacement without restarting Soloist or the
-bridge. Expected natural end-of-track changes retain both converter and handler
-for gapless playback.
+The bridge sets `LD_LIBRARY_PATH` only for the Soloist process and always points
+`SOLOIST_SHIM_OUT` directly at the one per-player LMS FIFO. There is no
+intermediate encoder FIFO or bridge-side ffmpeg process. On discontinuous Spotify
+URI changes or meaningful backward seeks, the plugin atomically publishes a
+flush request to the shim, waits up to one second for its request
+acknowledgement, and only then plays a new generation-qualified URL so LMS
+replaces the handler. This orders upstream ring flushing before downstream FIFO
+and player-buffer replacement without restarting Soloist. Expected natural
+end-of-track changes remain on the current handler for gapless playback.
 
 Pulse-internal flushes and plugin track-change requests use separate namespaces.
 If a request acknowledgement is lost, the plugin retries the same idempotent
@@ -212,7 +201,7 @@ At bridge startup, `bridge.log` must show both:
 
 ```text
 [soloist-bridge] pcm-shim binary: .../libpulse.so.0 (... bytes sha1=...)
-[soloist-shim] loaded build 2026-11-22.1-s32le: mode=live-ring-s32le ...
+[soloist-shim] loaded build 2026-11-27.1-s16le: mode=live-ring ...
 ```
 
 The bridge also logs the exact matching `/proc/<soloist-pid>/maps` entry. It
@@ -222,6 +211,9 @@ generation-acknowledgement timeout on track skip. At normal shim log level `1`,
 copy 15-20 seconds containing the
 startup lines plus `runtime summary`, `output pressure`, `LMS read summary`,
 `stream underflow`, `live-edge drop`, generation, or FIFO reconnect messages.
+Compare the same Spotify passage first with the checkbox enabled and then
+disabled for that player.
+
 Bundled private-glibc launches pass the selected shim through the loader's
 `--preload` option; native launches use the exact `LD_PRELOAD` path. The shim
 is therefore mapped before Soloist chooses its audio backend instead of merely
@@ -235,25 +227,20 @@ environment variables, and limitations.
 
 ## Stream formats
 
-- **PCM/WAV** - the bridge converts the S32LE source to dithered 44.1 kHz
-  stereo S16LE at exactly 1,411,200 bps. The protocol handler adds one truthful
-  streaming WAV header and advertises the stream as WAV, so the Squeezebox
-  Touch receives supported 16-bit PCM, never raw S32LE.
-- **FLAC** - lossless bridge conversion from the same S32LE source, explicitly
-  bounded to 16-bit for hardware-player compatibility.
-- **MP3** - bridge conversion from S32LE at the configured fixed bitrate
-  (96, 128, 160, 192, 256, or 320 kbps).
-
-All three paths use the same 200 ms live-edge ring and S32LE source FIFO.
-The bridge requires `ffmpeg`; when it is unavailable, startup fails explicitly
-instead of sending raw S32LE to LMS or the player.
+- **PCM/WAV** - raw 44.1 kHz, stereo, 16-bit PCM at exactly 1,411,200 bps;
+  no ffmpeg in the bridge. LMS can transcode the WAV source through its normal
+  conversion pipeline.
+- **FLAC** - 44.1 kHz, stereo, 16-bit lossless audio encoded by LMS.
+  Its live compressed bitrate varies with the audio, so LMS shows
+  it as a variable live stream rather than reporting a fabricated fixed value.
+- **MP3** - 44.1 kHz stereo audio encoded by LMS at the
+  configured constant bitrate.
 
 The global format is the default. Each enabled player can override it
 independently from the settings page. Lyrion's Now Playing and track-info
-surfaces report the selected output properties. The S32LE source contract is
-private to the bridge; the protocol handler, track, and `strm` metadata expose
-the actual converted output before data reaches the
-player.
+surfaces report the selected final output properties, not Spotify's upstream
+download quality. If LMS cannot resolve the required converter, playback fails
+with an LMS conversion error; the plugin does not fall back to bridge encoding.
 
 ## Volume normalization
 

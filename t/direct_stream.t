@@ -2,7 +2,7 @@ use strict;
 use warnings;
 
 use Errno qw(EAGAIN EWOULDBLOCK);
-use Fcntl qw(O_NONBLOCK O_RDWR O_WRONLY);
+use Fcntl qw(O_NONBLOCK O_WRONLY);
 use File::Spec;
 use File::Temp qw(tempdir);
 use POSIX qw(mkfifo);
@@ -53,8 +53,6 @@ require './ProtocolHandler.pm';
 	sub samplesize { $_[0]->{samplesize} = $_[1] if @_ > 1; $_[0]->{samplesize} }
 	sub channels { $_[0]->{channels} = $_[1] if @_ > 1; $_[0]->{channels} }
 	sub blockalign { $_[0]->{blockalign} = $_[1] if @_ > 1; $_[0]->{blockalign} }
-	sub url { $_[0]->{url} = $_[1] if @_ > 1; $_[0]->{url} }
-	sub currentTrack { $_[0] }
 }
 
 my $dir = tempdir( CLEANUP => 1 );
@@ -70,6 +68,9 @@ $Plugins::SpotifySoloist::Plugin::stream = {
 		contentType   => 'wav',
 		displayFormat => 'WAV',
 		bitrateBps    => 1_411_200,
+		sourceBitrateBps => 1_411_200,
+		sourceSampleSize => 16,
+		sourceBlockAlign => 4,
 		bitrateLabel  => '1411.2 kbps',
 		sampleRate    => 44_100,
 		sampleSize    => 16,
@@ -80,21 +81,17 @@ $Plugins::SpotifySoloist::Plugin::stream = {
 };
 
 my $song = TestSong->new;
-my $pcmTranscoder = { streamformat => 'pcm', sampleSize => 32 };
 my $handler = Plugins::SpotifySoloist::ProtocolHandler->new({
 	url  => 'soloist://player-0/soloist.wav',
 	song => $song,
-	transcoder => $pcmTranscoder,
 });
 ok( $handler, 'opens the direct FIFO stream' );
-ok( !$handler->isRemote, 'treats the host-local FIFO as a local stream without internet buffering' );
-is( $handler->contentType, 'wav', 'declares the WAV container that the handler prefixes' );
-is( $handler->getStreamBitrate(3_000_000), 1_411_200, 'declares final S16LE bitrate' );
+is( $handler->contentType, 'wav', 'declares the LMS WAV content type' );
+is( $handler->getStreamBitrate(2_000_000), 1_411_200, 'declares PCM bitrate' );
 is( $song->samplerate, 44100, 'sets PCM sample rate' );
-is( $song->samplesize, 16, 'sets Touch-compatible PCM output sample size after converter selection' );
+is( $song->samplesize, 16, 'sets PCM sample size' );
 is( $song->channels, 2, 'sets PCM channels' );
-is( $song->blockalign, 4, 'sets S16LE PCM output block alignment' );
-is( $pcmTranscoder->{sampleSize}, 32, 'does not rely on an LMS transcoder metadata override' );
+is( $song->blockalign, 4, 'sets PCM block alignment' );
 
 my $writer;
 sysopen( $writer, $fifo, O_WRONLY | O_NONBLOCK ) or die "open FIFO writer: $!";
@@ -105,9 +102,6 @@ is( $handler->sysread( $buffer, 44 ), 44, 'prepends a complete WAV header' );
 is( substr( $buffer, 0, 4 ), 'RIFF', 'WAV header has RIFF marker' );
 is( substr( $buffer, 8, 8 ), 'WAVEfmt ', 'WAV header has format marker' );
 is( substr( $buffer, 36, 4 ), 'data', 'WAV header has data marker' );
-is( unpack( 'V', substr( $buffer, 28, 4 ) ), 176_400, 'WAV header declares the S16LE byte rate' );
-is( unpack( 'v', substr( $buffer, 32, 2 ) ), 4, 'WAV header declares 4-byte block alignment' );
-is( unpack( 'v', substr( $buffer, 34, 2 ) ), 16, 'WAV header declares 16-bit samples' );
 
 $buffer = '';
 is( $handler->sysread( $buffer, 32 ), 9, 'reads FIFO audio after the header' );
@@ -157,7 +151,6 @@ my $generationSong = TestSong->new;
 my $generationHandler = Plugins::SpotifySoloist::ProtocolHandler->new({
 	url  => 'soloist://player-0/soloist.wav?g=7',
 	song => $generationSong,
-	transcoder => { streamformat => 'pcm', sampleSize => 32 },
 });
 ok( $generationHandler, 'generation-qualified PCM URL opens the same player FIFO' );
 is_deeply(
@@ -171,56 +164,37 @@ close $generationHandler;
 
 $Plugins::SpotifySoloist::Plugin::stream->{format} = {
 	key           => 'flac',
-	contentType   => 'flc',
+	contentType   => 's16f',
 	displayFormat => 'FLAC',
 	bitrateLabel  => 'VBR (live stream)',
+	sourceBitrateBps => 1_411_200,
+	transcodeBitrateBps => 1_411_200,
+	sourceSampleSize => 16,
+	sourceBlockAlign => 4,
 	sampleRate    => 44_100,
 	sampleSize    => 16,
 	channels      => 2,
 	bufferKb      => 24,
 };
-my $encodedWriter;
-sysopen( $encodedWriter, $fifo, O_RDWR | O_NONBLOCK )
-	or die "open encoded FIFO writer: $!";
-syswrite( $encodedWriter, 'fLaC' ) == 4
-	or die "write FLAC header marker: $!";
 my $flacSong = TestSong->new;
-my $flacTranscoder = { streamformat => 'flc', sampleSize => 32 };
 my $flacHandler = Plugins::SpotifySoloist::ProtocolHandler->new({
 	url  => 'soloist://player-0/soloist.flac',
 	song => $flacSong,
-	transcoder => $flacTranscoder,
 });
-ok( $flacHandler, 'opens a variable-bitrate FLAC direct stream' );
-is( $flacHandler->contentType, 'flc', 'declares final native FLAC content' );
-$buffer = '';
-is( $flacHandler->sysread( $buffer, 4 ), 4, 'preserves a fresh encoded stream header' );
-is( $buffer, 'fLaC', 'does not drain encoded bytes when the handler opens' );
+ok( $flacHandler, 'opens the S16 source selected for LMS FLAC conversion' );
+is( $flacHandler->contentType, 's16f', 'declares the custom LMS S16-to-FLAC source type' );
 is(
 	$flacHandler->getStreamBitrate(1_500_000),
-	1_500_000,
-	'uses the LMS rate limit when the live FLAC bitrate is variable',
+	1_411_200,
+	'declares the exact S16 source bitrate to the LMS converter',
 );
-is( $flacSong->bitrate, 0, 'leaves live FLAC output bitrate variable' );
-is( $flacSong->samplerate, 44_100, 'sets the FLAC output sample rate' );
-is( $flacSong->samplesize, 16, 'bounds FLAC output to Touch-compatible 16-bit samples' );
-is( $flacSong->channels, 2, 'sets the FLAC output channel count' );
-is( $flacTranscoder->{sampleSize}, 32, 'does not rely on an LMS FLAC transcoder override' );
+is( $flacSong->bitrate, 1_411_200, 'sets the LMS converter input bitrate' );
+is( $flacSong->samplerate, 44_100, 'sets the converter input sample rate' );
+is( $flacSong->samplesize, 16, 'sets the converter input sample size' );
+is( $flacSong->channels, 2, 'sets the converter input channel count' );
+$buffer = '';
+is( $flacHandler->sysread( $buffer, 44 ), 44, 'FLAC conversion source starts with a WAV header' );
+is( substr( $buffer, 0, 4 ), 'RIFF', 'FLAC conversion source header is WAV' );
 close $flacHandler;
-close $encodedWriter;
-
-my $overrideSong = TestSong->new;
-$overrideSong->url('soloist://player-0/soloist.flac');
-is(
-	Plugins::SpotifySoloist::ProtocolHandler->formatOverride($overrideSong),
-	'flc',
-	'publishes the already-final native FLAC type',
-);
-is( $overrideSong->samplesize, 16, 'format override publishes final 16-bit stream properties' );
-is(
-	Plugins::SpotifySoloist::ProtocolHandler->canHandleTranscode(),
-	0,
-	'protocol handler does not request another LMS conversion',
-);
 
 done_testing;

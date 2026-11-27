@@ -100,7 +100,7 @@ sub new {
 	${*$self}{client} = $args->{client};
 	${*$self}{contentType} = $format->{contentType};
 	${*$self}{formatKey} = $format->{key};
-	${*$self}{bitrate} = $format->{bitrateBps};
+	${*$self}{bitrate} = $format->{sourceBitrateBps} || 1_411_200;
 	${*$self}{streamGeneration} = $stream->{streamGeneration} || 0;
 	${*$self}{transition} =
 		Plugins::SpotifySoloist::Plugin::claimDirectStreamTransitionForUrl(
@@ -109,7 +109,7 @@ sub new {
 		);
 	${*$self}{openedAt} = Time::HiRes::time();
 	${*$self}{firstAudioReadLogged} = 0;
-	${*$self}{prefix} = $format->{key} eq 'pcm' ? _wavHeader() : '';
+	${*$self}{prefix} = _wavHeader();
 	${*$self}{lastAudioReadAt} = undef;
 	${*$self}{staleDrainUntil} = undef;
 	${*$self}{staleBytesDiscarded} = 0;

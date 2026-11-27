@@ -14,64 +14,36 @@ my $types = slurp('custom-types.conf');
 my $convert = slurp('custom-convert.conf');
 my $bridge = slurp('Bin/soloist-bridge.sh');
 my $plugin = slurp('Plugin.pm');
+my $handler = slurp('ProtocolHandler.pm');
 my $settings = slurp('Settings.pm');
 my $html = slurp('HTML/EN/plugins/SpotifySoloist/settings/basic.html');
 
-unlike( $types, qr/^s32/m, 'registers no custom S32 LMS source type' );
-unlike( $convert, qr/^\S+\s+(?:pcm|flc|mp3)\s+/m, 'registers no LMS conversion rule' );
+like( $types, qr/^s16f\s+-\s+audio\/x-soloist-s16-flac\s+audio$/m, 'registers the S16-to-FLAC source type' );
+for my $rate (qw(96 128 160 192 256 320)) {
+	like( $types, qr/^s16m\Q$rate\E\s+-\s+audio\/x-soloist-s16-mp3-\Q$rate\E\s+audio$/m, "registers the ${rate}k S16-to-MP3 source type" );
+	like( $convert, qr/^s16m\Q$rate\E\s+mp3\s+\*\s+\*.*?^\s*\[ffmpeg\].*?-b:a \Q$rate\Ek /ms, "LMS owns the selected ${rate}k MP3 conversion" );
+}
 like(
-	$bridge,
-	qr/-f s32le -ar 44100 -ac 2 -blocksize 4096 -i "\$SOLOIST_PCM_SHIM_FIFO".*?aresample=osf=s16:dither_method=triangular.*?-f s16le "\$FIFO_PATH"/s,
-	'bridge converts and dithers S32LE to final S16LE PCM',
+	$convert,
+	qr/^s16f\s+flc\s+\*\s+\*.*?^\s*\[ffmpeg\].*?-c:a flac .*?-sample_fmt s16/ms,
+	'LMS owns Touch-compatible 16-bit FLAC conversion',
 );
-like(
-	$bridge,
-	qr/-analyzeduration 0 -probesize 32.*?-f s32le/s,
-	'bridge bypasses ffmpeg raw-input analysis before opening the final FIFO',
-);
-like(
-	$bridge,
-	qr/aresample=osf=s16:dither_method=triangular.*?-c:a flac -sample_fmt s16 -compression_level 0.*?-f flac "\$FIFO_PATH"/s,
-	'bridge emits Touch-compatible 16-bit FLAC',
-);
-like(
-	$bridge,
-	qr/-c:a libmp3lame -b:a "\$BITRATE"/,
-	'bridge emits the configured fixed-bitrate MP3 stream',
-);
-like(
-	$bridge,
-	qr/ERROR: ffmpeg is required for bridge-side S32LE conversion/,
-	'missing bridge converter fails explicitly',
-);
-like( $bridge, qr/SOLOIST_PCM_SHIM_FIFO/, 'bridge owns a separate S32LE source FIFO' );
-like( $bridge, qr/encoder_supervisor/, 'bridge supervises the persistent converter' );
-like(
-	$bridge,
-	qr/cat "\$SOLOIST_PCM_SHIM_FIFO" > \/dev\/null.*?"\$PERL_BIN" "\$FIFO_READER_WAIT"/s,
-	'bridge drains the S32 source until an LMS final FIFO reader exists',
-);
-like(
-	$plugin,
-	qr/INITIAL_STATE_LOOP_DELAY\s+=>\s+0\.1.*?time\(\) \+ INITIAL_STATE_LOOP_DELAY/s,
-	'plugin starts playback-state observation without the former five-second delay',
-);
-like(
-	$plugin,
-	qr/pcm\s*=>\s*\{.*?wireExt\s*=>\s*'wav'.*?contentType\s*=>\s*'wav'/s,
-	'PCM handler advertises the WAV container that it prefixes',
-);
-like(
-	slurp('ProtocolHandler.pm'),
-	qr/CONVERTER_CLOSE_GRACE_SECONDS\s+=>\s+0\.12/,
-	'handler replacement leaves a bounded reader-free converter restart window',
-);
-like(
-	$bridge,
-	qr/SOLOIST_SHIM_ACK="\$SOLOIST_PCM_SHIM_ACK"/,
-	'shim request acknowledgements remain direct and idempotent',
-);
-unlike( $bridge, qr/SOLOIST_SHIM_(?:FORMAT|MODE)/, 'bridge exposes no obsolete shim mode choice' );
-unlike( $settings . $html, qr/playerLiveRing|liveRing\./, 'settings expose no compatibility-mode preference' );
+is( () = $convert =~ /\[ffmpeg\]/g, 7, 'only LMS FLAC/MP3 rules invoke ffmpeg' );
+
+unlike( $bridge, qr/ffmpeg|FFMPEG_BIN|SOLOIST_PCM_SHIM_FIFO/i, 'bridge has no ffmpeg process or intermediate encoder FIFO' );
+like( $bridge, qr/SOLOIST_SHIM_FORMAT=s16/, 'shim output is fixed to S16LE' );
+like( $bridge, qr/exec 3<> "\$FIFO_PATH"/, 'bridge keeps one final FIFO open for its lifetime' );
+like( $bridge, qr/parec .*?--format=s16le/s, 'Pulse fallback also supplies S16LE' );
+like( $bridge, qr/conversion owned by LMS/, 'bridge reports LMS-owned output conversion' );
+
+like( $plugin, qr/\$format eq 'pcm' \? 'wav'/, 'PCM uses LMS native WAV delivery without a converter' );
+like( $plugin, qr/'s16m' \. int\( \$bitrateBps \/ 1000 \)/, 'MP3 preference selects a bitrate-specific LMS source type' );
+like( $plugin, qr/contentType.*?'s16m'.*?:\s*'s16f'/s, 'FLAC preference selects the LMS FLAC source type' );
+like( $plugin, qr/sourceBitrateBps\s*=>\s*1_411_200/, 'source metadata publishes exact S16LE bitrate' );
+like( $plugin, qr/sourceSampleSize\s*=>\s*16/, 'source metadata publishes 16-bit samples' );
+like( $plugin, qr/sourceBlockAlign\s*=>\s*4/, 'source metadata publishes stereo S16 frame alignment' );
+like( $handler, qr/\$\{\*\$self\}\{prefix\}\s*=\s*_wavHeader\(\)/, 'every LMS source generation starts with a truthful S16 WAV header' );
+like( $plugin, qr/INITIAL_STATE_LOOP_DELAY\s+=>\s+0\.1/, 'initial playback observation remains prompt' );
+unlike( $settings . $html, qr/playerLiveRing|liveRing\./, 'settings expose no obsolete compatibility mode' );
 
 done_testing;
