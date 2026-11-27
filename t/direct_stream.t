@@ -25,6 +25,7 @@ BEGIN {
 	sub error { }
 	our @info;
 	sub info { push @info, $_[1] }
+	sub warn { push @info, $_[1] }
 
 	package Slim::Utils::Strings;
 	sub import {
