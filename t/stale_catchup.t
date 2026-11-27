@@ -46,6 +46,7 @@ bless $reader, 'Plugins::SpotifySoloist::ProtocolHandler';
 ${*$reader}{prefix} = '';
 ${*$reader}{client} = bless {}, 'TestClient';
 ${*$reader}{url} = 'soloist://player-0/soloist.wav';
+${*$reader}{formatKey} = 'pcm';
 ${*$reader}{lastAudioReadAt} = undef;
 ${*$reader}{staleDrainUntil} = undef;
 ${*$reader}{staleBytesDiscarded} = 0;

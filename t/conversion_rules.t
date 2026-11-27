@@ -16,48 +16,41 @@ my $bridge = slurp('Bin/soloist-bridge.sh');
 my $settings = slurp('Settings.pm');
 my $html = slurp('HTML/EN/plugins/SpotifySoloist/settings/basic.html');
 
-like( $types, qr/^s32p\s+-\s+audio\/x-soloist-s32-pcm\s+audio$/m, 'registers the S32-to-PCM source type' );
-like( $types, qr/^s32f\s+-\s+audio\/x-soloist-s32-flac\s+audio$/m, 'registers the S32-to-FLAC source type' );
+unlike( $types, qr/^s32/m, 'registers no custom S32 LMS source type' );
+unlike( $convert, qr/^\S+\s+(?:pcm|flc|mp3)\s+/m, 'registers no LMS conversion rule' );
 like(
-	$convert,
-	qr/^s32p\s+pcm\s+\*\s+\*.*?aresample=osf=s16:dither_method=triangular.*?-f s16le -/ms,
-	'PCM rule converts and dithers S32LE to S16LE instead of passing 32-bit audio to the player',
-);
-like(
-	$convert,
-	qr/^s32p\s+pcm\s+\*\s+\*.*?-flush_packets 1 -f s16le -/ms,
-	'PCM rule flushes converted samples promptly for realtime player delivery',
-);
-unlike(
-	$convert,
-	qr/^s32p\s+pcm\s+\*\s+\*.*?-f s32le -/ms,
-	'PCM rule cannot pass raw S32LE to the player',
+	$bridge,
+	qr/-f s32le -ar 44100 -ac 2 -blocksize 4096 -i "\$SOLOIST_PCM_SHIM_FIFO".*?aresample=osf=s16:dither_method=triangular.*?-f s16le "\$FIFO_PATH"/s,
+	'bridge converts and dithers S32LE to final S16LE PCM',
 );
 like(
-	$convert,
-	qr/^s32f\s+flc\s+\*\s+\*.*?aresample=osf=s16:dither_method=triangular.*?-sample_fmt s16/ms,
-	'FLAC rule bounds the encoded stream to Touch-compatible 16-bit samples',
+	$bridge,
+	qr/aresample=osf=s16:dither_method=triangular.*?-c:a flac -sample_fmt s16 -compression_level 0.*?-f flac "\$FIFO_PATH"/s,
+	'bridge emits Touch-compatible 16-bit FLAC',
 );
-for my $rate (qw(96 128 160 192 256 320)) {
-	like( $types, qr/^s32m\Q$rate\E\s+-\s+audio\/x-soloist-s32-mp3-\Q$rate\E\s+audio$/m, "registers the ${rate}k S32-to-MP3 source type" );
-	like( $convert, qr/^s32m\Q$rate\E\s+mp3\s+\*\s+\*.*?^\s*\[ffmpeg\].*?-b:a \Q$rate\Ek /ms, "hard-codes the selected ${rate}k MP3 bitrate" );
-}
-
-for my $rule (qw(s32p-pcm s32f-flc)) {
-	my ($source, $dest) = split /-/, $rule;
-	like( $convert, qr/^\Q$source\E\s+\Q$dest\E\s+\*\s+\*$/m, "defines $source to $dest conversion" );
-}
-is( () = $convert =~ /\[ffmpeg\]/g, 8, 'all final formats use LMS dependency-checked ffmpeg rules' );
-my @commands = $convert =~ /^\s*\[ffmpeg\](.*)$/mg;
-for my $command (@commands) {
-	like(
-		$command,
-		qr/-blocksize 4096 -i \$FILE\$/,
-		'conversion command bounds streaming WAV input reads for realtime cadence',
-	);
-}
-unlike( $bridge, qr/ffmpeg/i, 'bridge never invokes or configures ffmpeg' );
-unlike( $bridge, qr/SOLOIST_SHIM_(?:FORMAT|MODE)|SOLOIST_PCM_SHIM_FIFO/, 'bridge exposes no obsolete shim mode or intermediate FIFO' );
+like(
+	$bridge,
+	qr/-c:a libmp3lame -b:a "\$BITRATE"/,
+	'bridge emits the configured fixed-bitrate MP3 stream',
+);
+like(
+	$bridge,
+	qr/ERROR: ffmpeg is required for bridge-side S32LE conversion/,
+	'missing bridge converter fails explicitly',
+);
+like( $bridge, qr/SOLOIST_PCM_SHIM_FIFO/, 'bridge owns a separate S32LE source FIFO' );
+like( $bridge, qr/encoder_supervisor/, 'bridge supervises the persistent converter' );
+like(
+	slurp('ProtocolHandler.pm'),
+	qr/CONVERTER_CLOSE_GRACE_SECONDS\s+=>\s+0\.12/,
+	'handler replacement leaves a bounded reader-free converter restart window',
+);
+like(
+	$bridge,
+	qr/SOLOIST_SHIM_ACK="\$SOLOIST_PCM_SHIM_ACK"/,
+	'shim request acknowledgements remain direct and idempotent',
+);
+unlike( $bridge, qr/SOLOIST_SHIM_(?:FORMAT|MODE)/, 'bridge exposes no obsolete shim mode choice' );
 unlike( $settings . $html, qr/playerLiveRing|liveRing\./, 'settings expose no compatibility-mode preference' );
 
 done_testing;

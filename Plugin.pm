@@ -127,6 +127,7 @@ my %FORMAT_SPECS = (
 	mp3 => {
 		wireExt       => 'mp3',
 		displayFormat => 'MP3',
+		contentType   => 'mp3',
 		bufferKb      => sub {
 			my ($bitrateBps) = @_;
 			my $threshold = $bitrateBps
@@ -140,13 +141,13 @@ my %FORMAT_SPECS = (
 	flac => {
 		wireExt       => 'flac',
 		displayFormat => 'FLAC',
-		contentType   => 's32f',
+		contentType   => 'flc',
 		bufferKb      => 24,
 	},
 	pcm => {
 		wireExt       => 'wav',
 		displayFormat => 'WAV',
-		contentType   => 's32p',
+		contentType   => 'pcm',
 		bufferKb      => 35,
 	},
 );
@@ -182,27 +183,21 @@ sub currentFormatSpec {
 		key           => $format,
 		wireExt       => $spec->{wireExt},
 		displayFormat => $spec->{displayFormat},
-		contentType   => $format eq 'mp3'
-			? 's32m' . int( $parsedBitrate / 1000 )
-			: $spec->{contentType},
+		contentType   => $spec->{contentType},
 		bufferKb      => $bufferKb,
 		sampleRate    => 44_100,
 		channels      => 2,
 		bitrateBps    => $bitrateBps,
-		sourceBitrateBps => 2_822_400,
-		transcodeBitrateBps => $format eq 'mp3' ? $bitrateBps : 2_822_400,
+		encoderBitrate => $format eq 'mp3'
+			? int( $bitrateBps / 1000 ) . 'k'
+			: undef,
 		bitrateLabel  => $format eq 'flac' ? 'VBR (live stream)'
 			: Plugins::SpotifySoloist::StreamSemantics::bitrateLabel($bitrateBps),
 		bitrateValid  => $bitrateValid,
 		( defined $configuredBitrate ? ( configuredBitrate => $configuredBitrate ) : () ),
-		sourceSampleSize => 32,
-		sourceBlockAlign => 8,
 		( $format ne 'mp3' ? ( sampleSize => 16 ) : () ),
 		( $format eq 'pcm' ? ( blockAlign => 4 ) : () ),
-		sourceContentType => $spec->{contentType},
-		outputContentType => $format eq 'mp3' ? 'mp3'
-			: $format eq 'flac' ? 'flc'
-			: 'pcm',
+		outputContentType => $spec->{contentType},
 	};
 }
 
@@ -963,6 +958,7 @@ sub _configFor {
 		cacheDir   => catdir( $baseCacheDir, "player_$slot" ),
 		fifoPath   => catfile( $baseCacheDir, "player_$slot", 'audio.fifo' ),
 		pcmShimDir => $prefs->get('pcmShimDir') || bundledPcmShimDir(),
+		pcmShimFifo => catfile( $baseCacheDir, "player_$slot", 'pcm-shim.fifo' ),
 		pcmShimControl => catfile( $baseCacheDir, "player_$slot", 'pcm-shim.control' ),
 		pcmShimAck => catfile( $baseCacheDir, "player_$slot", 'pcm-shim.ack' ),
 		runtimeDir => $runtime ? $runtime->{dir} : '',
@@ -1226,6 +1222,8 @@ sub _startBridge {
 	local $ENV{SOLOIST_AUDIO_BACKEND} = $cfg->{backend};
 	local $ENV{PIPEWIRE_SINK}     = $cfg->{sink};
 	local $ENV{FORMAT}            = $cfg->{format};
+	local $ENV{BITRATE}           = $cfg->{formatSpec}->{encoderBitrate} || '320k';
+	local $ENV{FFMPEG_BIN}        = 'ffmpeg';
 	local $ENV{SOLOIST_INITIAL_VOLUME} = _initialVolume();
 	local $ENV{WS_PORT}           = $cfg->{wsPort};
 	local $ENV{DEVICE_NAME}       = $cfg->{deviceName};
@@ -1234,6 +1232,7 @@ sub _startBridge {
 	local $ENV{SOLOIST_CACHE_DIR} = $cfg->{cacheDir};
 	local $ENV{FIFO_PATH}         = $cfg->{fifoPath};
 	local $ENV{SOLOIST_PCM_SHIM_DIR}  = $cfg->{pcmShimDir};
+	local $ENV{SOLOIST_PCM_SHIM_FIFO} = $cfg->{pcmShimFifo};
 	local $ENV{SOLOIST_PCM_SHIM_CONTROL} = $cfg->{pcmShimControl};
 	local $ENV{SOLOIST_PCM_SHIM_ACK} = $cfg->{pcmShimAck};
 	local $ENV{SOLOIST_PCM_SHIM_RING_MS} = 200;
@@ -1254,7 +1253,7 @@ sub _startBridge {
 	if ( $cfg->{format} eq 'mp3' && !$cfg->{formatSpec}->{bitrateValid} ) {
 		$log->warn(
 			"invalid MP3 bitrate '$cfg->{formatSpec}->{configuredBitrate}'; "
-			. 'using 320 kbps for LMS conversion and metadata'
+			. 'using 320 kbps for bridge conversion and metadata'
 		);
 	}
 

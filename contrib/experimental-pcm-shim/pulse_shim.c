@@ -142,7 +142,7 @@ static int out_open_locked(void)
         fd = open(cfg.out, O_WRONLY | O_NONBLOCK | O_CLOEXEC);
         if (fd < 0) return -1;
         /*
-         * LMS conversion can pause its input reader for about 120 ms while
+         * Bridge conversion can pause its input reader for about 120 ms while
          * scheduling ffmpeg. Keep one bounded 185.8 ms S32LE handoff so that
          * ordinary converter jitter does not force a live-edge drop.
          */

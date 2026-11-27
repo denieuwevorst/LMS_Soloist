@@ -2,18 +2,34 @@
 
 ## Unreleased
 
-- Increase the final S32LE FIFO from 16 KiB (46.4 ms) to 64 KiB (185.8 ms).
-  Field diagnostics showed LMS's ffmpeg reader pausing for 117.7 ms immediately
+- Replace LMS-owned realtime S32 conversion with one persistent bridge-side
+  converter. Field logs from the current `2026-11-22.1-s32le` build showed
+  repeated 200-205 ms LMS consumer gaps and real live-edge drops during steady
+  playback even with the 64 KiB FIFO. The shim now feeds a separate S32LE source
+  FIFO; the bridge emits final dithered S16LE PCM, 16-bit FLAC, or fixed-bitrate
+  MP3, and the protocol handler exposes that native format without a second LMS
+  transcoder.
+- Preserve the request-ID generation flush protocol across the new source FIFO.
+  Discontinuous handler replacement terminates the old final converter and
+  starts a clean process for the new generation while Soloist and the bridge
+  remain alive. A bounded 120 ms reader-free close window removes the FIFO
+  close/open race. PCM alone drains queued raw output; FLAC/MP3 preserve their
+  fresh encoder headers. Natural transitions retain the existing process.
+- Add sustained cadence coverage with recurring 205 ms final-reader pauses,
+  exact PCM frame totals, and source-write gap bounds below the shim's 200 ms
+  live-edge budget.
+- Increase the S32LE source FIFO from 16 KiB (46.4 ms) to 64 KiB (185.8 ms).
+  Field diagnostics showed the former LMS ffmpeg reader pausing for 117.7 ms immediately
   after startup, overflowing the smaller queue and forcing an audible live-edge
   drop. The 200 ms userspace live-edge limit remains unchanged.
-- Add realtime cadence coverage using the exact LMS PCM/FLAC ffmpeg rules, plus
+- Add realtime cadence coverage using the exact PCM/FLAC ffmpeg commands, plus
   a 120 ms converter-startup stall regression that requires zero FIFO pressure,
   drops, or underflows and bounded oldest-audio age. Flush PCM packets promptly
   and cap ffmpeg FIFO reads at 4096 bytes instead of accepting its roughly
   100 ms default streaming-WAV input batches. The exact-command cadence test
   bounds PCM output gaps below 120 ms and FLAC output gaps below 180 ms.
-- Fix the S32 LMS conversion regression that allowed the PCM rule and cached
-  track metadata to remain 32-bit. PCM now uses low-probe-latency triangular
+- Fix the S32 conversion regression that allowed cached track metadata to
+  remain 32-bit. PCM now uses low-latency triangular
   dithering to S16LE, FLAC is explicitly encoded at 16-bit, and the
   generation-qualified RemoteTrack is changed to truthful output metadata
   after converter selection. Hardware players such as Squeezebox Touch can no
@@ -25,15 +41,15 @@
   `live-ring-s32le` path. Soloist float32 is converted to 44.1 kHz stereo
   S32LE, kept within the 200 ms live-edge ring, and written directly to the
   per-player FIFO using 8-byte output frames.
-- Move final PCM, FLAC, and MP3 conversion out of the bridge and into
-  plugin-owned LMS `custom-types.conf`/`custom-convert.conf` rules. The bridge
-  no longer invokes ffmpeg or creates an intermediate encoder FIFO; missing
-  LMS converter dependencies now surface as conversion failures.
+- Keep final PCM, FLAC, and MP3 conversion out of LMS. Empty plugin
+  `custom-types.conf`/`custom-convert.conf` files ensure native final streams do
+  not select a second transcoder; a missing bridge ffmpeg dependency fails
+  explicitly before playback.
 - Remove the per-player compatibility-mode setting, stale preference handling,
   ffmpeg path setting, environment variables, tests, and diagnostics. Existing
   saved compatibility values are ignored safely.
-- Advertise a truthful streaming S32LE WAV source: 44.1 kHz, stereo, 32-bit,
-  8-byte block alignment, and 2,822,400 bps.
+- Advertise truthful final stream properties. PCM uses a streaming S16LE WAV
+  header at 44.1 kHz stereo, 16-bit, 4-byte block alignment, and 1,411,200 bps.
 - Qualify playback URLs with a monotonically increasing `?g=` token for
   manual track/playlist changes, Next/Previous, meaningful backward seeks, and
   stale-stream recovery. LMS can no longer optimize the same-URL replay into a

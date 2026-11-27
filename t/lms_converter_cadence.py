@@ -1,13 +1,10 @@
 #!/usr/bin/env python3
 
 import os
-import re
 import resource
 import selectors
-import shlex
 import struct
 import subprocess
-import sys
 import tempfile
 import threading
 import time
@@ -16,57 +13,83 @@ import time
 RATE = 44100
 CHANNELS = 2
 SOURCE_FRAME_BYTES = 8
+PCM_FRAME_BYTES = 4
 CHUNK_FRAMES = 441
-RUN_SECONDS = 4
+RUN_SECONDS = 8
 
 
-def rule_command(config, rule, fifo):
-    text = open(config, encoding="utf-8").read()
-    match = re.search(
-        rf"^{re.escape(rule)}\s*$.*?^\s*(\[ffmpeg\][^\r\n]*)$",
-        text,
-        re.MULTILINE | re.DOTALL,
-    )
-    if not match:
-        raise SystemExit(f"missing conversion command for {rule}")
-    command = match.group(1).replace("[ffmpeg]", "ffmpeg", 1)
-    command = command.replace("$FILE$", fifo)
-    return shlex.split(command)
+def bridge_command(source, output_format):
+    common = [
+        "ffmpeg",
+        "-nostdin",
+        "-hide_banner",
+        "-loglevel",
+        "error",
+        "-f",
+        "s32le",
+        "-ar",
+        str(RATE),
+        "-ac",
+        str(CHANNELS),
+        "-blocksize",
+        "4096",
+        "-i",
+        source,
+        "-map",
+        "0:a:0",
+    ]
+    if output_format == "pcm":
+        return common + [
+            "-af",
+            "aresample=osf=s16:dither_method=triangular",
+            "-flush_packets",
+            "1",
+            "-f",
+            "s16le",
+            "-",
+        ]
+    if output_format == "flac":
+        return common + [
+            "-af",
+            "aresample=osf=s16:dither_method=triangular",
+            "-c:a",
+            "flac",
+            "-sample_fmt",
+            "s16",
+            "-compression_level",
+            "0",
+            "-flush_packets",
+            "1",
+            "-f",
+            "flac",
+            "-",
+        ]
+    raise ValueError(output_format)
 
 
-def wav_header():
-    return (
-        b"RIFF"
-        + struct.pack("<I", (36 + 0xFFFFFFFF) & 0xFFFFFFFF)
-        + b"WAVEfmt "
-        + struct.pack("<IHHIIHH", 16, 1, CHANNELS, RATE, RATE * 8, 8, 32)
-        + b"data"
-        + struct.pack("<I", 0xFFFFFFFF)
-    )
-
-
-def run_rule(config, rule, max_output_gap):
-    with tempfile.TemporaryDirectory(prefix="soloist-converter-cadence-") as temp:
-        fifo = os.path.join(temp, "source.wav")
+def run_format(output_format, recurring_reader_stalls):
+    with tempfile.TemporaryDirectory(prefix="soloist-bridge-cadence-") as temp:
+        fifo = os.path.join(temp, "source.s32le")
         os.mkfifo(fifo)
-        command = rule_command(config, rule, fifo)
-        started = time.monotonic()
+        before = resource.getrusage(resource.RUSAGE_CHILDREN)
         process = subprocess.Popen(
-            command,
+            bridge_command(fifo, output_format),
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             bufsize=0,
         )
         write_events = []
+        write_durations = []
 
         def produce():
             frame = struct.pack("<ii", 0x08000000, -0x08000000)
             chunk = frame * CHUNK_FRAMES
             with open(fifo, "wb", buffering=0) as output:
-                output.write(wav_header())
                 deadline = time.monotonic()
                 for _ in range(RUN_SECONDS * 100):
+                    started = time.monotonic()
                     output.write(chunk)
+                    write_durations.append(time.monotonic() - started)
                     write_events.append(time.monotonic())
                     deadline += 0.01
                     delay = deadline - time.monotonic()
@@ -77,64 +100,63 @@ def run_rule(config, rule, max_output_gap):
         producer.start()
         selector = selectors.DefaultSelector()
         selector.register(process.stdout, selectors.EVENT_READ)
-        output_events = []
         output_bytes = 0
+        started = time.monotonic()
+        next_stall = started + 0.75
+        stall_count = 0
         while process.poll() is None or producer.is_alive():
-            for key, _ in selector.select(0.1):
+            now = time.monotonic()
+            if recurring_reader_stalls and producer.is_alive() and now >= next_stall:
+                time.sleep(0.205)
+                stall_count += 1
+                next_stall += 0.75
+            for key, _ in selector.select(0.02):
                 data = os.read(key.fileobj.fileno(), 65536)
                 if data:
                     output_bytes += len(data)
-                    output_events.append(time.monotonic())
             if not producer.is_alive() and process.poll() is not None:
                 break
-        producer.join(timeout=1)
+
+        producer.join(timeout=2)
         remaining = process.stdout.read()
         if remaining:
             output_bytes += len(remaining)
-            output_events.append(time.monotonic())
         stderr = process.stderr.read().decode("utf-8", "replace")
-        status = process.wait(timeout=2)
+        status = process.wait(timeout=3)
         if status:
-            raise SystemExit(f"{rule} converter failed ({status}): {stderr}")
-        if not output_events:
-            raise SystemExit(f"{rule} converter produced no output")
+            raise SystemExit(f"{output_format} bridge converter failed ({status}): {stderr}")
+        if producer.is_alive():
+            raise SystemExit(f"{output_format} S32 producer did not finish")
 
-        startup = output_events[0] - started
         input_gaps = [b - a for a, b in zip(write_events, write_events[1:])]
-        output_gaps = [b - a for a, b in zip(output_events, output_events[1:])]
-        max_input_gap = max(input_gaps, default=0)
-        max_gap = max(output_gaps, default=0)
-        if startup > 0.250:
-            raise SystemExit(f"{rule} startup latency was {startup * 1000:.1f} ms")
-        if max_input_gap > 0.040:
-            raise SystemExit(f"{rule} input cadence gap was {max_input_gap * 1000:.1f} ms")
-        if max_gap > max_output_gap:
-            raise SystemExit(f"{rule} output cadence gap was {max_gap * 1000:.1f} ms")
-        if rule == "s32p pcm * *":
-            expected = RUN_SECONDS * RATE * CHANNELS * 2
+        max_gap = max(input_gaps, default=0)
+        max_write = max(write_durations, default=0)
+        if max_gap >= 0.200 or max_write >= 0.200:
+            raise SystemExit(
+                f"{output_format} recurring output stalls backpressured the S32 source "
+                f"for {max(max_gap, max_write) * 1000:.1f} ms"
+            )
+        if recurring_reader_stalls and stall_count < 8:
+            raise SystemExit(f"only exercised {stall_count} recurring reader stalls")
+        if output_format == "pcm":
+            expected = RUN_SECONDS * RATE * PCM_FRAME_BYTES
             if output_bytes != expected:
-                raise SystemExit(f"PCM cadence output width mismatch: {output_bytes} != {expected}")
+                raise SystemExit(f"PCM output width mismatch: {output_bytes} != {expected}")
         elif output_bytes < 1024:
-            raise SystemExit(f"{rule} produced implausibly little output: {output_bytes}")
+            raise SystemExit(f"FLAC converter produced implausibly little output: {output_bytes}")
 
+        after = resource.getrusage(resource.RUSAGE_CHILDREN)
+        cpu = (after.ru_utime - before.ru_utime) + (after.ru_stime - before.ru_stime)
         print(
-            f"{rule}: startup={startup * 1000:.1f} ms "
-            f"input_gap_max={max_input_gap * 1000:.1f} ms "
-            f"output_gap_max={max_gap * 1000:.1f} ms bytes={output_bytes}"
+            f"{output_format}: bytes={output_bytes} stalls={stall_count} "
+            f"source_gap_max={max_gap * 1000:.1f} ms "
+            f"source_write_max={max_write * 1000:.1f} ms cpu={cpu:.3f} s"
         )
 
 
 def main():
-    if len(sys.argv) != 2:
-        raise SystemExit("usage: lms_converter_cadence.py custom-convert.conf")
-    before = resource.getrusage(resource.RUSAGE_CHILDREN)
-    run_rule(sys.argv[1], "s32p pcm * *", 0.120)
-    run_rule(sys.argv[1], "s32f flc * *", 0.180)
-    after = resource.getrusage(resource.RUSAGE_CHILDREN)
-    cpu = (after.ru_utime - before.ru_utime) + (after.ru_stime - before.ru_stime)
-    if cpu > 2.0:
-        raise SystemExit(f"converter CPU time was unexpectedly high: {cpu:.3f} s")
-    print(f"actual LMS converter commands used {cpu:.3f} s CPU")
+    run_format("pcm", recurring_reader_stalls=True)
+    run_format("flac", recurring_reader_stalls=False)
 
 
 if __name__ == "__main__":

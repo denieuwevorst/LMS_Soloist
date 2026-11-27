@@ -135,17 +135,14 @@ is(
 my $pcmFormat = {
 	key           => 'pcm',
 	displayFormat => 'WAV',
-	contentType   => 's32p',
+	contentType   => 'pcm',
 	outputContentType => 'pcm',
 	bitrateBps    => 1_411_200,
-	sourceBitrateBps => 2_822_400,
 	bitrateLabel  => '1411.2 kbps',
 	sampleRate    => 44_100,
 	sampleSize    => 16,
-	sourceSampleSize => 32,
 	channels      => 2,
 	blockAlign    => 4,
-	sourceBlockAlign => 8,
 };
 is_deeply(
 	Plugins::SpotifySoloist::StreamSemantics::applySongFormat(
@@ -163,14 +160,14 @@ is_deeply(
 	},
 	'publishes exact final PCM transport metadata',
 );
-is( $song->bitrate, 2_822_400, 'sets exact S32LE source bitrate before converter selection' );
+is( $song->bitrate, 1_411_200, 'sets exact final S16LE bitrate' );
 is( $song->samplerate, 44_100, 'sets PCM sample rate on the LMS song' );
-is( $song->samplesize, 32, 'sets S32LE source sample size before converter selection' );
+is( $song->samplesize, 16, 'sets final PCM sample size on the LMS song' );
 is( $song->channels, 2, 'sets PCM channel count on the LMS song' );
-is( $song->blockalign, 8, 'sets S32LE source block alignment before converter selection' );
-is( $song->currentTrack->bitrate, 2_822_400, 'sets S32LE source bitrate on the LMS track' );
+is( $song->blockalign, 4, 'sets final S16LE block alignment' );
+is( $song->currentTrack->bitrate, 1_411_200, 'sets final PCM bitrate on the LMS track' );
 is( $song->currentTrack->samplerate, 44_100, 'sets PCM sample rate on the LMS track' );
-is( $song->currentTrack->samplesize, 32, 'sets S32LE source sample size on the LMS track' );
+is( $song->currentTrack->samplesize, 16, 'sets final PCM sample size on the LMS track' );
 
 Plugins::SpotifySoloist::StreamSemantics::applyOutputSongFormat( $song, $pcmFormat );
 is( $song->bitrate, 1_411_200, 'publishes the converted PCM output bitrate' );
@@ -181,7 +178,7 @@ is( $song->currentTrack->samplesize, 16, 'Touch strm metadata resolves to 16-bit
 my $mp3Meta = Plugins::SpotifySoloist::StreamSemantics::metadataForFormat({
 	key           => 'mp3',
 	displayFormat => 'MP3',
-	contentType   => 's32m',
+	contentType   => 'mp3',
 	outputContentType => 'mp3',
 	bitrateBps    => 192_000,
 	bitrateLabel  => '192 kbps',
@@ -195,14 +192,11 @@ ok( !exists $mp3Meta->{samplesize}, 'does not invent an MP3 sample size' );
 my $flacFormat = {
 	key           => 'flac',
 	displayFormat => 'FLAC',
-	contentType   => 's32f',
+	contentType   => 'flc',
 	outputContentType => 'flc',
 	bitrateLabel  => 'VBR (live stream)',
-	sourceBitrateBps => 2_822_400,
 	sampleRate    => 44_100,
 	sampleSize    => 16,
-	sourceSampleSize => 32,
-	sourceBlockAlign => 8,
 	channels      => 2,
 };
 my $flacMeta =

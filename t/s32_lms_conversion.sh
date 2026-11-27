@@ -7,7 +7,7 @@ trap 'rm -rf "$tmp"' EXIT INT TERM
 mkdir "$tmp"
 
 command -v ffmpeg >/dev/null 2>&1 || {
-	echo "ffmpeg is required for the LMS S32 conversion integration test" >&2
+	echo "ffmpeg is required for the bridge S32 conversion integration test" >&2
 	exit 1
 }
 
@@ -63,7 +63,6 @@ bits="$(ffprobe -v error -select_streams a:0 \
 	exit 1
 }
 
-python3 "$(dirname "$0")/lms_converter_cadence.py" \
-	"$(dirname "$0")/../custom-convert.conf"
+python3 "$(dirname "$0")/lms_converter_cadence.py"
 
-echo "LMS conversion produced dithered S16LE output; no S32LE passthrough"
+echo "bridge conversion produced dithered S16LE/16-bit FLAC output with sustained source cadence"

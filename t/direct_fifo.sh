@@ -5,50 +5,52 @@ set -eu
 tmp="${TMPDIR:-/tmp}/soloist-direct-fifo-$$"
 source_fifo="${tmp}/source.fifo"
 fifo="${tmp}/audio.fifo"
-forward_pid=""
-trap '[ -n "$forward_pid" ] && kill "$forward_pid" 2>/dev/null || true; rm -rf "$tmp"' EXIT INT TERM
+converter_pid=""
+trap '[ -n "$converter_pid" ] && kill "$converter_pid" 2>/dev/null || true; rm -rf "$tmp"' EXIT INT TERM
 
 mkdir "$tmp"
 mkfifo "$source_fifo"
 mkfifo "$fifo"
 
-# Match the bridge lifetime guard: descriptor 3 owns both final FIFO ends even
-# while LMS closes one ProtocolHandler and opens its replacement.
-exec 3<>"$fifo"
+# The bridge owns both source ends so converter replacement cannot disconnect
+# the shim. The final FIFO intentionally has no lifetime guard: closing a
+# discontinuous handler must terminate the old converter.
 exec 5<>"$source_fifo"
+exec 4<>"$fifo"
+cat "$source_fifo" > "$fifo" 5>&- &
+converter_pid=$!
 
-# Simulate the pcm-shim `cat source > final` forwarding process. It must not
-# inherit either keeper; descriptors 3 and 5 belong to the bridge supervisor.
-cat "$source_fifo" > "$fifo" 3>&- 5>&- &
-forward_pid=$!
-
-exec 4<"$fifo"
 printf 'first' >&5
 first="$(dd bs=1 count=5 <&4 2>/dev/null)"
 [ "$first" = "first" ]
 
-# A logical Spotify track change replaces the LMS reader without a read gap.
-# The forwarding process must stay alive instead of exiting with SIGPIPE.
+# Replacing the protocol handler closes the only reader. The next old-timeline
+# write terminates the converter instead of leaking buffered data forward.
 exec 4<&-
 printf 'old!!' >&5
-sleep 0.1
-kill -0 "$forward_pid"
+for _try in $(seq 1 100); do
+	kill -0 "$converter_pid" 2>/dev/null || break
+	sleep 0.01
+done
+if kill -0 "$converter_pid" 2>/dev/null; then
+	echo "old converter survived final FIFO reader replacement" >&2
+	exit 1
+fi
+wait "$converter_pid" 2>/dev/null || true
+converter_pid=""
 
-start="$(date +%s)"
-exec 4<"$fifo"
-discarded="$(dd bs=1 count=5 <&4 2>/dev/null)"
-[ "$discarded" = "old!!" ]
-
+# The supervisor starts a clean writer for the replacement handler while the
+# source FIFO and producer stay alive.
+exec 4<>"$fifo"
+cat "$source_fifo" > "$fifo" 5>&- &
+converter_pid=$!
 printf 'live' >&5
 live="$(dd bs=1 count=4 <&4 2>/dev/null)"
-end="$(date +%s)"
 [ "$live" = "live" ]
-[ $(( end - start )) -lt 2 ]
-kill -0 "$forward_pid"
+kill -0 "$converter_pid"
 
 exec 5>&-
-wait "$forward_pid"
-forward_pid=""
 exec 4<&-
-exec 3>&-
-echo "continuous PCM track transition recovered at live edge without restarting capture"
+wait "$converter_pid" 2>/dev/null || true
+converter_pid=""
+echo "converter restarted at a discontinuity while the S32 source stayed connected"

@@ -19,6 +19,7 @@ my $log = logger('plugin.spotifysoloist');
 use constant STALE_READ_GAP_SECONDS => 1.0;
 use constant STALE_DRAIN_SECONDS    => 0.25;
 use constant MAX_DRAIN_BYTES        => 4 * 1024 * 1024;
+use constant CONVERTER_CLOSE_GRACE_SECONDS => 0.12;
 
 sub isRemote { 1 }
 sub canSeek { 0 }
@@ -90,14 +91,14 @@ sub new {
 		return;
 	}
 	binmode($self);
-	my $initialDiscarded = _drainFifo($self);
-
 	my $format = $stream->{format};
+	my $initialDiscarded =
+		$format->{key} eq 'pcm' ? _drainFifo($self) : 0;
 	${*$self}{url} = $url;
 	${*$self}{client} = $args->{client};
 	${*$self}{contentType} = $format->{contentType};
 	${*$self}{formatKey} = $format->{key};
-	${*$self}{bitrate} = $format->{sourceBitrateBps} || 2_822_400;
+	${*$self}{bitrate} = $format->{bitrateBps};
 	${*$self}{streamGeneration} = $stream->{streamGeneration} || 0;
 	${*$self}{transition} =
 		Plugins::SpotifySoloist::Plugin::claimDirectStreamTransitionForUrl(
@@ -105,7 +106,7 @@ sub new {
 			${*$self}{streamGeneration},
 		);
 	${*$self}{firstAudioReadLogged} = 0;
-	${*$self}{prefix} = _wavHeader();
+	${*$self}{prefix} = $format->{key} eq 'pcm' ? _wavHeader() : '';
 	${*$self}{lastAudioReadAt} = undef;
 	${*$self}{staleDrainUntil} = undef;
 	${*$self}{staleBytesDiscarded} = 0;
@@ -116,22 +117,14 @@ sub new {
 	${*$self}{maxReadGap} = 0;
 
 	my $song = $args->{song};
-	my $transcoder = $args->{transcoder} || {};
-	my $streamFormat = $transcoder->{streamformat} || '';
-	if ( $streamFormat eq 'pcm' || $streamFormat eq 'flc' ) {
-		$transcoder->{sampleSize} = 16;
-	}
-	Plugins::SpotifySoloist::StreamSemantics::applyOutputSongFormat(
+	Plugins::SpotifySoloist::StreamSemantics::applySongFormat(
 		$song,
 		$format,
 	);
 
 	$log->info(
 		"opened direct Soloist stream '$url' from '$fifo'"
-		. " for LMS $streamFormat output"
-		. ( $streamFormat eq 'pcm' || $streamFormat eq 'flc'
-			? ' at 16-bit/44.1-kHz stereo'
-			: '' )
+		. " as final $format->{contentType} output"
 		. ( $initialDiscarded
 			? " after discarding $initialDiscarded bytes queued while the LMS reader was replaced"
 			: '' )
@@ -161,7 +154,11 @@ sub sysread {
 		my $gap = $now - $lastRead;
 		${*$self}{maxReadGap} = $gap
 			if $gap > ( ${*$self}{maxReadGap} || 0 );
-		if ( $gap >= STALE_READ_GAP_SECONDS && !${*$self}{staleDrainUntil} ) {
+		if (
+			( ${*$self}{formatKey} || '' ) eq 'pcm'
+			&& $gap >= STALE_READ_GAP_SECONDS
+			&& !${*$self}{staleDrainUntil}
+		) {
 			my $discarded = _drainFifo($self);
 			if ($discarded) {
 				${*$self}{staleDrainUntil} = $now + STALE_DRAIN_SECONDS;
@@ -179,7 +176,10 @@ sub sysread {
 		}
 	}
 
-	if ( my $until = ${*$self}{staleDrainUntil} ) {
+	if (
+		( ${*$self}{formatKey} || '' ) eq 'pcm'
+		&& ( my $until = ${*$self}{staleDrainUntil} )
+	) {
 		${*$self}{staleBytesDiscarded} += _drainFifo($self);
 		if ( $now < $until ) {
 			$! = EWOULDBLOCK;
@@ -271,9 +271,15 @@ sub close {
 	my $url = ${*$self}{url} || 'unknown Soloist stream';
 	$log->info(
 		"closing direct Soloist protocol handler for '$url'"
-		. '; the S32LE bridge guard remains open during handler replacement'
+		. '; the bridge keeps Soloist alive and restarts the final converter if needed'
 	);
-	return $self->SUPER::close();
+	my $closed = $self->SUPER::close();
+	# Leave a bounded reader-free window so the old ffmpeg writer observes
+	# EPIPE before LMS opens the replacement handler. This guarantees a clean
+	# PCM timeline and fresh FLAC/MP3 headers instead of relying on a scheduler
+	# race between close and reopen.
+	select undef, undef, undef, CONVERTER_CLOSE_GRACE_SECONDS;
+	return $closed;
 }
 
 sub contentType {
@@ -299,13 +305,13 @@ sub getMetadataFor {
 
 sub _wavHeader {
 	my $dataSize = 0xffffffff;
-	my $byteRate = 44100 * 2 * 32 / 8;
-	my $blockAlign = 2 * 32 / 8;
+	my $byteRate = 44100 * 2 * 16 / 8;
+	my $blockAlign = 2 * 16 / 8;
 
 	return 'RIFF'
 		. pack( 'V', ( 36 + $dataSize ) & 0xffffffff )
 		. 'WAVEfmt '
-		. pack( 'VvvVVvv', 16, 1, 2, 44100, $byteRate, $blockAlign, 32 )
+		. pack( 'VvvVVvv', 16, 1, 2, 44100, $byteRate, $blockAlign, 16 )
 		. 'data'
 		. pack( 'V', $dataSize );
 }

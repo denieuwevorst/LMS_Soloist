@@ -50,13 +50,13 @@ PLUGIN_SPOTIFYSOLOIST_FORMAT
 	EN	Default stream format
 
 PLUGIN_SPOTIFYSOLOIST_FORMAT_DESC
-	EN	Default format for players without an individual override in the player table above. The bridge always supplies uncompressed 44.1 kHz stereo 32-bit PCM in a WAV source stream. Lyrion converts PCM and FLAC to Touch-compatible 16-bit output, or produces the selected MP3 bitrate. Missing converters produce an explicit LMS conversion error; raw 32-bit PCM is never sent to the player.
+	EN	Default format for players without an individual override in the player table above. The bridge keeps the live source at uncompressed 44.1 kHz stereo 32-bit PCM, then converts it once to Touch-compatible 16-bit PCM/FLAC or the selected MP3 bitrate before Lyrion reads the stream. Raw 32-bit PCM is never sent to the player.
 
 PLUGIN_SPOTIFYSOLOIST_BITRATE
 	EN	MP3 bitrate
 
 PLUGIN_SPOTIFYSOLOIST_BITRATE_DESC
-	EN	Only used when format is MP3. Lyrion selects the matching fixed-bitrate conversion rule.
+	EN	Only used when format is MP3. The persistent bridge converter uses this fixed bitrate.
 
 PLUGIN_SPOTIFYSOLOIST_INITIALVOLUME
 	EN	Initial Soloist volume

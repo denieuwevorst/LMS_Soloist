@@ -9,8 +9,9 @@ The plugin exposes this as the default `audioBackend = pcm-shim`.
 The Pulse/PipeWire backend remains available as an alternative.
 
 The direct PCM path has been validated on DietPi/LMS with Soloist
-1.3.8.36: Soloist loads the shim, writes PCM to the per-player FIFO, and LMS
-plays the S32LE WAV source through LMS conversion rules.
+1.3.8.36: Soloist loads the shim, writes S32LE to the per-player source FIFO,
+and the persistent bridge converter supplies the final player-compatible stream
+to LMS.
 
 Validated builds are bundled at `Bin/X86_64`, `Bin/ARMv7`, and
 `Bin/ARMv8_Arch64`. Build from this directory when targeting another
@@ -64,9 +65,10 @@ for each Soloist process.
 Soloist
   -> this libpulse.so.0
   -> bounded live-edge ring (200 ms by default)
+  -> player_<slot>/pcm-shim.fifo
+  -> persistent bridge conversion (S16LE PCM / 16-bit FLAC / MP3)
   -> player_<slot>/audio.fifo
-  -> soloist:// protocol handler (streaming S32LE WAV)
-  -> LMS custom conversion rule (PCM/FLAC/MP3)
+  -> soloist:// protocol handler
   -> LMS/player
 ```
 
@@ -141,7 +143,7 @@ Soloist currently requires compatibility exports including:
   little-endian PCM.
 - Bundled binaries support x86_64, ARMv7 hard-float, and ARMv8/AArch64.
   Build and deploy the library separately on every other target architecture.
-- LMS conversion to PCM, MP3, or FLAC requires an available ffmpeg binary.
+- Bridge conversion to PCM, MP3, or FLAC requires an available ffmpeg binary.
 
 ## Clean
 
