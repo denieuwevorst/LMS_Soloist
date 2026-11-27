@@ -158,10 +158,13 @@ ok(
 	'starts catch-up instead of forwarding audio queued during an LMS read stall'
 );
 is( scalar @Plugins::SpotifySoloist::Plugin::midstreamStalls, 1, 'read gap emits one correlated midstream stall event' );
+my %stallFields = @{
+	$Plugins::SpotifySoloist::Plugin::midstreamStalls[0]
+}[ 3 .. $#{ $Plugins::SpotifySoloist::Plugin::midstreamStalls[0] } ];
 is(
-	$Plugins::SpotifySoloist::Plugin::midstreamStalls[0]->[3],
-	'source',
-	'midstream stall event carries named diagnostic fields',
+	$stallFields{source},
+	'protocol-read-gap',
+	'midstream stall event identifies the protocol read gap source',
 );
 
 select undef, undef, undef, 0.30;
