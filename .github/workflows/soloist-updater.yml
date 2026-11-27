@@ -99,6 +99,21 @@ jobs:
           fi
       - name: Check plugin Perl syntax
         run: perl contrib/check-plugin-syntax.pl
+      - name: Test packaged plugin archive
+        run: |
+          set -eu
+          work=$(mktemp -d)
+          trap 'rm -rf "$work"' EXIT
+          git archive --format=zip --output="$work/SpotifySoloist.zip" HEAD
+          mkdir "$work/plugin"
+          unzip -q "$work/SpotifySoloist.zip" -d "$work/plugin"
+          test -f "$work/plugin/Plugin.pm"
+          test -f "$work/plugin/StreamSemantics.pm"
+          (
+            cd "$work/plugin"
+            perl -c StreamSemantics.pm
+            perl contrib/check-plugin-syntax.pl
+          )
       - name: Test stream semantics and direct FIFO handler
         run: |
           prove -v \

@@ -103,6 +103,53 @@ BEGIN {
 require './Plugin.pm';
 require './Settings.pm';
 
+Plugins::SpotifySoloist::Plugin::_assertStreamSemanticsContract();
+open my $pluginSourceFh, '<', 'Plugin.pm'
+	or die "Could not read packaged Plugin.pm: $!\n";
+my $pluginSource = do { local $/; <$pluginSourceFh> };
+close $pluginSourceFh;
+my %calledStreamSemanticsSymbols = map { $_ => 1 }
+	$pluginSource =~
+		/Plugins::SpotifySoloist::StreamSemantics::([A-Za-z_][A-Za-z0-9_]*)\s*\(/g;
+for my $symbol ( sort keys %calledStreamSemanticsSymbols ) {
+	die "Plugin.pm calls missing packaged StreamSemantics symbol $symbol\n"
+		unless Plugins::SpotifySoloist::StreamSemantics->can($symbol);
+}
+
+for my $symbol (
+	qw(
+		apiVersion
+		applySongFormat
+		applySongTiming
+		metadataForFormat
+		observeTimelineTransition
+		timelineObservation
+		timelineResyncReady
+	)
+) {
+	die "Packaged StreamSemantics.pm is missing required symbol $symbol\n"
+		unless Plugins::SpotifySoloist::StreamSemantics->can($symbol);
+}
+
+{
+	no warnings qw(once redefine);
+	local *Plugins::SpotifySoloist::StreamSemantics::applySongTiming;
+	my $contractError = eval {
+		Plugins::SpotifySoloist::Plugin::_assertStreamSemanticsContract();
+		''
+	};
+	$contractError = $@ unless defined $contractError && length $contractError;
+	die "Package mismatch did not fail plugin startup clearly\n"
+		unless $contractError =~ /package mismatch/
+			&& $contractError =~ /applySongTiming/;
+}
+
+die "Metadata polling retry backoff is not bounded correctly\n"
+	unless Plugins::SpotifySoloist::Plugin::_metadataPollRetryDelay(1) == 0.5
+		&& Plugins::SpotifySoloist::Plugin::_metadataPollRetryDelay(5) == 8
+		&& Plugins::SpotifySoloist::Plugin::_metadataPollRetryDelay(7) == 30
+		&& Plugins::SpotifySoloist::Plugin::_metadataPollRetryDelay(20) == 30;
+
 my $build = Plugins::SpotifySoloist::Plugin::_buildInfoFromVersionOutput(
 	'soloist 1.3.10.15 build 1792994471 (20261026) (g19412df6ea) (linux/x86_64)'
 );

@@ -10,6 +10,11 @@ use constant BACKWARD_SEEK_THRESHOLD_MS => 2_000;
 use constant TRACK_RESET_POSITION_MS     => 5_000;
 use constant TRACK_RESET_TIMEOUT_SECONDS => 0.75;
 use constant NATURAL_END_WINDOW_MS       => 3_000;
+use constant API_VERSION                  => 1;
+
+sub apiVersion {
+	return API_VERSION;
+}
 
 sub isSoloistUrl {
 	my ($url) = @_;

@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- Fail plugin startup with a clear package-mismatch error when `Plugin.pm` and
+  `StreamSemantics.pm` do not provide the same API, and validate that contract
+  from the generated plugin ZIP in CI.
+- Restore S16/LMS song-format publication through the packaged
+  `applySongFormat` helper. Metadata polling now retries unexpected runtime
+  failures with bounded backoff and logs one error until recovery instead of
+  flooding `server.log`.
+
 - Add an optional startup-delay trace that correlates Spotify playing/URI
   observation, shim first PCM output, protocol-handler WAV/audio reads,
   LMS playback handoff, generation-flush completion, and first available

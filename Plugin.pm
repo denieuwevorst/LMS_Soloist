@@ -71,6 +71,8 @@ my $prefs = preferences('plugin.spotifysoloist');
 
 use constant STATE_LOOP_INTERVAL       => 0.5;  # seconds
 use constant INITIAL_STATE_LOOP_DELAY  => 0.1;  # seconds
+use constant STATE_LOOP_MAX_RETRY_DELAY => 30;  # seconds
+use constant STREAM_SEMANTICS_API_VERSION => 1;
 use constant IDLE_RESTART_DELAY        => 1;    # seconds
 use constant STATE_RESYNC_INTERVAL     => 30;   # seconds
 use constant TRACE_RESTART_DELAY       => 5;    # seconds
@@ -108,6 +110,39 @@ $prefs->init({
 my %bridges;      # playerID => { proc, wsPort, sink, dataDir, cacheDir, fifoPath, deviceName, lastStatus, wasPlayingHere }
 my $baseDataDir;
 my $baseCacheDir;
+my $metadataPollFailures = 0;
+my $metadataPollErrorLogged = 0;
+
+sub _assertStreamSemanticsContract {
+	my @required = qw(
+		apiVersion
+		applySongFormat
+		applySongTiming
+		metadataForFormat
+		observeTimelineTransition
+		timelineObservation
+		timelineResyncReady
+	);
+	my @missing = grep {
+		!Plugins::SpotifySoloist::StreamSemantics->can($_)
+	} @required;
+	my $actualVersion =
+		Plugins::SpotifySoloist::StreamSemantics->can('apiVersion')
+			? Plugins::SpotifySoloist::StreamSemantics::apiVersion()
+			: 'missing';
+
+	return 1
+		if !@missing
+			&& $actualVersion eq STREAM_SEMANTICS_API_VERSION;
+
+	die sprintf(
+		"Spotify Soloist package mismatch: Plugin.pm requires StreamSemantics API %d; "
+		. "installed API=%s, missing symbols=%s. Reinstall the complete plugin package.\n",
+		STREAM_SEMANTICS_API_VERSION,
+		$actualVersion,
+		@missing ? join( ',', @missing ) : 'none',
+	);
+}
 my %originalTransportCommand;    # command name -> original dispatch coderef
 my $soloistBinaryAgeWarningLogged = 0;
 my $soloistUpdatePid;
@@ -871,6 +906,8 @@ sub _maybeWarnAboutSoloistBinaryAge {
 
 sub initPlugin {
 	my $class = shift;
+
+	_assertStreamSemanticsContract();
 
 	# Registers the 'soloist' scheme as a side effect of loading.
 	require Plugins::SpotifySoloist::ProtocolHandler;
@@ -2309,7 +2346,7 @@ sub _publishMetadataForPlayer {
 	if ($song) {
 		my $songUrl = eval { $song->currentTrack()->url };
 		if ( defined $songUrl && $songUrl eq $url ) {
-			Plugins::SpotifySoloist::StreamSemantics::applyOutputSongFormat(
+			Plugins::SpotifySoloist::StreamSemantics::applySongFormat(
 				$song,
 				$format,
 			);
@@ -2378,9 +2415,7 @@ sub _handleMissingPlayerClient {
 	return 1;
 }
 
-sub pollMetadata {
-	Slim::Utils::Timers::setTimer( undef, time() + STATE_LOOP_INTERVAL, \&pollMetadata );
-
+sub _pollMetadataPass {
 	for my $playerId ( keys %bridges ) {
 		next unless _bridgeRunning($playerId);
 		my $b = $bridges{$playerId} or next;
@@ -2414,6 +2449,52 @@ sub pollMetadata {
 		next if _maybeRestartIdleBridge( $playerId, $b, $client, $playback );
 		_publishMetadataForPlayer( $b, $client, $url, $state );
 	}
+}
+
+sub _metadataPollRetryDelay {
+	my ($failures) = @_;
+	return STATE_LOOP_INTERVAL unless $failures && $failures > 0;
+	my $exponent = $failures - 1;
+	$exponent = 6 if $exponent > 6;
+	my $delay = STATE_LOOP_INTERVAL * ( 2 ** $exponent );
+	return $delay > STATE_LOOP_MAX_RETRY_DELAY
+		? STATE_LOOP_MAX_RETRY_DELAY
+		: $delay;
+}
+
+sub pollMetadata {
+	my $ok = eval {
+		_pollMetadataPass();
+		1;
+	};
+
+	my $delay = STATE_LOOP_INTERVAL;
+	if ($ok) {
+		if ($metadataPollFailures) {
+			$log->info(
+				"Spotify Soloist metadata polling recovered after "
+				. "$metadataPollFailures failed attempt(s)"
+			);
+		}
+		$metadataPollFailures = 0;
+		$metadataPollErrorLogged = 0;
+	}
+	else {
+		my $error = $@ || 'unknown error';
+		$error =~ s/\s+\z//;
+		$metadataPollFailures++;
+		$delay = _metadataPollRetryDelay($metadataPollFailures);
+		if (!$metadataPollErrorLogged) {
+			$metadataPollErrorLogged = 1;
+			$log->error(
+				"Spotify Soloist metadata polling failed; retrying with bounded "
+				. "backoff (maximum " . STATE_LOOP_MAX_RETRY_DELAY
+				. " seconds): $error"
+			);
+		}
+	}
+
+	Slim::Utils::Timers::setTimer( undef, time() + $delay, \&pollMetadata );
 }
 
 1;
