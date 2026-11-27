@@ -17,7 +17,7 @@ mkfifo "$fifo"
 # discontinuous handler must terminate the old converter.
 exec 5<>"$source_fifo"
 exec 4<>"$fifo"
-cat "$source_fifo" > "$fifo" 5>&- &
+cat "$source_fifo" > "$fifo" 4>&- 5>&- &
 converter_pid=$!
 
 printf 'first' >&5
@@ -51,7 +51,7 @@ converter_pid=""
 # The supervisor starts a clean writer for the replacement handler while the
 # source FIFO and producer stay alive.
 exec 4<>"$fifo"
-cat "$source_fifo" > "$fifo" 5>&- &
+cat "$source_fifo" > "$fifo" 4>&- 5>&- &
 converter_pid=$!
 printf 'live' >&5
 live="$(dd bs=1 count=4 <&4 2>/dev/null)"
