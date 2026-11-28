@@ -35,6 +35,26 @@ like( $bridge, qr/SOLOIST_SHIM_FORMAT=s16/, 'shim output is fixed to S16LE' );
 like( $bridge, qr/exec 3<> "\$FIFO_PATH"/, 'bridge keeps one final FIFO open for its lifetime' );
 like( $bridge, qr/parec .*?--format=s16le/s, 'Pulse fallback also supplies S16LE' );
 like( $bridge, qr/conversion owned by LMS/, 'bridge reports LMS-owned output conversion' );
+like(
+	$plugin,
+	qr/PCM_SOURCE_LIVE_EDGE_MS\s+=>\s+200/,
+	'direct PCM keeps the low-latency 200 ms source live edge',
+);
+like(
+	$plugin,
+	qr/TRANSCODER_SOURCE_LIVE_EDGE_MS\s+=>\s+750/,
+	'LMS FLAC and MP3 conversion receive a bounded 750 ms source live edge',
+);
+like(
+	$plugin,
+	qr/\$format eq 'pcm'.*?PCM_SOURCE_LIVE_EDGE_MS.*?TRANSCODER_SOURCE_LIVE_EDGE_MS/s,
+	'source live-edge selection is format-specific',
+);
+like(
+	$plugin,
+	qr/SOLOIST_PCM_SHIM_RING_MS\}\s*=\s*\$cfg->\{sourceLiveEdgeMs\}/,
+	'bridge startup passes the resolved source live-edge budget to the shim',
+);
 
 like( $plugin, qr/\$format eq 'pcm' \? 'wav'/, 'PCM uses LMS native WAV delivery without a converter' );
 like( $plugin, qr/'s16m' \. int\( \$bitrateBps \/ 1000 \)/, 'MP3 preference selects a bitrate-specific LMS source type' );

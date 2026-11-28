@@ -41,7 +41,7 @@ Spotify
 Spotify
   -> Soloist
   -> custom libpulse.so.0
-  -> 200 ms bounded live-edge PCM ring
+  -> format-aware bounded live-edge PCM ring
   -> per-player LMS FIFO (S16LE)
   -> soloist:// protocol handler
   -> LMS conversion/streaming pipeline
@@ -51,12 +51,16 @@ Spotify
 The bridge does not run ffmpeg or a forwarding `cat` process. The shim writes
 directly to the bridge-lifetime guarded LMS FIFO, and the protocol handler adds
 a streaming S16LE WAV header when LMS opens it. PCM follows LMS's native WAV
-path; LMS-owned conversion rules encode FLAC or MP3 when selected. The shim's 200 ms live-edge ring
-isolates Soloist from the FIFO writer. Short reader scheduling gaps are retried
-inside that budget without dropping audio; a sustained slow reader drops the
-oldest complete PCM frames only after the budget is exhausted, so a stall
-cannot turn into multi-second delayed playback. Together with the deliberately
-small final FIFO, PCM buffering remains bounded to approximately 300 ms. LMS
+path; LMS-owned conversion rules encode FLAC or MP3 when selected. Direct PCM
+uses a 200 ms live-edge budget. FLAC and MP3 use 750 ms because LMS's
+ProtocolHandler-to-transcoder source reader can pause for about 205 ms and may
+take roughly 650 ms to attach during converter startup. This remains bounded
+below one second while preventing ordinary converter scheduling from forcing
+the shim to discard source samples. A sustained slow reader still drops the
+oldest complete PCM frames only after the selected budget is exhausted, so a
+stall cannot turn into multi-second delayed playback. Together with the
+deliberately small final FIFO, direct PCM buffering remains bounded to
+approximately 300 ms. LMS
 may still use its own conversion rules when a player cannot consume WAV
 directly.
 

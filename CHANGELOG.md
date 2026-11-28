@@ -26,6 +26,10 @@
   for generation-qualified URLs only. Normal startup retains its low-latency
   format threshold, natural transitions retain their handler, and format-aware
   byte conversion is capped at LMS's 255 KiB STRM limit.
+- Keep direct PCM on its 200 ms source live edge, but allow 750 ms for
+  LMS-owned FLAC/MP3 conversion. This absorbs the measured 203-205 ms
+  ProtocolHandler/transcoder read gaps and converter startup without dropping
+  S16 samples or adding a bridge-side encoder.
 - Associate first-player-status diagnostics with the exact opened stream
   generation, ignoring stale status from the outgoing handler. Add a derived
   transition-timing milestone that separates flush, handler replacement, PCM

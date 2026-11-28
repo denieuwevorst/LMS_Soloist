@@ -66,7 +66,7 @@ for each Soloist process.
 ```text
 Soloist
   -> this libpulse.so.0
-  -> bounded live-edge ring (200 ms by default)
+  -> bounded live-edge ring (200 ms PCM, 750 ms LMS conversion)
   -> player_<slot>/audio.fifo
   -> soloist:// protocol handler
   -> LMS native WAV path or LMS FLAC/MP3 conversion
@@ -80,9 +80,11 @@ does not encode or alter the PCM payload. The bridge never starts ffmpeg.
 thread transmits available frames immediately with nonblocking FIFO writes.
 Temporary FIFO `EAGAIN` is retried while the ring's configured time budget has
 not been superseded, allowing ordinary scheduler and network-player read jitter
-without gaps. If the reader remains slow beyond that budget, the in-flight
-oldest complete frames are discarded, keeping playback near the live edge and
-bounding total PCM buffering to approximately 300 ms with the bridge's FIFO.
+without gaps. The plugin uses 200 ms for direct PCM and 750 ms when LMS owns
+FLAC/MP3 conversion; the latter covers measured 205 ms transcoder source-read
+gaps and converter attachment without introducing multi-second buffering. If
+the reader remains slow beyond that budget, the in-flight oldest complete
+frames are discarded, keeping playback near the live edge.
 
 Generation command files contain `<request-id> <reason>`. The request ID is
 independent from the shim's internal audio generation, so Pulse flushes cannot

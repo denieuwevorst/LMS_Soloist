@@ -79,6 +79,8 @@ use constant TRACE_RESTART_DELAY       => 5;    # seconds
 use constant BRIDGE_START_RETRY_DELAY  => 5;    # seconds
 use constant PLAYER_OFFLINE_STOP_DELAY => 10;   # seconds
 use constant PLAYBACK_TRANSITION_GRACE => 1.5; # seconds
+use constant PCM_SOURCE_LIVE_EDGE_MS   => 200;
+use constant TRANSCODER_SOURCE_LIVE_EDGE_MS => 750;
 use constant SOLOIST_BINARY_REFRESH_AFTER_DAYS => 75;
 use constant SOLOIST_BINARY_WARN_AFTER_DAYS => 80;
 use constant SOLOIST_UPDATE_CHECK_INTERVAL => 86400;
@@ -1231,6 +1233,9 @@ sub _configFor {
 	my $soloistPath = soloistBin();
 	my $runtime = bundledSoloistRuntime($soloistPath);
 	my $format = formatForPlayer($playerId);
+	my $sourceLiveEdgeMs = $format eq 'pcm'
+		? PCM_SOURCE_LIVE_EDGE_MS
+		: TRANSCODER_SOURCE_LIVE_EDGE_MS;
 	my $wsPort = $prefs->get('wsPortBase') + $slot;
 
 	return {
@@ -1239,6 +1244,7 @@ sub _configFor {
 		backend    => $backend,
 		format     => $format,
 		formatSpec => currentFormatSpec($format),
+		sourceLiveEdgeMs => $sourceLiveEdgeMs,
 		sink       => $prefs->get('pipewireSink') . '_' . $slot,
 		dataDir    => catdir( $baseDataDir, "player_$slot" ),
 		cacheDir   => catdir( $baseCacheDir, "player_$slot" ),
@@ -1529,7 +1535,7 @@ sub _startBridge {
 	local $ENV{SOLOIST_PCM_SHIM_DIR}  = $cfg->{pcmShimDir};
 	local $ENV{SOLOIST_PCM_SHIM_CONTROL} = $cfg->{pcmShimControl};
 	local $ENV{SOLOIST_PCM_SHIM_ACK} = $cfg->{pcmShimAck};
-	local $ENV{SOLOIST_PCM_SHIM_RING_MS} = 200;
+	local $ENV{SOLOIST_PCM_SHIM_RING_MS} = $cfg->{sourceLiveEdgeMs};
 	local $ENV{SOLOIST_PCM_SHIM_LOG} = 1;
 	local $ENV{SOLOIST_DELAY_DIAGNOSTICS} =
 		delayDiagnosticsEnabled() ? 1 : 0;
@@ -1542,6 +1548,7 @@ sub _startBridge {
 		. "' (device='$cfg->{deviceName}', slot=$cfg->{slot}, normalization="
 		. ( $cfg->{normalization} ? 'on' : 'off' )
 		. ', pcm_mode=live-ring-s16le'
+		. ", source_live_edge=$cfg->{sourceLiveEdgeMs}ms"
 		. ', shim=' . catfile( $cfg->{pcmShimDir}, 'libpulse.so.0' )
 		. ' ' . _fileFingerprint( catfile( $cfg->{pcmShimDir}, 'libpulse.so.0' ) )
 		. ', prefs=' . scalar(@$normalizationFiles) . ')'
