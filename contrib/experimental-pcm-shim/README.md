@@ -106,7 +106,7 @@ and inspect the player's `bridge.log`. The bridge maps this setting to
 A successfully loaded build logs its configured ring depth and control path:
 
 ```text
-[soloist-shim] loaded build 2026-11-27.2-delaytrace: mode=live-ring ... ring_ms=200 ...
+[soloist-shim] loaded build 2026-11-28.1-fifo64: mode=live-ring ... ring_ms=200 ...
 ```
 
 Level `2` also logs Pulse API activity. A constructor/load marker without

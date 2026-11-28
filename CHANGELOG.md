@@ -35,6 +35,11 @@
   The player's lower final-output bitrate cap must not throttle protocol reads;
   a 1,200 kbps cap otherwise leaves a deterministic 26,400-byte-per-second
   deficit that fills the bounded FLAC/MP3 pump and discards live PCM.
+- Keep the shim's final FIFO handoff at 64 KiB (about 372 ms for S16LE) so
+  recurring measured 205 ms LMS read pauses are absorbed without blocking the
+  200 ms wall-clock writer. The previous 16 KiB handoff held only about 93 ms;
+  each pause timed out one ~200 ms writer chunk, aggregating to the field
+  fingerprint of roughly 176,720 dropped bytes per second.
 - Associate first-player-status diagnostics with the exact opened stream
   generation, ignoring stale status from the outgoing handler. Add a derived
   transition-timing milestone that separates flush, handler replacement, PCM

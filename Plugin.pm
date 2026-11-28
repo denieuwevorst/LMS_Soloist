@@ -1540,7 +1540,7 @@ sub _startBridge {
 	local $ENV{SOLOIST_PCM_SHIM_LOG} = 1;
 	local $ENV{SOLOIST_DELAY_DIAGNOSTICS} =
 		delayDiagnosticsEnabled() ? 1 : 0;
-	local $ENV{SOLOIST_PCM_SHIM_BUILD} = '2026-11-27.2-delaytrace';
+	local $ENV{SOLOIST_PCM_SHIM_BUILD} = '2026-11-28.1-fifo64';
 	local $ENV{SOLOIST_RUNTIME_LIB_DIR} = $cfg->{runtimeDir};
 	local $ENV{SOLOIST_RUNTIME_LOADER}  = $cfg->{runtimeLoader};
 

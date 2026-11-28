@@ -89,7 +89,7 @@ __attribute__((constructor))
 static void shim_loaded(void)
 {
     CFG();
-    fprintf(stderr, "[soloist-shim] loaded build 2026-11-27.2-delaytrace: mode=%s out=%s format=%dB rate=%d ring_ms=%d max_tlength_ms=%d control=%s\n",
+    fprintf(stderr, "[soloist-shim] loaded build 2026-11-28.1-fifo64: mode=%s out=%s format=%dB rate=%d ring_ms=%d max_tlength_ms=%d control=%s\n",
         cfg.compat ? "compat" : "live-ring",
         cfg.out, cfg.bytes, cfg.rate, cfg.ring_ms, cfg.max_tlength_ms,
         cfg.control[0] ? cfg.control : "off");
@@ -155,12 +155,12 @@ static int out_open_locked(void)
         fd = open(cfg.out, O_WRONLY | O_NONBLOCK | O_CLOEXEC);
         if (fd < 0) return -1;
         /*
-         * Keep the kernel queue below 100 ms at the plugin's 44.1 kHz s16
-         * stereo format. The userspace ring owns the deliberate buffering;
-         * a large FIFO would preserve stale audio that cannot be dropped
-         * from the head by the writer.
+         * Absorb LMS's measured ~205 ms read pauses without blocking the
+         * wall-clock writer. At 44.1 kHz stereo S16LE, 64 KiB is ~372 ms:
+         * bounded below the userspace converter queue, but large enough that
+         * ordinary player scheduling never turns a 200 ms output chunk stale.
          */
-        fcntl(fd, F_SETPIPE_SZ, 16384);
+        fcntl(fd, F_SETPIPE_SZ, 65536);
         pipe_size = fcntl(fd, F_GETPIPE_SZ);
         if (pipe_size > 0) {
             int output_rate = cfg.rate > 0 ? cfg.rate : 44100;
