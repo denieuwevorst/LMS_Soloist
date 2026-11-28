@@ -6,14 +6,15 @@
 #
 # Audio path:
 #   - Pulse backend: PipeWire/PulseAudio null-sink -> parec S16LE capture ->
-#     LMS-owned named-pipe reader
+#     direct LMS FIFO (PCM) or bounded PCM source pump (FLAC/MP3)
 #   - pcm-shim backend: contrib/experimental-pcm-shim's libpulse.so.0
-#     replacement writes S16LE straight to the LMS-owned named-pipe reader. No
-#     Pulse/PipeWire server needed -- only the shim's own build-time dependency on
-#     libpulse-dev headers (see contrib/experimental-pcm-shim/README.md).
+#     replacement writes S16LE to the direct FIFO or compressed-format source
+#     pump. No Pulse/PipeWire server needed -- only the shim's own build-time
+#     dependency on libpulse-dev headers (see
+#     contrib/experimental-pcm-shim/README.md).
 #     Opt-in and still less validated than the Pulse/PipeWire backend.
-# ProtocolHandler.pm opens the final FIFO directly. Its read/write handle keeps
-# the FIFO alive while capture restarts, without an HTTP listener or relay.
+# ProtocolHandler.pm opens the final FIFO directly. A bridge-lifetime guard
+# keeps it alive while capture restarts, without an HTTP listener or encoder.
 #
 # Metadata is NOT handled here -- Plugin.pm consumes Soloist's pushed
 # `ctl trace` event stream (with an occasional snapshot resync fallback)
@@ -43,12 +44,17 @@ WS_PORT="${WS_PORT:-9091}"
 SOLOIST_DATA_DIR="${SOLOIST_DATA_DIR:-$HOME/.local/share/soloist-lyrion}"
 SOLOIST_CACHE_DIR="${SOLOIST_CACHE_DIR:-$HOME/.cache/soloist-lyrion}"
 FIFO_PATH="${FIFO_PATH:-/tmp/soloist-audio.fifo}"
+PCM_SOURCE_FIFO_PATH="${PCM_SOURCE_FIFO_PATH:-${SOLOIST_CACHE_DIR}/pcm-source.fifo}"
 SOLOIST_PCM_SHIM_DIR="${SOLOIST_PCM_SHIM_DIR:-}"
 SOLOIST_PCM_SHIM_LOG="${SOLOIST_PCM_SHIM_LOG:-1}"
 SOLOIST_DELAY_DIAGNOSTICS="${SOLOIST_DELAY_DIAGNOSTICS:-0}"
 SOLOIST_PCM_SHIM_RING_MS="${SOLOIST_PCM_SHIM_RING_MS:-200}"
 SOLOIST_PCM_SHIM_CONTROL="${SOLOIST_PCM_SHIM_CONTROL:-${SOLOIST_CACHE_DIR}/pcm-shim.control}"
 SOLOIST_PCM_SHIM_ACK="${SOLOIST_PCM_SHIM_ACK:-${SOLOIST_CACHE_DIR}/pcm-shim.ack}"
+SOLOIST_PCM_PUMP_ACK="${SOLOIST_PCM_PUMP_ACK:-${SOLOIST_CACHE_DIR}/pcm-pump.ack}"
+SOLOIST_PCM_PUMP_PERL="${SOLOIST_PCM_PUMP_PERL:-perl}"
+SOLOIST_PCM_PUMP_SCRIPT="${SOLOIST_PCM_PUMP_SCRIPT:-}"
+SOLOIST_PCM_PUMP_BUFFER_MS="${SOLOIST_PCM_PUMP_BUFFER_MS:-800}"
 SOLOIST_PCM_SHIM_BUILD="${SOLOIST_PCM_SHIM_BUILD:-2026-11-27.2-delaytrace}"
 SOLOIST_RUNTIME_LIB_DIR="${SOLOIST_RUNTIME_LIB_DIR:-}"
 SOLOIST_RUNTIME_LOADER="${SOLOIST_RUNTIME_LOADER:-}"
@@ -101,6 +107,7 @@ SOLOIST_PID=""
 SILENCE_PID=""
 CAPTURE_PID=""
 SINK_ROUTER_PID=""
+PCM_PUMP_PID=""
 BRIDGE_OWNER_DIR="${SOLOIST_CACHE_DIR}/bridge-owner"
 BRIDGE_OWNER_PID_FILE="${BRIDGE_OWNER_DIR}/pid"
 OWNS_BRIDGE_LOCK=0
@@ -113,6 +120,7 @@ cleanup() {
 	echo "[soloist-bridge] cleanup reason: ${reason} (bridge_pid=$$ soloist_pid=${SOLOIST_PID:-none})" >&2
 	[ -n "$SINK_ROUTER_PID" ] && kill "$SINK_ROUTER_PID" 2>/dev/null
 	[ -n "$CAPTURE_PID" ]    && kill "$CAPTURE_PID"    2>/dev/null
+	[ -n "$PCM_PUMP_PID" ]   && kill "$PCM_PUMP_PID"   2>/dev/null
 	[ -n "$SILENCE_PID" ]    && kill "$SILENCE_PID"    2>/dev/null
 	[ -n "$SOLOIST_PID" ]    && kill "$SOLOIST_PID"    2>/dev/null
 	wait 2>/dev/null
@@ -201,11 +209,62 @@ case "$SOLOIST_AUDIO_BACKEND" in
 		;;
 esac
 
+if [ "$SOLOIST_AUDIO_BACKEND" = "pcm-shim" ] && [ "$ADOPTED_SOLOIST" != "1" ]; then
+	rm -f "$SOLOIST_PCM_SHIM_CONTROL" "$SOLOIST_PCM_SHIM_ACK" "$SOLOIST_PCM_PUMP_ACK"
+fi
+
 # ---------------------------------------------------------------------------
 # 1. Backend-specific audio setup
 # ---------------------------------------------------------------------------
 SOLOIST_AUDIO_TARGET_DESC=""
 CAPTURE_MODE="s16le-direct"
+CAPTURE_OUTPUT_PATH="$FIFO_PATH"
+
+[ -p "$FIFO_PATH" ] || { rm -f "$FIFO_PATH"; mkfifo "$FIFO_PATH"; }
+exec 3<> "$FIFO_PATH"
+log "holding final LMS FIFO read/write guard on fd 3 for bridge lifetime"
+
+if [ "$FORMAT" != "pcm" ]; then
+	[ -p "$PCM_SOURCE_FIFO_PATH" ] || {
+		rm -f "$PCM_SOURCE_FIFO_PATH"
+		mkfifo "$PCM_SOURCE_FIFO_PATH"
+	}
+	exec 4<> "$PCM_SOURCE_FIFO_PATH"
+	CAPTURE_OUTPUT_PATH="$PCM_SOURCE_FIFO_PATH"
+	if [ -z "$SOLOIST_PCM_PUMP_SCRIPT" ] || [ ! -f "$SOLOIST_PCM_PUMP_SCRIPT" ]; then
+		log "ERROR: compressed output requires the PCM pump at '${SOLOIST_PCM_PUMP_SCRIPT:-unset}'"
+		exit 1
+	fi
+	if ! command -v "$SOLOIST_PCM_PUMP_PERL" >/dev/null 2>&1 && [ ! -x "$SOLOIST_PCM_PUMP_PERL" ]; then
+		log "ERROR: compressed output requires Perl at '$SOLOIST_PCM_PUMP_PERL'"
+		exit 1
+	fi
+	rm -f "$SOLOIST_PCM_PUMP_ACK"
+	pcm_pump_supervisor() {
+		CUR_PUMP_PID=""
+		trap '[ -n "$CUR_PUMP_PID" ] && kill "$CUR_PUMP_PID" 2>/dev/null; exit 0' TERM INT
+		while :; do
+			log "starting bounded S16LE pump ${PCM_SOURCE_FIFO_PATH} > ${FIFO_PATH}"
+			env \
+				SOLOIST_PCM_PUMP_SOURCE="$PCM_SOURCE_FIFO_PATH" \
+				SOLOIST_PCM_PUMP_OUTPUT="$FIFO_PATH" \
+				SOLOIST_PCM_PUMP_CONTROL="$SOLOIST_PCM_SHIM_CONTROL" \
+				SOLOIST_PCM_PUMP_SHIM_ACK="$SOLOIST_PCM_SHIM_ACK" \
+				SOLOIST_PCM_PUMP_ACK="$SOLOIST_PCM_PUMP_ACK" \
+				SOLOIST_PCM_PUMP_BUFFER_MS="$SOLOIST_PCM_PUMP_BUFFER_MS" \
+				"$SOLOIST_PCM_PUMP_PERL" "$SOLOIST_PCM_PUMP_SCRIPT" 3>&- 4>&- &
+			CUR_PUMP_PID=$!
+			wait "$CUR_PUMP_PID"
+			PUMP_STATUS=$?
+			CUR_PUMP_PID=""
+			log "PCM pump exited with status $PUMP_STATUS -- restarting in 0.2s"
+			sleep 0.2
+		done
+	}
+	pcm_pump_supervisor &
+	PCM_PUMP_PID=$!
+	log "holding raw S16LE source FIFO guard on fd 4; pump supervisor pid $PCM_PUMP_PID"
+fi
 
 if [ "$SOLOIST_AUDIO_BACKEND" = "pulse" ]; then
 	if ! command -v pactl >/dev/null 2>&1; then
@@ -247,7 +306,8 @@ if [ "$SOLOIST_AUDIO_BACKEND" = "pulse" ]; then
 
 	SOLOIST_AUDIO_TARGET_DESC="Pulse/PipeWire sink ${PIPEWIRE_SINK}"
 elif [ "$SOLOIST_AUDIO_BACKEND" = "pcm-shim" ]; then
-	# The shim writes S16LE straight to the final FIFO. See
+	# The shim writes S16LE to the direct PCM FIFO or compressed-format source
+	# pump. See
 	# contrib/experimental-pcm-shim/README.md for the shim's status.
 	#
 	# SOLOIST_LD_LIBRARY_PATH is intentionally NOT `export`ed here, for the
@@ -255,15 +315,9 @@ elif [ "$SOLOIST_AUDIO_BACKEND" = "pcm-shim" ]; then
 	# own process (below), not every later command in this
 	# script.
 	SOLOIST_LD_LIBRARY_PATH="${SOLOIST_PCM_SHIM_DIR}${LD_LIBRARY_PATH:+:${LD_LIBRARY_PATH}}"
-	[ -p "$FIFO_PATH" ] || { rm -f "$FIFO_PATH"; mkfifo "$FIFO_PATH"; }
-	exec 3<> "$FIFO_PATH"
-	SOLOIST_SHIM_OUTPUT="$FIFO_PATH"
+	SOLOIST_SHIM_OUTPUT="$CAPTURE_OUTPUT_PATH"
 	CAPTURE_MODE="pcm-shim-s16le-direct"
-	SOLOIST_AUDIO_TARGET_DESC="pcm-shim S16LE direct FIFO ${FIFO_PATH}"
-	log "holding S16LE direct FIFO read/write guard on fd 3 for bridge lifetime"
-	if [ "$ADOPTED_SOLOIST" != "1" ]; then
-		rm -f "$SOLOIST_PCM_SHIM_CONTROL" "$SOLOIST_PCM_SHIM_ACK"
-	fi
+	SOLOIST_AUDIO_TARGET_DESC="pcm-shim S16LE FIFO ${CAPTURE_OUTPUT_PATH}"
 	log "using experimental pcm-shim backend from '${SOLOIST_PCM_SHIM_DIR}', raw PCM output=${SOLOIST_SHIM_OUTPUT}"
 	if command -v sha1sum >/dev/null 2>&1; then
 		SHIM_FINGERPRINT="$(wc -c < "$SOLOIST_PCM_SHIM_LIB") bytes sha1=$(sha1sum "$SOLOIST_PCM_SHIM_LIB" | awk '{print $1}')"
@@ -452,17 +506,13 @@ if [ "$SOLOIST_AUDIO_BACKEND" = "pulse" ]; then
 fi
 
 # ---------------------------------------------------------------------------
-# 3. Set up the S16LE FIFO that the LMS protocol handler opens directly.
+# 3. Complete capture setup.
 # ---------------------------------------------------------------------------
-[ -p "$FIFO_PATH" ] || { rm -f "$FIFO_PATH"; mkfifo "$FIFO_PATH"; }
-
 if [ "$SOLOIST_AUDIO_BACKEND" = "pulse" ]; then
 	if ! command -v parec >/dev/null 2>&1; then
 		log "ERROR: parec not found -- the Pulse backend needs PulseAudio utilities"
 		exit 1
 	fi
-	exec 3<> "$FIFO_PATH"
-	log "holding S16LE direct FIFO read/write guard on fd 3 for bridge lifetime"
 fi
 
 log "direct LMS stream FIFO ready at ${FIFO_PATH}; preparing capture pipeline (mode=${CAPTURE_MODE}, backend=${SOLOIST_AUDIO_BACKEND})"
@@ -476,10 +526,10 @@ capture_supervisor() {
 	trap '[ -n "$CUR_CAPTURE_PID" ] && kill "$CUR_CAPTURE_PID" 2>/dev/null; exit 0' TERM INT
 
 	while kill -0 "$SOLOIST_PID" 2>/dev/null; do
-		log "starting S16LE capture from ${PIPEWIRE_SINK}.monitor > ${FIFO_PATH}"
+		log "starting S16LE capture from ${PIPEWIRE_SINK}.monitor > ${CAPTURE_OUTPUT_PATH}"
 		parec --raw --rate=44100 --channels=2 --format=s16le \
 			--latency-msec=300 --process-time-msec=50 \
-			-d "${PIPEWIRE_SINK}.monitor" > "$FIFO_PATH" 3>&- &
+			-d "${PIPEWIRE_SINK}.monitor" > "$CAPTURE_OUTPUT_PATH" 3>&- 4>&- &
 		CUR_CAPTURE_PID=$!
 		wait "$CUR_CAPTURE_PID"
 		CAPTURE_STATUS=$?
@@ -492,9 +542,9 @@ capture_supervisor() {
 	done
 }
 
-log "direct LMS S16LE stream ready: ${FIFO_PATH} (requested output=${FORMAT}, conversion owned by LMS)"
+log "direct LMS S16LE stream ready: ${FIFO_PATH} (source=${CAPTURE_OUTPUT_PATH}, requested output=${FORMAT}, conversion owned by LMS)"
 if [ "$SOLOIST_AUDIO_BACKEND" = "pcm-shim" ]; then
-	log "pcm-shim writes S16LE directly to ${FIFO_PATH}; monitoring Soloist process"
+	log "pcm-shim writes S16LE to ${CAPTURE_OUTPUT_PATH}; monitoring Soloist process"
 	if [ "$ADOPTED_SOLOIST" = "1" ]; then
 		while kill -0 "$SOLOIST_PID" 2>/dev/null; do
 			sleep 1

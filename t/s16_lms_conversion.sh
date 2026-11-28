@@ -4,12 +4,18 @@ set -eu
 
 root="$(CDPATH= cd -- "$(dirname "$0")/.." && pwd)"
 shim="$root/contrib/experimental-pcm-shim"
+pump="$root/Bin/soloist-pcm-pump.pl"
 tmp="${TMPDIR:-/tmp}/soloist-s16-conversion-$$"
+pump_pid=""
 ffmpeg_pid=""
 feeder_pid=""
+client_pid=""
+
 cleanup() {
+	[ -n "$client_pid" ] && kill "$client_pid" 2>/dev/null || true
 	[ -n "$feeder_pid" ] && kill "$feeder_pid" 2>/dev/null || true
 	[ -n "$ffmpeg_pid" ] && kill "$ffmpeg_pid" 2>/dev/null || true
+	[ -n "$pump_pid" ] && kill "$pump_pid" 2>/dev/null || true
 	rm -rf "$tmp"
 }
 trap cleanup EXIT INT TERM
@@ -25,15 +31,25 @@ command -v ffprobe >/dev/null 2>&1 || {
 }
 
 make -C "$shim" clean marker_client >/dev/null
+perl -c "$pump" >/dev/null
 
 run_conversion() {
 	format="$1"
-	raw_fifo="$tmp/$format.raw.fifo"
+	source_fifo="$tmp/$format.source.fifo"
+	final_fifo="$tmp/$format.final.fifo"
 	wav_fifo="$tmp/$format.wav.fifo"
 	output="$tmp/output.$format"
-	log="$tmp/$format.log"
-	mkfifo "$raw_fifo" "$wav_fifo"
-	exec 9<>"$raw_fifo"
+	shim_log="$tmp/$format.shim.log"
+	pump_log="$tmp/$format.pump.log"
+	mkfifo "$source_fifo" "$final_fifo" "$wav_fifo"
+	exec 8<>"$source_fifo"
+	exec 9<>"$final_fifo"
+
+	SOLOIST_PCM_PUMP_SOURCE="$source_fifo" \
+	SOLOIST_PCM_PUMP_OUTPUT="$final_fifo" \
+	SOLOIST_PCM_PUMP_BUFFER_MS=800 \
+	perl "$pump" >"$tmp/$format.pump.stdout" 2>"$pump_log" &
+	pump_pid=$!
 
 	if [ "$format" = "flac" ]; then
 		ffmpeg -y -nostdin -hide_banner -loglevel error \
@@ -48,28 +64,28 @@ run_conversion() {
 	fi
 	ffmpeg_pid=$!
 
-	python3 - "$raw_fifo" "$wav_fifo" <<'PY' &
+	python3 - "$final_fifo" "$wav_fifo" <<'PY' &
 import os
 import struct
 import sys
 import time
 
-raw_fifo, wav_fifo = sys.argv[1:]
-target = 4 * 44100 * 4
+final_fifo, wav_fifo = sys.argv[1:]
+target = 5 * 44100 * 4
 pause_every = 44100 * 4 // 2
-raw = os.open(raw_fifo, os.O_RDONLY)
+source = os.open(final_fifo, os.O_RDONLY)
 wav = os.open(wav_fifo, os.O_WRONLY)
-time.sleep(0.60)
 header = (
     b"RIFF" + struct.pack("<I", 0xffffffff) + b"WAVEfmt "
     + struct.pack("<IHHIIHH", 16, 1, 2, 44100, 44100 * 4, 4, 16)
     + b"data" + struct.pack("<I", 0xffffffff)
 )
 os.write(wav, header)
+time.sleep(0.70)
 total = 0
 since_pause = 0
 while total < target:
-    chunk = os.read(raw, min(4096, target - total))
+    chunk = os.read(source, min(4096, target - total))
     if not chunk:
         time.sleep(0.001)
         continue
@@ -80,46 +96,76 @@ while total < target:
     total += len(chunk)
     since_pause += len(chunk)
     if since_pause >= pause_every and total < target:
-        time.sleep(0.205)
+        time.sleep(0.40)
         since_pause = 0
 os.close(wav)
-os.close(raw)
+os.close(source)
 PY
 	feeder_pid=$!
 
+	started_at="$(python3 -c 'import time; print(time.monotonic())')"
 	LD_LIBRARY_PATH="$shim" \
-	SOLOIST_SHIM_OUT="$raw_fifo" \
+	SOLOIST_SHIM_OUT="$source_fifo" \
 	SOLOIST_SHIM_FORMAT=s16 \
 	SOLOIST_SHIM_RATE=44100 \
-	SOLOIST_SHIM_RING_MS=750 \
+	SOLOIST_SHIM_RING_MS=200 \
 	SOLOIST_SHIM_LOG=1 \
-	"$shim/marker_client" 4 >"$tmp/$format.client.log" 2>"$log"
+	"$shim/marker_client" 5 >"$tmp/$format.client.log" 2>"$shim_log" &
+	client_pid=$!
 
+	python3 - "$output" "$started_at" <<'PY'
+import os
+import sys
+import time
+
+output, started = sys.argv[1], float(sys.argv[2])
+deadline = started + 1.25
+while time.monotonic() < deadline:
+    if os.path.exists(output) and os.path.getsize(output) > 0:
+        elapsed = time.monotonic() - started
+        print(f"first encoded bytes after {elapsed * 1000:.0f} ms")
+        break
+    time.sleep(0.01)
+else:
+    raise SystemExit("converter did not produce first output within 1.25 seconds")
+PY
+
+	wait "$client_pid"
+	client_pid=""
 	wait "$feeder_pid"
 	feeder_pid=""
 	wait "$ffmpeg_pid"
 	ffmpeg_pid=""
+	kill "$pump_pid"
+	wait "$pump_pid" 2>/dev/null || true
+	pump_pid=""
+	exec 8>&-
 	exec 9>&-
 
-	grep -q 'output pressure:' "$log"
-	if grep -Eq 'output live-edge drop|ring live-edge drop|stream underflow' "$log"; then
-		echo "$format source dropped audio under LMS converter cadence" >&2
-		cat "$log" >&2
+	if grep -Eq 'output live-edge drop|ring live-edge drop|stream underflow|underflows=[1-9]|drops=[1-9]' "$shim_log"; then
+		echo "$format source shim lost audio despite the decoupled pump" >&2
+		cat "$shim_log" >&2
 		exit 1
 	fi
-	python3 - "$log" <<'PY'
+	if grep -q 'live-edge drop:' "$pump_log"; then
+		echo "$format converter-side pump exceeded its bounded queue" >&2
+		cat "$pump_log" >&2
+		exit 1
+	fi
+	grep -q 'runtime summary:' "$pump_log"
+	python3 - "$pump_log" <<'PY'
 import re
 import sys
 
 text = open(sys.argv[1], encoding="utf-8").read()
-waits = [
+queues = [
     float(value)
-    for value in re.findall(r"output pressure: .*?max_wait=([0-9.]+) ms", text)
+    for value in re.findall(r"max_queued=([0-9.]+) ms", text)
 ]
-if not waits or max(waits) < 200.0:
-    raise SystemExit("test did not reproduce a 200 ms LMS source-reader gap")
-if max(waits) >= 750.0:
-    raise SystemExit(f"converter source wait exceeded live-edge budget: {max(waits):.1f} ms")
+if not queues or max(queues) < 300.0:
+    raise SystemExit("test did not reproduce sustained converter backpressure")
+if max(queues) >= 800.0:
+    raise SystemExit(f"converter queue exceeded budget: {max(queues):.1f} ms")
 PY
 }
 
@@ -142,4 +188,4 @@ rate="$(ffprobe -v error -select_streams a:0 \
 	exit 1
 }
 
-echo "LMS FLAC/MP3 commands survived 600 ms startup and recurring 205 ms source-read gaps without drops"
+echo "decoupled LMS FLAC/MP3 input survived 700 ms startup and recurring 400 ms no-read windows without source loss"

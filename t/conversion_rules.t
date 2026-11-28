@@ -13,6 +13,7 @@ sub slurp {
 my $types = slurp('custom-types.conf');
 my $convert = slurp('custom-convert.conf');
 my $bridge = slurp('Bin/soloist-bridge.sh');
+my $pump = slurp('Bin/soloist-pcm-pump.pl');
 my $plugin = slurp('Plugin.pm');
 my $handler = slurp('ProtocolHandler.pm');
 my $settings = slurp('Settings.pm');
@@ -30,30 +31,19 @@ like(
 );
 is( () = $convert =~ /\[ffmpeg\]/g, 7, 'only LMS FLAC/MP3 rules invoke ffmpeg' );
 
-unlike( $bridge, qr/ffmpeg|FFMPEG_BIN|SOLOIST_PCM_SHIM_FIFO/i, 'bridge has no ffmpeg process or intermediate encoder FIFO' );
+unlike( $bridge . $pump, qr/ffmpeg|FFMPEG_BIN/i, 'bridge and source pump never encode with ffmpeg' );
 like( $bridge, qr/SOLOIST_SHIM_FORMAT=s16/, 'shim output is fixed to S16LE' );
-like( $bridge, qr/exec 3<> "\$FIFO_PATH"/, 'bridge keeps one final FIFO open for its lifetime' );
+like( $bridge, qr/exec 3<> "\$FIFO_PATH"/, 'bridge keeps the final LMS FIFO open for its lifetime' );
+like( $bridge, qr/\[ "\$FORMAT" != "pcm" \].*?pcm_pump_supervisor/s, 'only FLAC and MP3 start the decoupling pump' );
+like( $bridge, qr/exec 4<> "\$PCM_SOURCE_FIFO_PATH"/, 'compressed formats keep a dedicated source FIFO open' );
+like( $pump, qr/SOLOIST_PCM_PUMP_BUFFER_MS.*?800/s, 'compressed source pump uses a bounded sub-second queue' );
+like( $pump, qr/generation flush: request=/, 'source pump flushes with discontinuous generations' );
 like( $bridge, qr/parec .*?--format=s16le/s, 'Pulse fallback also supplies S16LE' );
 like( $bridge, qr/conversion owned by LMS/, 'bridge reports LMS-owned output conversion' );
 like(
 	$plugin,
-	qr/PCM_SOURCE_LIVE_EDGE_MS\s+=>\s+200/,
-	'direct PCM keeps the low-latency 200 ms source live edge',
-);
-like(
-	$plugin,
-	qr/TRANSCODER_SOURCE_LIVE_EDGE_MS\s+=>\s+750/,
-	'LMS FLAC and MP3 conversion receive a bounded 750 ms source live edge',
-);
-like(
-	$plugin,
-	qr/\$format eq 'pcm'.*?PCM_SOURCE_LIVE_EDGE_MS.*?TRANSCODER_SOURCE_LIVE_EDGE_MS/s,
-	'source live-edge selection is format-specific',
-);
-like(
-	$plugin,
-	qr/SOLOIST_PCM_SHIM_RING_MS\}\s*=\s*\$cfg->\{sourceLiveEdgeMs\}/,
-	'bridge startup passes the resolved source live-edge budget to the shim',
+	qr/SOLOIST_PCM_SHIM_RING_MS\}\s*=\s*200/,
+	'all formats preserve the healthy 200 ms Soloist source ring',
 );
 
 like( $plugin, qr/\$format eq 'pcm' \? 'wav'/, 'PCM uses LMS native WAV delivery without a converter' );

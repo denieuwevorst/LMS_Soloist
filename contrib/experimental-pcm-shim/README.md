@@ -66,8 +66,9 @@ for each Soloist process.
 ```text
 Soloist
   -> this libpulse.so.0
-  -> bounded live-edge ring (200 ms PCM, 750 ms LMS conversion)
-  -> player_<slot>/audio.fifo
+  -> 200 ms bounded live-edge ring
+  -> direct player_<slot>/audio.fifo (PCM), or
+     player_<slot>/pcm-source.fifo -> 800 ms PCM pump -> audio.fifo (FLAC/MP3)
   -> soloist:// protocol handler
   -> LMS native WAV path or LMS FLAC/MP3 conversion
   -> player
@@ -78,21 +79,23 @@ does not encode or alter the PCM payload. The bridge never starts ffmpeg.
 
 `pa_stream_write` only copies complete frames into the bounded ring. The writer
 thread transmits available frames immediately with nonblocking FIFO writes.
-Temporary FIFO `EAGAIN` is retried while the ring's configured time budget has
-not been superseded, allowing ordinary scheduler and network-player read jitter
-without gaps. The plugin uses 200 ms for direct PCM and 750 ms when LMS owns
-FLAC/MP3 conversion; the latter covers measured 205 ms transcoder source-read
-gaps and converter attachment without introducing multi-second buffering. If
-the reader remains slow beyond that budget, the in-flight oldest complete
-frames are discarded, keeping playback near the live edge.
+Temporary FIFO `EAGAIN` is retried while the 200 ms ring budget has not been
+superseded. Direct PCM therefore retains its low-latency path. For FLAC and
+MP3, `soloist-pcm-pump.pl` continuously drains a dedicated source FIFO into an
+independent 800 ms bounded queue before the final FIFO. That queue absorbs LMS
+converter attachment and source-read stalls without changing Pulse producer
+timing. If the converter remains slow beyond that budget, the pump discards the
+oldest complete frames and logs the loss, keeping playback near the live edge.
 
 Generation command files contain `<request-id> <reason>`. The request ID is
 independent from the shim's internal audio generation, so Pulse flushes cannot
 collide with track-change commands. The acknowledgement contains
 `<request-id> <resulting-generation> <reason>`. Repeating a processed request
-recreates a lost acknowledgement without flushing twice. The plugin waits for that acknowledgement before replacing
-the LMS protocol handler. Pulse `flush` requests clear the ring through the same
-internal generation path.
+recreates a lost acknowledgement without flushing twice. For FLAC and MP3 the pump waits for the shim acknowledgement, clears its own
+queue and both FIFO boundaries, and publishes a second acknowledgement. The
+plugin replaces the LMS protocol handler only after both acknowledgements.
+Pulse `flush` requests clear the ring through the same internal generation
+path.
 
 ## Diagnostics
 

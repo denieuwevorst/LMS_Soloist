@@ -5,6 +5,7 @@ on:
     paths:
       - "Bin/extract-soloist-update.sh"
       - "Bin/soloist-bridge.sh"
+      - "Bin/soloist-pcm-pump.pl"
       - "Plugin.pm"
       - "ProtocolHandler.pm"
       - "Settings.pm"
@@ -80,7 +81,9 @@ jobs:
           dash -n Bin/extract-soloist-update.sh
           dash -n Bin/find-soloist-owner.sh
           dash -n Bin/soloist-bridge.sh
+          perl -c Bin/soloist-pcm-pump.pl
           dash -n t/bridge_ownership.sh
+          dash -n t/pcm_pump_generation.sh
       - name: Test managed update extractor
         run: |
           set -eu
@@ -131,6 +134,7 @@ jobs:
           timeout 30 sh t/pcm_shim_live_ring.sh
           timeout 30 sh t/pcm_shim_generation_survival.sh
           timeout 30 sh t/pcm_shim_natural_end.sh
+          timeout 30 sh t/pcm_pump_generation.sh
           timeout 30 sh t/s16_lms_conversion.sh
           timeout 30 sh t/private_loader_preload.sh
       - name: Validate current official Soloist build

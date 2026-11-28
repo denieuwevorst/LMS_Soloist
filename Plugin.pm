@@ -79,8 +79,6 @@ use constant TRACE_RESTART_DELAY       => 5;    # seconds
 use constant BRIDGE_START_RETRY_DELAY  => 5;    # seconds
 use constant PLAYER_OFFLINE_STOP_DELAY => 10;   # seconds
 use constant PLAYBACK_TRANSITION_GRACE => 1.5; # seconds
-use constant PCM_SOURCE_LIVE_EDGE_MS   => 200;
-use constant TRANSCODER_SOURCE_LIVE_EDGE_MS => 750;
 use constant SOLOIST_BINARY_REFRESH_AFTER_DAYS => 75;
 use constant SOLOIST_BINARY_WARN_AFTER_DAYS => 80;
 use constant SOLOIST_UPDATE_CHECK_INTERVAL => 86400;
@@ -1233,9 +1231,6 @@ sub _configFor {
 	my $soloistPath = soloistBin();
 	my $runtime = bundledSoloistRuntime($soloistPath);
 	my $format = formatForPlayer($playerId);
-	my $sourceLiveEdgeMs = $format eq 'pcm'
-		? PCM_SOURCE_LIVE_EDGE_MS
-		: TRANSCODER_SOURCE_LIVE_EDGE_MS;
 	my $wsPort = $prefs->get('wsPortBase') + $slot;
 
 	return {
@@ -1244,14 +1239,15 @@ sub _configFor {
 		backend    => $backend,
 		format     => $format,
 		formatSpec => currentFormatSpec($format),
-		sourceLiveEdgeMs => $sourceLiveEdgeMs,
 		sink       => $prefs->get('pipewireSink') . '_' . $slot,
 		dataDir    => catdir( $baseDataDir, "player_$slot" ),
 		cacheDir   => catdir( $baseCacheDir, "player_$slot" ),
 		fifoPath   => catfile( $baseCacheDir, "player_$slot", 'audio.fifo' ),
+		pcmSourceFifoPath => catfile( $baseCacheDir, "player_$slot", 'pcm-source.fifo' ),
 		pcmShimDir => $prefs->get('pcmShimDir') || bundledPcmShimDir(),
 		pcmShimControl => catfile( $baseCacheDir, "player_$slot", 'pcm-shim.control' ),
 		pcmShimAck => catfile( $baseCacheDir, "player_$slot", 'pcm-shim.ack' ),
+		pcmPumpAck => catfile( $baseCacheDir, "player_$slot", 'pcm-pump.ack' ),
 		runtimeDir => $runtime ? $runtime->{dir} : '',
 		runtimeLoader => $runtime ? $runtime->{loader} : '',
 		soloistCtlCommand => [
@@ -1532,10 +1528,15 @@ sub _startBridge {
 	local $ENV{SOLOIST_DATA_DIR}  = $cfg->{dataDir};
 	local $ENV{SOLOIST_CACHE_DIR} = $cfg->{cacheDir};
 	local $ENV{FIFO_PATH}         = $cfg->{fifoPath};
+	local $ENV{PCM_SOURCE_FIFO_PATH} = $cfg->{pcmSourceFifoPath};
 	local $ENV{SOLOIST_PCM_SHIM_DIR}  = $cfg->{pcmShimDir};
 	local $ENV{SOLOIST_PCM_SHIM_CONTROL} = $cfg->{pcmShimControl};
 	local $ENV{SOLOIST_PCM_SHIM_ACK} = $cfg->{pcmShimAck};
-	local $ENV{SOLOIST_PCM_SHIM_RING_MS} = $cfg->{sourceLiveEdgeMs};
+	local $ENV{SOLOIST_PCM_PUMP_ACK} = $cfg->{pcmPumpAck};
+	local $ENV{SOLOIST_PCM_PUMP_PERL} = $^X;
+	local $ENV{SOLOIST_PCM_PUMP_SCRIPT} =
+		catfile( dirname(_scriptPath()), 'soloist-pcm-pump.pl' );
+	local $ENV{SOLOIST_PCM_SHIM_RING_MS} = 200;
 	local $ENV{SOLOIST_PCM_SHIM_LOG} = 1;
 	local $ENV{SOLOIST_DELAY_DIAGNOSTICS} =
 		delayDiagnosticsEnabled() ? 1 : 0;
@@ -1548,7 +1549,7 @@ sub _startBridge {
 		. "' (device='$cfg->{deviceName}', slot=$cfg->{slot}, normalization="
 		. ( $cfg->{normalization} ? 'on' : 'off' )
 		. ', pcm_mode=live-ring-s16le'
-		. ", source_live_edge=$cfg->{sourceLiveEdgeMs}ms"
+		. ( $cfg->{format} eq 'pcm' ? ', source=direct' : ', source=decoupled-pump' )
 		. ', shim=' . catfile( $cfg->{pcmShimDir}, 'libpulse.so.0' )
 		. ' ' . _fileFingerprint( catfile( $cfg->{pcmShimDir}, 'libpulse.so.0' ) )
 		. ', prefs=' . scalar(@$normalizationFiles) . ')'
@@ -1609,6 +1610,8 @@ sub _writeShimGenerationCommand {
 	return unless defined $command;
 
 	unlink $b->{pcmShimAck} if $b->{pcmShimAck};
+	unlink $b->{pcmPumpAck}
+		if $b->{format} ne 'pcm' && $b->{pcmPumpAck};
 	if ( !open( $fh, '>', $tmp ) ) {
 		$log->error("can't create PCM shim generation command $tmp: $!");
 		return;
@@ -1636,8 +1639,19 @@ sub _shimGenerationAcknowledged {
 	return unless open( my $fh, '<', $path );
 	my $line = <$fh>;
 	close $fh;
-	return Plugins::SpotifySoloist::StreamSemantics::shimGenerationAcknowledged(
+	my $shimAcknowledged =
+		Plugins::SpotifySoloist::StreamSemantics::shimGenerationAcknowledged(
 		$line, $requestId,
+	);
+	return unless $shimAcknowledged;
+	return 1 if $b->{format} eq 'pcm';
+
+	my $pumpPath = $b->{pcmPumpAck} or return;
+	return unless open( my $pumpFh, '<', $pumpPath );
+	my $pumpLine = <$pumpFh>;
+	close $pumpFh;
+	return Plugins::SpotifySoloist::StreamSemantics::shimGenerationAcknowledged(
+		$pumpLine, $requestId,
 	);
 }
 
@@ -1671,7 +1685,9 @@ sub _finishPcmTimelineResync {
 		$log->warn(
 			"PCM shim request $requestId acknowledgement timed out after "
 			. ( $pending->{attempts} || 1 )
-			. " attempts (control=$b->{pcmShimControl}, ack=$b->{pcmShimAck}); "
+			. " attempts (control=$b->{pcmShimControl}, shim_ack=$b->{pcmShimAck}"
+			. ( $b->{format} eq 'pcm' ? '' : ", pump_ack=$b->{pcmPumpAck}" )
+			. '); '
 			. 'replacing the LMS handler without terminating the healthy bridge'
 		);
 	}
