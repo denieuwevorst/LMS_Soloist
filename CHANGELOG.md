@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.3.71
 
 - Fail plugin startup with a clear package-mismatch error when `Plugin.pm` and
   `StreamSemantics.pm` do not provide the same API, and validate that contract
