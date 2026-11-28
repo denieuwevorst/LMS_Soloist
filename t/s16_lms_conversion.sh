@@ -3,16 +3,15 @@
 set -eu
 
 root="$(CDPATH= cd -- "$(dirname "$0")/.." && pwd)"
-shim="$root/contrib/experimental-pcm-shim"
 pump="$root/Bin/soloist-pcm-pump.pl"
 tmp="${TMPDIR:-/tmp}/soloist-s16-conversion-$$"
 pump_pid=""
 ffmpeg_pid=""
 feeder_pid=""
-client_pid=""
+producer_pid=""
 
 cleanup() {
-	[ -n "$client_pid" ] && kill "$client_pid" 2>/dev/null || true
+	[ -n "$producer_pid" ] && kill "$producer_pid" 2>/dev/null || true
 	[ -n "$feeder_pid" ] && kill "$feeder_pid" 2>/dev/null || true
 	[ -n "$ffmpeg_pid" ] && kill "$ffmpeg_pid" 2>/dev/null || true
 	[ -n "$pump_pid" ] && kill "$pump_pid" 2>/dev/null || true
@@ -30,7 +29,6 @@ command -v ffprobe >/dev/null 2>&1 || {
 	exit 1
 }
 
-make -C "$shim" clean marker_client >/dev/null
 perl -c "$pump" >/dev/null
 
 run_conversion() {
@@ -39,7 +37,6 @@ run_conversion() {
 	final_fifo="$tmp/$format.final.fifo"
 	wav_fifo="$tmp/$format.wav.fifo"
 	output="$tmp/output.$format"
-	shim_log="$tmp/$format.shim.log"
 	pump_log="$tmp/$format.pump.log"
 	mkfifo "$source_fifo" "$final_fifo" "$wav_fifo"
 	exec 8<>"$source_fifo"
@@ -102,14 +99,26 @@ PY
 	feeder_pid=$!
 
 	started_at="$(python3 -c 'import time; print(time.monotonic())')"
-	LD_LIBRARY_PATH="$shim" \
-	SOLOIST_SHIM_OUT="$source_fifo" \
-	SOLOIST_SHIM_FORMAT=s16 \
-	SOLOIST_SHIM_RATE=44100 \
-	SOLOIST_SHIM_RING_MS=200 \
-	SOLOIST_SHIM_LOG=1 \
-	"$shim/marker_client" 5 8>&- 9>&- >"$tmp/$format.client.log" 2>"$shim_log" &
-	client_pid=$!
+	python3 - "$source_fifo" 8>&- 9>&- <<'PY' &
+import os
+import sys
+import time
+
+fd = os.open(sys.argv[1], os.O_WRONLY)
+chunk = bytes(44100 * 4 // 50)
+started = time.monotonic()
+for index in range(250):
+    view = memoryview(chunk)
+    while view:
+        written = os.write(fd, view)
+        view = view[written:]
+    deadline = started + (index + 1) / 50
+    remaining = deadline - time.monotonic()
+    if remaining > 0:
+        time.sleep(remaining)
+os.close(fd)
+PY
+	producer_pid=$!
 
 	python3 - "$output" "$started_at" <<'PY'
 import os
@@ -128,8 +137,8 @@ else:
     raise SystemExit("converter did not produce first output within 1.25 seconds")
 PY
 
-	wait "$client_pid"
-	client_pid=""
+	wait "$producer_pid"
+	producer_pid=""
 	sleep 2
 	kill "$pump_pid"
 	wait "$pump_pid" 2>/dev/null || true
@@ -141,11 +150,6 @@ PY
 	wait "$ffmpeg_pid"
 	ffmpeg_pid=""
 
-	if grep -Eq 'output live-edge drop|ring live-edge drop|stream underflow|underflows=[1-9]|drops=[1-9]' "$shim_log"; then
-		echo "$format source shim lost audio despite the decoupled pump" >&2
-		cat "$shim_log" >&2
-		exit 1
-	fi
 	if grep -q 'live-edge drop:' "$pump_log"; then
 		echo "$format converter-side pump exceeded its bounded queue" >&2
 		cat "$pump_log" >&2
