@@ -442,7 +442,10 @@ sub getStreamBitrate {
 	my ( $self, $maxRate ) = @_;
 	my $bitrate = ${*$self}{bitrate};
 	return $maxRate unless defined $bitrate;
-	return $maxRate && $bitrate > $maxRate ? $maxRate : $bitrate;
+	# $maxRate describes the player's final-output capability. This handler
+	# supplies LMS's transcoder input, which must be drained at the full S16LE
+	# byte rate even when the encoded FLAC/MP3 output is capped below it.
+	return $bitrate;
 }
 
 sub getMetadataFor {

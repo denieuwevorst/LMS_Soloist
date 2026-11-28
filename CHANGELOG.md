@@ -31,6 +31,10 @@
   LMS FIFO, absorbing converter attachment and source-read stalls without
   changing Pulse producer timing or adding a bridge-side encoder. Generation
   replacement waits for both shim and pump flush acknowledgements.
+- Keep LMS transcoder input pacing at the exact 1,411.2 kbps S16LE source rate.
+  The player's lower final-output bitrate cap must not throttle protocol reads;
+  a 1,200 kbps cap otherwise leaves a deterministic 26,400-byte-per-second
+  deficit that fills the bounded FLAC/MP3 pump and discards live PCM.
 - Associate first-player-status diagnostics with the exact opened stream
   generation, ignoring stale status from the outgoing handler. Add a derived
   transition-timing milestone that separates flush, handler replacement, PCM

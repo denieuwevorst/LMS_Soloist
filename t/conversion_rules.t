@@ -50,6 +50,11 @@ like( $plugin, qr/\$format eq 'pcm' \? 'wav'/, 'PCM uses LMS native WAV delivery
 like( $plugin, qr/'s16m' \. int\( \$bitrateBps \/ 1000 \)/, 'MP3 preference selects a bitrate-specific LMS source type' );
 like( $plugin, qr/contentType.*?'s16m'.*?:\s*'s16f'/s, 'FLAC preference selects the LMS FLAC source type' );
 like( $plugin, qr/sourceBitrateBps\s*=>\s*1_411_200/, 'source metadata publishes exact S16LE bitrate' );
+like(
+	$handler,
+	qr/sub getStreamBitrate.*?return \$bitrate;/s,
+	'LMS source pacing uses the full S16LE input rate instead of the encoded-output cap',
+);
 like( $plugin, qr/sourceSampleSize\s*=>\s*16/, 'source metadata publishes 16-bit samples' );
 like( $plugin, qr/sourceBlockAlign\s*=>\s*4/, 'source metadata publishes stereo S16 frame alignment' );
 like( $handler, qr/\$\{\*\$self\}\{prefix\}\s*=\s*_wavHeader\(\)/, 'every LMS source generation starts with a truthful S16 WAV header' );

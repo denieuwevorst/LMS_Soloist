@@ -187,4 +187,19 @@ rate="$(ffprobe -v error -select_streams a:0 \
 	exit 1
 }
 
+for format in flac mp3; do
+	duration="$(ffprobe -v error \
+		-show_entries format=duration \
+		-of default=noprint_wrappers=1:nokey=1 "$tmp/output.$format")"
+	python3 - "$format" "$duration" <<'PY'
+import sys
+
+fmt, duration = sys.argv[1], float(sys.argv[2])
+if not 4.9 <= duration <= 5.1:
+    raise SystemExit(
+        f"{fmt} output duration {duration:.3f}s proves PCM was lost or duplicated"
+    )
+PY
+done
+
 echo "decoupled LMS FLAC/MP3 input survived 700 ms startup and recurring 400 ms no-read windows without source loss"

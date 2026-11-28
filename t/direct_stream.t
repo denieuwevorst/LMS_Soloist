@@ -117,6 +117,11 @@ is_deeply(
 );
 is( $handler->contentType, 'wav', 'declares the LMS WAV content type' );
 is( $handler->getStreamBitrate(2_000_000), 1_411_200, 'declares PCM bitrate' );
+is(
+	$handler->getStreamBitrate(1_200_000),
+	1_411_200,
+	'does not throttle PCM source reads to the player output bitrate cap',
+);
 is( $song->samplerate, 44100, 'sets PCM sample rate' );
 is( $song->samplesize, 16, 'sets PCM sample size' );
 is( $song->channels, 2, 'sets PCM channels' );
@@ -253,9 +258,9 @@ my $flacHandler = Plugins::SpotifySoloist::ProtocolHandler->new({
 ok( $flacHandler, 'opens the S16 source selected for LMS FLAC conversion' );
 is( $flacHandler->contentType, 's16f', 'declares the custom LMS S16-to-FLAC source type' );
 is(
-	$flacHandler->getStreamBitrate(1_500_000),
+	$flacHandler->getStreamBitrate(1_200_000),
 	1_411_200,
-	'declares the exact S16 source bitrate to the LMS converter',
+	'keeps LMS FLAC converter input at the exact S16 source bitrate above the player cap',
 );
 is( $flacSong->bitrate, 1_411_200, 'sets the LMS converter input bitrate' );
 is( $flacSong->samplerate, 44_100, 'sets the converter input sample rate' );
