@@ -16,8 +16,9 @@ mkfifo "$fifo"
 make -C "$shim" clean marker_client >/dev/null
 
 # Match the bridge guard, then consume faster than real time in bursts with
-# deliberate 205 ms scheduler gaps matching field LMS reads. The 64 KiB
-# handoff FIFO must absorb each gap without touching the 200 ms producer ring.
+# deliberate 400 ms scheduler gaps that exceed both the 200 ms producer
+# budget and the 64 KiB kernel FIFO. The in-flight writer must retain every
+# accepted frame until the reader resumes.
 exec 9<>"$fifo"
 python3 - "$fifo" "$raw" <<'PY' &
 import os, sys, time
@@ -25,8 +26,8 @@ fifo, output = sys.argv[1:]
 target = 5 * 44100 * 4
 fd = os.open(fifo, os.O_RDONLY | os.O_NONBLOCK)
 data = bytearray()
-next_pause = 44100 * 4 // 4
-deadline = time.monotonic() + 8
+next_pause = 44100 * 4
+deadline = time.monotonic() + 10
 while len(data) < target and time.monotonic() < deadline:
     try:
         chunk = os.read(fd, min(16384, target - len(data)))
@@ -38,8 +39,8 @@ while len(data) < target and time.monotonic() < deadline:
         continue
     data.extend(chunk)
     if len(data) >= next_pause:
-        time.sleep(0.205)
-        next_pause += 44100 * 4 // 4
+        time.sleep(0.400)
+        next_pause += 44100 * 4
 os.close(fd)
 with open(output, "wb") as handle:
     handle.write(data)
@@ -91,8 +92,8 @@ pressure = re.findall(
 )
 max_wait = max((float(row[2]) for row in pressure), default=0.0)
 max_queued = max((float(row[3]) for row in pressure), default=0.0)
-if max_wait > 50.0:
-    raise SystemExit(f"205 ms LMS pause escaped the 64 KiB handoff FIFO: {max_wait} ms")
+if not 10.0 <= max_wait <= 450.0:
+    raise SystemExit(f"400 ms LMS pause produced unexpected writer wait: {max_wait} ms")
 ages = [
     float(value)
     for value in re.findall(r"runtime summary: .*?oldest_age=([0-9.]+) ms", log)
@@ -100,10 +101,10 @@ ages = [
 if not ages:
     raise SystemExit("runtime summaries did not report oldest audio age")
 max_age = max(ages)
-if max_age > 220.0:
-    raise SystemExit(f"oldest audio exceeded live-edge age budget: {max_age} ms")
+if max_age > 650.0:
+    raise SystemExit(f"oldest preserved audio exceeded bounded recovery budget: {max_age} ms")
 print(
-    f"205 ms LMS pauses stayed lossless: "
+    f"400 ms LMS pauses stayed lossless: "
     f"max_wait={max_wait:.1f} ms producer_queue={max_queued:.1f} ms "
     f"oldest_age={max_age:.1f} ms"
 )

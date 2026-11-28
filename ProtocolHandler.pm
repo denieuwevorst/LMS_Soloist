@@ -20,6 +20,7 @@ use constant STALE_READ_GAP_SECONDS => 1.0;
 use constant STALE_DRAIN_SECONDS    => 0.25;
 use constant MAX_DRAIN_BYTES        => 4 * 1024 * 1024;
 use constant CONVERTER_CLOSE_GRACE_SECONDS => 0.12;
+use constant F_SETPIPE_SZ => 1031;
 
 sub _delayTrace {
 	my ( $self, $milestone, %fields ) = @_;
@@ -154,6 +155,7 @@ sub new {
 		return;
 	}
 	binmode($self);
+	fcntl( $self, F_SETPIPE_SZ, 65_536 );
 	my $format = $stream->{format};
 	my $initialDiscarded =
 		$format->{key} eq 'pcm' ? _drainFifo($self) : 0;
@@ -166,7 +168,8 @@ sub new {
 		|| 'unknown';
 	${*$self}{contentType} = $format->{contentType};
 	${*$self}{formatKey} = $format->{key};
-	${*$self}{bitrate} = $format->{sourceBitrateBps} || 1_411_200;
+	${*$self}{bitrate} =
+		$format->{bitrateBps} || $format->{sourceBitrateBps} || 1_411_200;
 	${*$self}{streamGeneration} = $stream->{streamGeneration} || 0;
 	${*$self}{delayDiagnostics} = $stream->{delayDiagnostics} ? 1 : 0;
 	${*$self}{transition} =
@@ -176,7 +179,7 @@ sub new {
 		);
 	${*$self}{openedAt} = Time::HiRes::time();
 	${*$self}{firstAudioReadLogged} = 0;
-	${*$self}{prefix} = _wavHeader();
+	${*$self}{prefix} = $format->{key} eq 'pcm' ? _wavHeader() : '';
 	${*$self}{lastAudioReadAt} = undef;
 	${*$self}{staleDrainUntil} = undef;
 	${*$self}{staleBytesDiscarded} = 0;
@@ -217,7 +220,7 @@ sub new {
 	my $openedAt = _delayTrace(
 		$self, 'protocol-handler-open',
 		content_type => $format->{contentType},
-		conversion => $format->{key} eq 'pcm' ? 'pcm-direct' : 'lms-transcoder',
+		conversion => $format->{key} eq 'pcm' ? 'pcm-direct' : 'bridge-encoder',
 		url => $url,
 	);
 	_noteDelayTraceProtocolMilestone(
@@ -442,9 +445,8 @@ sub getStreamBitrate {
 	my ( $self, $maxRate ) = @_;
 	my $bitrate = ${*$self}{bitrate};
 	return $maxRate unless defined $bitrate;
-	# $maxRate describes the player's final-output capability. This handler
-	# supplies LMS's transcoder input, which must be drained at the full S16LE
-	# byte rate even when the encoded FLAC/MP3 output is capped below it.
+	# The bridge supplies the final wire format. PCM reports its exact source
+	# rate; fixed-rate MP3 reports its selected encoder bitrate.
 	return $bitrate;
 }
 

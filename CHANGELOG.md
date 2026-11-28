@@ -26,15 +26,14 @@
   for generation-qualified URLs only. Normal startup retains its low-latency
   format threshold, natural transitions retain their handler, and format-aware
   byte conversion is capped at LMS's 255 KiB STRM limit.
-- Keep the Soloist-facing shim at its healthy 200 ms live edge for every
-  format. FLAC and MP3 now use an independent bounded PCM pump before the final
-  LMS FIFO, absorbing converter attachment and source-read stalls without
-  changing Pulse producer timing or adding a bridge-side encoder. Generation
-  replacement waits for both shim and pump flush acknowledgements.
-- Keep LMS transcoder input pacing at the exact 1,411.2 kbps S16LE source rate.
-  The player's lower final-output bitrate cap must not throttle protocol reads;
-  a 1,200 kbps cap otherwise leaves a deterministic 26,400-byte-per-second
-  deficit that fills the bounded FLAC/MP3 pump and discards live PCM.
+- Keep the Soloist-facing shim at its healthy 200 ms pacing for every format,
+  but retain accepted in-flight PCM across ordinary FIFO `EAGAIN` and reader
+  pauses. Only an explicit generation flush can invalidate those bytes.
+- Move FLAC and MP3 to one persistent bridge-side ffmpeg encoder behind the
+  bounded source pump. LMS now reads honest final `flc`/`mp3` streams instead
+  of attaching an asynchronous transcoder that field measurements showed
+  consuming only about 756 KiB per five seconds from an 873 KiB PCM source.
+  The pump applies bounded backpressure and never drops normal PCM.
 - Keep the shim's final FIFO handoff at 64 KiB (about 372 ms for S16LE) so
   recurring measured 205 ms LMS read pauses are absorbed without blocking the
   200 ms wall-clock writer. The previous 16 KiB handoff held only about 93 ms;
@@ -54,10 +53,9 @@
   native shim's bounded live-edge ring into one bridge-lifetime guarded FIFO,
   and the protocol handler supplies a truthful 44.1 kHz, stereo, 16-bit WAV
   stream. PCM uses no ffmpeg process.
-- Move FLAC and MP3 encoding back into LMS conversion rules. The bridge always
-  exposes the same S16LE source and never launches ffmpeg or owns an
-  intermediate encoder FIFO; missing converters surface as LMS conversion
-  errors instead of silently changing architecture.
+- Keep PCM direct and encoder-free. FLAC and MP3 use a bridge-owned encoder
+  FIFO and restart that encoder only for process failure or a discontinuous
+  generation requiring fresh stream headers; natural transitions preserve it.
 - Retain generation-qualified discontinuity URLs, request-ID flush
   acknowledgements, 64-bit frame accounting, natural-end recovery, exact shim
   preload/map verification, and prompt local-stream startup from the later

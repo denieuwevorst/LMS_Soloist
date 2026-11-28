@@ -238,11 +238,10 @@ close $generationHandler;
 
 $Plugins::SpotifySoloist::Plugin::stream->{format} = {
 	key           => 'flac',
-	contentType   => 's16f',
+	contentType   => 'flc',
 	displayFormat => 'FLAC',
 	bitrateLabel  => 'VBR (live stream)',
 	sourceBitrateBps => 1_411_200,
-	transcodeBitrateBps => 1_411_200,
 	sourceSampleSize => 16,
 	sourceBlockAlign => 4,
 	sampleRate    => 44_100,
@@ -255,20 +254,23 @@ my $flacHandler = Plugins::SpotifySoloist::ProtocolHandler->new({
 	url  => 'soloist://player-0/soloist.flac',
 	song => $flacSong,
 });
-ok( $flacHandler, 'opens the S16 source selected for LMS FLAC conversion' );
-is( $flacHandler->contentType, 's16f', 'declares the custom LMS S16-to-FLAC source type' );
+ok( $flacHandler, 'opens the final bridge-encoded FLAC stream' );
+is( $flacHandler->contentType, 'flc', 'declares the native LMS FLAC content type' );
 is(
 	$flacHandler->getStreamBitrate(1_200_000),
 	1_411_200,
-	'keeps LMS FLAC converter input at the exact S16 source bitrate above the player cap',
+	'publishes the conservative live FLAC bitrate above the player cap',
 );
-is( $flacSong->bitrate, 1_411_200, 'sets the LMS converter input bitrate' );
-is( $flacSong->samplerate, 44_100, 'sets the converter input sample rate' );
-is( $flacSong->samplesize, 16, 'sets the converter input sample size' );
-is( $flacSong->channels, 2, 'sets the converter input channel count' );
+is( $flacSong->bitrate, 1_411_200, 'sets the live FLAC bitrate estimate' );
+is( $flacSong->samplerate, 44_100, 'sets the final FLAC sample rate' );
+is( $flacSong->samplesize, 16, 'sets the final FLAC sample size' );
+is( $flacSong->channels, 2, 'sets the final FLAC channel count' );
+sysopen( $writer, $fifo, O_WRONLY | O_NONBLOCK ) or die "open FLAC FIFO writer: $!";
+syswrite( $writer, 'fLaC' ) == 4 or die "write FLAC payload: $!";
 $buffer = '';
-is( $flacHandler->sysread( $buffer, 44 ), 44, 'FLAC conversion source starts with a WAV header' );
-is( substr( $buffer, 0, 4 ), 'RIFF', 'FLAC conversion source header is WAV' );
+is( $flacHandler->sysread( $buffer, 44 ), 4, 'FLAC stream begins with bridge encoder bytes' );
+is( $buffer, 'fLaC', 'FLAC stream receives no synthetic WAV prefix' );
+close $writer;
 close $flacHandler;
 
 done_testing;

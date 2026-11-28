@@ -101,4 +101,63 @@ if grep -q 'live-edge drop:' "$tmp/pump.log"; then
 	exit 1
 fi
 
-echo "PCM pump generation flush discarded stale FIFO data and retained fresh PCM"
+kill "$pump_pid"
+wait "$pump_pid" 2>/dev/null || true
+pump_pid=""
+rm -f "$pump_ack"
+printf '2 track\n' > "$control"
+printf '2 8 track\n' > "$shim_ack"
+
+SOLOIST_PCM_PUMP_SOURCE="$source_fifo" \
+SOLOIST_PCM_PUMP_OUTPUT="$output_fifo" \
+SOLOIST_PCM_PUMP_CONTROL="$control" \
+SOLOIST_PCM_PUMP_SHIM_ACK="$shim_ack" \
+SOLOIST_PCM_PUMP_ACK="$pump_ack" \
+SOLOIST_PCM_PUMP_BUFFER_MS=800 \
+SOLOIST_PCM_PUMP_RESTART_ENCODER=1 \
+perl "$pump" >"$tmp/restart.stdout" 2>"$tmp/restart.log" &
+pump_pid=$!
+
+set +e
+wait "$pump_pid"
+status=$?
+set -e
+pump_pid=""
+[ "$status" -eq 75 ] || {
+	echo "generation restart pump exited with $status instead of 75" >&2
+	exit 1
+}
+[ ! -f "$pump_ack" ] || {
+	echo "pump acknowledged before the encoder restart" >&2
+	exit 1
+}
+grep -q 'generation restart: request=2' "$tmp/restart.log"
+
+SOLOIST_PCM_PUMP_SOURCE="$source_fifo" \
+SOLOIST_PCM_PUMP_OUTPUT="$output_fifo" \
+SOLOIST_PCM_PUMP_CONTROL="$control" \
+SOLOIST_PCM_PUMP_SHIM_ACK="$shim_ack" \
+SOLOIST_PCM_PUMP_ACK="$pump_ack" \
+SOLOIST_PCM_PUMP_BUFFER_MS=800 \
+SOLOIST_PCM_PUMP_RESTART_ENCODER=1 \
+SOLOIST_PCM_PUMP_ENCODER_FRESH=1 \
+perl "$pump" >"$tmp/fresh.stdout" 2>"$tmp/fresh.log" &
+pump_pid=$!
+
+python3 - "$pump_ack" <<'PY'
+import os
+import sys
+import time
+
+path = sys.argv[1]
+deadline = time.monotonic() + 1
+while time.monotonic() < deadline:
+    if os.path.exists(path) and open(path, encoding="utf-8").read().startswith("2 "):
+        break
+    time.sleep(0.01)
+else:
+    raise SystemExit("fresh encoder pump did not acknowledge generation restart")
+PY
+grep -q 'generation flush: request=2' "$tmp/fresh.log"
+
+echo "PCM pump generation flush retained fresh PCM and restarts compressed encoder headers"

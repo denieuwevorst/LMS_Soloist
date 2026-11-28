@@ -12,10 +12,14 @@ my $sourcePath = $ENV{SOLOIST_PCM_PUMP_SOURCE}
 	or die "SOLOIST_PCM_PUMP_SOURCE is required\n";
 my $outputPath = $ENV{SOLOIST_PCM_PUMP_OUTPUT}
 	or die "SOLOIST_PCM_PUMP_OUTPUT is required\n";
+my $finalOutputPath = $ENV{SOLOIST_PCM_PUMP_FINAL_OUTPUT} || '';
 my $controlPath = $ENV{SOLOIST_PCM_PUMP_CONTROL} || '';
 my $shimAckPath = $ENV{SOLOIST_PCM_PUMP_SHIM_ACK} || '';
 my $pumpAckPath = $ENV{SOLOIST_PCM_PUMP_ACK} || '';
 my $bufferMs = $ENV{SOLOIST_PCM_PUMP_BUFFER_MS} || 800;
+my $restartEncoder = $ENV{SOLOIST_PCM_PUMP_RESTART_ENCODER} ? 1 : 0;
+my $encoderFresh = $ENV{SOLOIST_PCM_PUMP_ENCODER_FRESH} ? 1 : 0;
+my $fatalOutput = $ENV{SOLOIST_PCM_PUMP_FATAL_OUTPUT} ? 1 : 0;
 my $frameBytes = 4;
 my $bytesPerSecond = 44_100 * $frameBytes;
 my $maxQueuedBytes = int( $bytesPerSecond * $bufferMs / 1000 );
@@ -87,14 +91,14 @@ my $output = _openFifo( $outputPath, O_WRONLY, 'output' ) or exit 0;
 fcntl( $output, F_SETPIPE_SZ, 16_384 );
 my $queue = '';
 my $pendingRequest;
-my $lastAckedRequest = 0;
+my $lastAckedRequest = _requestIdFromFile($pumpAckPath) || 0;
 my $holdOutputUntil = 0;
 my $nextControlCheck = 0;
 my $nextSummary = time() + 5;
 my $readBytes = 0;
 my $writtenBytes = 0;
-my $droppedBytes = 0;
 my $maxQueued = 0;
+my $pressureSince;
 
 print STDERR
 	"[soloist-pump] started source=$sourcePath output=$outputPath "
@@ -128,20 +132,39 @@ while ( !$stopping ) {
 			$queue = '';
 			my $sourceDiscarded = _drainFifo($sourcePath);
 			my $outputDiscarded = _drainFifo($outputPath);
+			my $finalDiscarded =
+				$finalOutputPath ? _drainFifo($finalOutputPath) : 0;
+			if ( $restartEncoder && !$encoderFresh ) {
+				print STDERR
+					"[soloist-pump] generation restart: request=$pendingRequest "
+					. "queued=$queued source=$sourceDiscarded "
+					. "encoder_input=$outputDiscarded final=$finalDiscarded bytes\n";
+				close $source;
+				close $output;
+				exit 75;
+			}
 			$lastAckedRequest = $pendingRequest;
 			_publishAck($lastAckedRequest);
+			$encoderFresh = 0;
 			$holdOutputUntil = $now + 0.15;
 			print STDERR
 				"[soloist-pump] generation flush: request=$lastAckedRequest "
-				. "queued=$queued source=$sourceDiscarded output=$outputDiscarded bytes\n";
+				. "queued=$queued source=$sourceDiscarded "
+				. "output=$outputDiscarded final=$finalDiscarded bytes\n";
 			undef $pendingRequest;
 			$worked = 1;
 		}
 	}
 
 	for ( 1 .. 16 ) {
+		last if length($queue) >= $maxQueuedBytes;
 		my $chunk = '';
-		my $read = sysread( $source, $chunk, 16_384 );
+		my $available = $maxQueuedBytes - length($queue);
+		my $read = sysread(
+			$source,
+			$chunk,
+			$available < 16_384 ? $available : 16_384,
+		);
 		if ( defined $read ) {
 			last unless $read;
 			$queue .= $chunk;
@@ -157,15 +180,14 @@ while ( !$stopping ) {
 		last;
 	}
 
-	if ( length($queue) > $maxQueuedBytes ) {
-		my $drop = length($queue) - $maxQueuedBytes;
-		$drop += ( $frameBytes - $drop % $frameBytes ) % $frameBytes;
-		$drop = length($queue) if $drop > length($queue);
-		substr( $queue, 0, $drop, '' );
-		$droppedBytes += $drop;
-		print STDERR
-			"[soloist-pump] live-edge drop: $drop bytes "
-			. "after converter exceeded ${bufferMs}ms queue\n";
+	if ( length($queue) >= $maxQueuedBytes ) {
+		$pressureSince = $now unless defined $pressureSince;
+	}
+	elsif ( defined $pressureSince ) {
+		printf STDERR
+			"[soloist-pump] queue pressure cleared after %.1f ms without dropping PCM\n",
+			1000 * ( $now - $pressureSince );
+		undef $pressureSince;
 	}
 	$maxQueued = length($queue) if length($queue) > $maxQueued;
 
@@ -186,6 +208,12 @@ while ( !$stopping ) {
 			if ( $! != EPIPE ) {
 				warn "[soloist-pump] output write failed: $!; reopening\n";
 			}
+			if ($fatalOutput) {
+				warn "[soloist-pump] encoder input failed: $!; pipeline restart required\n";
+				close $source;
+				close $output;
+				exit 74;
+			}
 			close $output;
 			$output = _openFifo( $outputPath, O_WRONLY, 'output' ) or last;
 			fcntl( $output, F_SETPIPE_SZ, 16_384 ) if $output;
@@ -196,14 +224,13 @@ while ( !$stopping ) {
 	if ( $now >= $nextSummary ) {
 		printf STDERR
 			"[soloist-pump] runtime summary: read=%d written=%d queued=%.1f ms "
-			. "max_queued=%.1f ms drops=%.1f ms pending=%s\n",
+			. "max_queued=%.1f ms drops=0.0 ms pending=%s\n",
 			$readBytes,
 			$writtenBytes,
 			1000 * length($queue) / $bytesPerSecond,
 			1000 * $maxQueued / $bytesPerSecond,
-			1000 * $droppedBytes / $bytesPerSecond,
 			defined $pendingRequest ? $pendingRequest : 'none';
-		$readBytes = $writtenBytes = $droppedBytes = $maxQueued = 0;
+		$readBytes = $writtenBytes = $maxQueued = 0;
 		$nextSummary = $now + 5;
 	}
 

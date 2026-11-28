@@ -66,26 +66,27 @@ for each Soloist process.
 ```text
 Soloist
   -> this libpulse.so.0
-  -> 200 ms bounded live-edge ring
+  -> 200 ms paced ring with lossless in-flight retry
   -> direct player_<slot>/audio.fifo (PCM), or
-     player_<slot>/pcm-source.fifo -> 800 ms PCM pump -> audio.fifo (FLAC/MP3)
+     player_<slot>/pcm-source.fifo -> 800 ms PCM pump
+       -> persistent bridge ffmpeg -> audio.fifo (FLAC/MP3)
   -> soloist:// protocol handler
-  -> LMS native WAV path or LMS FLAC/MP3 conversion
+  -> LMS native WAV/FLAC/MP3 path
   -> player
 ```
 
-The protocol handler adds a streaming WAV header when LMS opens the FIFO; it
-does not encode or alter the PCM payload. The bridge never starts ffmpeg.
+The protocol handler adds a streaming WAV header only for PCM. FLAC/MP3 are
+already encoded by one persistent bridge-side ffmpeg process.
 
 `pa_stream_write` only copies complete frames into the bounded ring. The writer
 thread transmits available frames immediately with nonblocking FIFO writes.
-Temporary FIFO `EAGAIN` is retried while the 200 ms ring budget has not been
-superseded. Direct PCM therefore retains its low-latency path. For FLAC and
-MP3, `soloist-pcm-pump.pl` continuously drains a dedicated source FIFO into an
-independent 800 ms bounded queue before the final FIFO. That queue absorbs LMS
-converter attachment and source-read stalls without changing Pulse producer
-timing. If the converter remains slow beyond that budget, the pump discards the
-oldest complete frames and logs the loss, keeping playback near the live edge.
+Temporary FIFO `EAGAIN` is retried without discarding an accepted in-flight
+chunk; only a generation flush invalidates queued audio. Direct PCM therefore
+retains its low-latency converter-free path through ordinary LMS reader pauses.
+For FLAC and MP3, `soloist-pcm-pump.pl` continuously drains a dedicated source
+FIFO into an independent 800 ms bounded queue feeding persistent ffmpeg. At the
+queue limit the pump stops reading and applies explicit backpressure instead of
+silently dropping PCM.
 
 Generation command files contain `<request-id> <reason>`. The request ID is
 independent from the shim's internal audio generation, so Pulse flushes cannot
@@ -106,7 +107,7 @@ and inspect the player's `bridge.log`. The bridge maps this setting to
 A successfully loaded build logs its configured ring depth and control path:
 
 ```text
-[soloist-shim] loaded build 2026-11-28.1-fifo64: mode=live-ring ... ring_ms=200 ...
+[soloist-shim] loaded build 2026-11-28.2-lossless: mode=live-ring ... ring_ms=200 ...
 ```
 
 Level `2` also logs Pulse API activity. A constructor/load marker without

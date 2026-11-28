@@ -7,12 +7,12 @@ pump="$root/Bin/soloist-pcm-pump.pl"
 tmp="${TMPDIR:-/tmp}/soloist-s16-conversion-$$"
 pump_pid=""
 ffmpeg_pid=""
-feeder_pid=""
+reader_pid=""
 producer_pid=""
 
 cleanup() {
 	[ -n "$producer_pid" ] && kill "$producer_pid" 2>/dev/null || true
-	[ -n "$feeder_pid" ] && kill "$feeder_pid" 2>/dev/null || true
+	[ -n "$reader_pid" ] && kill "$reader_pid" 2>/dev/null || true
 	[ -n "$ffmpeg_pid" ] && kill "$ffmpeg_pid" 2>/dev/null || true
 	[ -n "$pump_pid" ] && kill "$pump_pid" 2>/dev/null || true
 	rm -rf "$tmp"
@@ -21,11 +21,11 @@ trap cleanup EXIT INT TERM
 mkdir "$tmp"
 
 command -v ffmpeg >/dev/null 2>&1 || {
-	echo "ffmpeg is required to exercise LMS conversion commands" >&2
+	echo "ffmpeg is required to exercise bridge conversion" >&2
 	exit 1
 }
 command -v ffprobe >/dev/null 2>&1 || {
-	echo "ffprobe is required to validate LMS conversion output" >&2
+	echo "ffprobe is required to validate bridge conversion output" >&2
 	exit 1
 }
 
@@ -33,82 +33,86 @@ perl -c "$pump" >/dev/null
 
 run_conversion() {
 	format="$1"
+	bitrate="$2"
 	source_fifo="$tmp/$format.source.fifo"
+	encoder_fifo="$tmp/$format.encoder.fifo"
 	final_fifo="$tmp/$format.final.fifo"
-	wav_fifo="$tmp/$format.wav.fifo"
 	output="$tmp/output.$format"
+	decoded="$tmp/$format.decoded.s16"
 	pump_log="$tmp/$format.pump.log"
-	mkfifo "$source_fifo" "$final_fifo" "$wav_fifo"
-	exec 8<>"$source_fifo"
-	exec 9<>"$final_fifo"
+	mkfifo "$source_fifo" "$encoder_fifo" "$final_fifo"
 
-	SOLOIST_PCM_PUMP_SOURCE="$source_fifo" \
-	SOLOIST_PCM_PUMP_OUTPUT="$final_fifo" \
-	SOLOIST_PCM_PUMP_BUFFER_MS=800 \
-	perl "$pump" 8>&- 9>&- >"$tmp/$format.pump.stdout" 2>"$pump_log" &
-	pump_pid=$!
+	python3 - "$final_fifo" "$output" <<'PY' &
+import fcntl
+import os
+import sys
+import time
+
+fifo, output = sys.argv[1:]
+fd = os.open(fifo, os.O_RDONLY)
+try:
+    fcntl.fcntl(fd, 1031, 65536)
+except OSError:
+    pass
+started = time.monotonic()
+next_pause = started + 1.0
+with open(output, "wb") as target:
+    while True:
+        now = time.monotonic()
+        if now >= next_pause:
+            time.sleep(0.40)
+            next_pause += 1.0
+        chunk = os.read(fd, 4096)
+        if not chunk:
+            break
+        target.write(chunk)
+os.close(fd)
+PY
+	reader_pid=$!
 
 	if [ "$format" = "flac" ]; then
 		ffmpeg -y -nostdin -hide_banner -loglevel error \
-			-probesize 64 -analyzeduration 0 -i "$wav_fifo" \
-			-map 0:a:0 -c:a flac -sample_fmt s16 -compression_level 0 \
-			-flush_packets 1 -f flac "$output" 8>&- 9>&- &
+			-f s16le -ar 44100 -ac 2 -blocksize 4096 \
+			-i "$encoder_fifo" -map 0:a:0 \
+			-c:a flac -sample_fmt s16 -compression_level 0 \
+			-flush_packets 1 -f flac "$final_fifo" &
 	else
 		ffmpeg -y -nostdin -hide_banner -loglevel error \
-			-probesize 64 -analyzeduration 0 -i "$wav_fifo" \
-			-map 0:a:0 -c:a libmp3lame -b:a 320k \
-			-flush_packets 1 -f mp3 "$output" 8>&- 9>&- &
+			-f s16le -ar 44100 -ac 2 -blocksize 4096 \
+			-i "$encoder_fifo" -map 0:a:0 \
+			-c:a libmp3lame -b:a "$bitrate" \
+			-flush_packets 1 -f mp3 "$final_fifo" &
 	fi
 	ffmpeg_pid=$!
+	encoder_pid="$ffmpeg_pid"
 
-	python3 - "$final_fifo" "$wav_fifo" 8>&- 9>&- <<'PY' &
+	SOLOIST_PCM_PUMP_SOURCE="$source_fifo" \
+	SOLOIST_PCM_PUMP_OUTPUT="$encoder_fifo" \
+	SOLOIST_PCM_PUMP_BUFFER_MS=800 \
+	SOLOIST_PCM_PUMP_FATAL_OUTPUT=1 \
+	perl "$pump" >"$tmp/$format.pump.stdout" 2>"$pump_log" &
+	pump_pid=$!
+
+	started_at="$(python3 -c 'import time; print(time.monotonic())')"
+	python3 - "$source_fifo" <<'PY' &
 import os
 import struct
 import sys
 import time
 
-final_fifo, wav_fifo = sys.argv[1:]
-pause_every = 44100 * 4 // 2
-source = os.open(final_fifo, os.O_RDONLY)
-wav = os.open(wav_fifo, os.O_WRONLY)
-header = (
-    b"RIFF" + struct.pack("<I", 0xffffffff) + b"WAVEfmt "
-    + struct.pack("<IHHIIHH", 16, 1, 2, 44100, 44100 * 4, 4, 16)
-    + b"data" + struct.pack("<I", 0xffffffff)
-)
-os.write(wav, header)
-time.sleep(0.70)
-total = 0
-since_pause = 0
-while True:
-    chunk = os.read(source, 4096)
-    if not chunk:
-        break
-    view = memoryview(chunk)
-    while view:
-        written = os.write(wav, view)
-        view = view[written:]
-    total += len(chunk)
-    since_pause += len(chunk)
-    if since_pause >= pause_every:
-        time.sleep(0.40)
-        since_pause = 0
-os.close(wav)
-os.close(source)
-PY
-	feeder_pid=$!
-
-	started_at="$(python3 -c 'import time; print(time.monotonic())')"
-	python3 - "$source_fifo" 8>&- 9>&- <<'PY' &
-import os
-import sys
-import time
-
 fd = os.open(sys.argv[1], os.O_WRONLY)
-chunk = bytes(44100 * 4 // 50)
+frames_per_chunk = 44100 // 50
 started = time.monotonic()
-for index in range(250):
-    view = memoryview(chunk)
+state = 0x12345678
+for index in range(500):
+    samples = bytearray()
+    for _ in range(frames_per_chunk):
+        state = (1664525 * state + 1013904223) & 0xffffffff
+        left = ((state >> 8) & 0xffff) - 32768
+        state = (1664525 * state + 1013904223) & 0xffffffff
+        right = ((state >> 8) & 0xffff) - 32768
+        samples += struct.pack("<hh", left, right)
+    view = memoryview(samples)
     while view:
         written = os.write(fd, view)
         view = view[written:]
@@ -120,60 +124,60 @@ os.close(fd)
 PY
 	producer_pid=$!
 
-	python3 - "$output" "$started_at" <<'PY'
-import os
-import sys
-import time
-
-output, started = sys.argv[1], float(sys.argv[2])
-deadline = started + 1.25
-while time.monotonic() < deadline:
-    if os.path.exists(output) and os.path.getsize(output) > 0:
-        elapsed = time.monotonic() - started
-        print(f"first encoded bytes after {elapsed * 1000:.0f} ms")
-        break
-    time.sleep(0.01)
-else:
-    raise SystemExit("converter did not produce first output within 1.25 seconds")
-PY
+	sleep 5
+	kill -0 "$encoder_pid" 2>/dev/null || {
+		echo "$format bridge encoder did not remain stable for five seconds" >&2
+		exit 1
+	}
 
 	wait "$producer_pid"
 	producer_pid=""
-	sleep 2
+	produced_at="$(python3 -c 'import time; print(time.monotonic())')"
+	sleep 1
 	kill "$pump_pid"
 	wait "$pump_pid" 2>/dev/null || true
 	pump_pid=""
-	exec 8>&-
-	exec 9>&-
-	wait "$feeder_pid"
-	feeder_pid=""
 	wait "$ffmpeg_pid"
 	ffmpeg_pid=""
+	wait "$reader_pid"
+	reader_pid=""
+	finished_at="$(python3 -c 'import time; print(time.monotonic())')"
 
-	if grep -q 'live-edge drop:' "$pump_log"; then
-		echo "$format converter-side pump exceeded its bounded queue" >&2
+	if grep -Eq 'live-edge drop:|ring live-edge drop:|output live-edge drop:' "$pump_log"; then
+		echo "$format bridge pipeline dropped PCM" >&2
 		cat "$pump_log" >&2
 		exit 1
 	fi
-	grep -q 'runtime summary:' "$pump_log"
-	python3 - "$pump_log" <<'PY'
-import re
+	grep -q 'drops=0.0 ms' "$pump_log"
+
+	ffmpeg -y -nostdin -hide_banner -loglevel error \
+		-i "$output" -f s16le -acodec pcm_s16le "$decoded"
+	python3 - "$format" "$decoded" "$started_at" "$produced_at" "$finished_at" <<'PY'
+import os
 import sys
 
-text = open(sys.argv[1], encoding="utf-8").read()
-queues = [
-    float(value)
-    for value in re.findall(r"max_queued=([0-9.]+) ms", text)
-]
-if not queues or max(queues) < 300.0:
-    raise SystemExit("test did not reproduce sustained converter backpressure")
-if max(queues) >= 800.0:
-    raise SystemExit(f"converter queue exceeded budget: {max(queues):.1f} ms")
+fmt, decoded, started, produced, finished = sys.argv[1:]
+frames = os.path.getsize(decoded) // 4
+producer_elapsed = float(produced) - float(started)
+pipeline_elapsed = float(finished) - float(started)
+if not 9.8 <= producer_elapsed <= 10.5:
+    raise SystemExit(f"{fmt} source pacing drifted: {producer_elapsed:.3f}s")
+if fmt == "flac":
+    if frames != 441000:
+        raise SystemExit(f"FLAC decoded {frames} frames instead of 441000")
+elif not 439848 <= frames <= 442152:
+    raise SystemExit(f"MP3 decoded unexpected frame count: {frames}")
+if pipeline_elapsed > 12.5:
+    raise SystemExit(f"{fmt} pipeline failed realtime throughput: {pipeline_elapsed:.3f}s")
+print(
+    f"{fmt}: decoded_frames={frames} producer={producer_elapsed:.3f}s "
+    f"pipeline={pipeline_elapsed:.3f}s"
+)
 PY
 }
 
-run_conversion flac
-run_conversion mp3
+run_conversion flac 320k
+run_conversion mp3 320k
 
 bits="$(ffprobe -v error -select_streams a:0 \
 	-show_entries stream=bits_per_raw_sample \
@@ -191,19 +195,4 @@ rate="$(ffprobe -v error -select_streams a:0 \
 	exit 1
 }
 
-for format in flac mp3; do
-	duration="$(ffprobe -v error \
-		-show_entries format=duration \
-		-of default=noprint_wrappers=1:nokey=1 "$tmp/output.$format")"
-	python3 - "$format" "$duration" <<'PY'
-import sys
-
-fmt, duration = sys.argv[1], float(sys.argv[2])
-if not 4.9 <= duration <= 5.1:
-    raise SystemExit(
-        f"{fmt} output duration {duration:.3f}s proves PCM was lost or duplicated"
-    )
-PY
-done
-
-echo "decoupled LMS FLAC/MP3 input survived 700 ms startup and recurring 400 ms no-read windows without source loss"
+echo "persistent bridge FLAC/MP3 encoders survived recurring 400 ms LMS reader stalls without PCM loss"
