@@ -48,23 +48,23 @@ run_conversion() {
 	SOLOIST_PCM_PUMP_SOURCE="$source_fifo" \
 	SOLOIST_PCM_PUMP_OUTPUT="$final_fifo" \
 	SOLOIST_PCM_PUMP_BUFFER_MS=800 \
-	perl "$pump" >"$tmp/$format.pump.stdout" 2>"$pump_log" &
+	perl "$pump" 8>&- 9>&- >"$tmp/$format.pump.stdout" 2>"$pump_log" &
 	pump_pid=$!
 
 	if [ "$format" = "flac" ]; then
 		ffmpeg -y -nostdin -hide_banner -loglevel error \
 			-probesize 64 -analyzeduration 0 -i "$wav_fifo" \
 			-map 0:a:0 -c:a flac -sample_fmt s16 -compression_level 0 \
-			-flush_packets 1 -f flac "$output" &
+			-flush_packets 1 -f flac "$output" 8>&- 9>&- &
 	else
 		ffmpeg -y -nostdin -hide_banner -loglevel error \
 			-probesize 64 -analyzeduration 0 -i "$wav_fifo" \
 			-map 0:a:0 -c:a libmp3lame -b:a 320k \
-			-flush_packets 1 -f mp3 "$output" &
+			-flush_packets 1 -f mp3 "$output" 8>&- 9>&- &
 	fi
 	ffmpeg_pid=$!
 
-	python3 - "$final_fifo" "$wav_fifo" <<'PY' &
+	python3 - "$final_fifo" "$wav_fifo" 8>&- 9>&- <<'PY' &
 import os
 import struct
 import sys
@@ -108,7 +108,7 @@ PY
 	SOLOIST_SHIM_RATE=44100 \
 	SOLOIST_SHIM_RING_MS=200 \
 	SOLOIST_SHIM_LOG=1 \
-	"$shim/marker_client" 5 >"$tmp/$format.client.log" 2>"$shim_log" &
+	"$shim/marker_client" 5 8>&- 9>&- >"$tmp/$format.client.log" 2>"$shim_log" &
 	client_pid=$!
 
 	python3 - "$output" "$started_at" <<'PY'
