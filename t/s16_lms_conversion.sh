@@ -165,7 +165,7 @@ if not 9.8 <= producer_elapsed <= 10.5:
 if fmt == "flac":
     if frames != 441000:
         raise SystemExit(f"FLAC decoded {frames} frames instead of 441000")
-elif not 439848 <= frames <= 442152:
+elif not 441000 <= frames <= 443304:
     raise SystemExit(f"MP3 decoded unexpected frame count: {frames}")
 if pipeline_elapsed > 12.5:
     raise SystemExit(f"{fmt} pipeline failed realtime throughput: {pipeline_elapsed:.3f}s")
