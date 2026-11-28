@@ -43,6 +43,10 @@
   generation, ignoring stale status from the outgoing handler. Add a derived
   transition-timing milestone that separates flush, handler replacement, PCM
   availability, and player/device buffering without changing playback.
+- Ramp the first 5 ms of direct PCM from zero to unity only after a
+  generation-qualified discontinuous replacement. This removes the waveform
+  click on manual skips without buffering, delaying, or touching initial and
+  natural gapless playback.
 
 - Add an optional startup-delay trace that correlates Spotify playing/URI
   observation, shim first PCM output, protocol-handler WAV/audio reads,

@@ -42,7 +42,7 @@ BEGIN {
 	sub directStreamInfoForUrl { return $stream }
 	sub claimDirectStreamTransitionForUrl {
 		push @transitionClaims, [@_];
-		return { reason => 'track', resyncAt => 1 };
+		return $_[0] =~ /[?&]g=\d+/ ? { reason => 'track', resyncAt => 1 } : undef;
 	}
 	sub noteDelayTraceProtocolMilestone { push @protocolMilestones, [@_] }
 	sub noteMidstreamStall { push @midstreamStalls, [@_] }
@@ -234,6 +234,51 @@ is_deeply(
 );
 $buffer = '';
 is( $generationHandler->sysread( $buffer, 44 ), 44, 'new generation emits a fresh WAV header' );
+is( substr( $buffer, 0, 4 ), 'RIFF', 'generation fade does not alter the WAV header' );
+
+sysopen( $writer, $fifo, O_WRONLY | O_NONBLOCK ) or die "open generation FIFO writer: $!";
+my $fadePayload =
+	pack( 's<*', ( ( 10_000, 10_000 ) x 221 ), 1_234, 1_234 );
+syswrite( $writer, $fadePayload ) == length($fadePayload)
+	or die "write generation fade payload: $!";
+my $faded = '';
+my @fragmentSizes = ( 1, 3, 5, 7 );
+my $fragment = 0;
+while ( length($faded) < length($fadePayload) ) {
+	my $chunk = '';
+	my $read = $generationHandler->sysread(
+		$chunk,
+		$fragmentSizes[ $fragment++ % @fragmentSizes ],
+	);
+	if ( defined $read && $read > 0 ) {
+		$faded .= $chunk;
+		next;
+	}
+	next if !defined $read && ( $! == EAGAIN || $! == EWOULDBLOCK );
+	die "generation fade read failed: " . ( defined $read ? "EOF" : $! );
+}
+my @fadedSamples = unpack( 's<*', $faded );
+is( $fadedSamples[0], 0, 'first left sample of a discontinuous generation starts at zero' );
+is( $fadedSamples[1], 0, 'first right sample of a discontinuous generation starts at zero' );
+ok(
+	!grep(
+		$fadedSamples[ $_ * 2 ] < $fadedSamples[ ( $_ - 1 ) * 2 ],
+		1 .. 220,
+	),
+	'left fade rises monotonically',
+);
+ok(
+	!grep(
+		$fadedSamples[ $_ * 2 + 1 ] < $fadedSamples[ ( $_ - 1 ) * 2 + 1 ],
+		1 .. 220,
+	),
+	'right fade rises monotonically',
+);
+is( $fadedSamples[440], 10_000, 'fade reaches unity within five milliseconds' );
+is( $fadedSamples[441], 10_000, 'both channels reach unity together' );
+is( $fadedSamples[442], 1_234, 'samples after the fade remain unmodified' );
+is( $fadedSamples[443], 1_234, 'post-fade stereo alignment remains intact' );
+close $writer;
 close $generationHandler;
 
 $Plugins::SpotifySoloist::Plugin::stream->{format} = {

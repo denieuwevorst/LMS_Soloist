@@ -21,6 +21,7 @@ use constant STALE_DRAIN_SECONDS    => 0.25;
 use constant MAX_DRAIN_BYTES        => 4 * 1024 * 1024;
 use constant CONVERTER_CLOSE_GRACE_SECONDS => 0.12;
 use constant F_SETPIPE_SZ => 1031;
+use constant PCM_FADE_FRAMES => 221;
 
 sub _delayTrace {
 	my ( $self, $milestone, %fields ) = @_;
@@ -177,6 +178,14 @@ sub new {
 			$url,
 			${*$self}{streamGeneration} || 0,
 		);
+	if (
+		$format->{key} eq 'pcm'
+		&& ref ${*$self}{transition} eq 'HASH'
+	) {
+		${*$self}{fadeFramesDone} = 0;
+		${*$self}{fadeInput} = '';
+		${*$self}{fadeOutput} = '';
+	}
 	${*$self}{openedAt} = Time::HiRes::time();
 	${*$self}{firstAudioReadLogged} = 0;
 	${*$self}{prefix} = $format->{key} eq 'pcm' ? _wavHeader() : '';
@@ -339,7 +348,22 @@ sub sysread {
 		return;
 	}
 
-	my $read = CORE::sysread( $self, $_[1], $length, $offset || 0 );
+	my $read;
+	if ( defined ${*$self}{fadeFramesDone} ) {
+		my $chunk;
+		( $read, $chunk ) = _readFadedPcm( $self, $length );
+		if ( defined $read && $read > 0 ) {
+			if ($offset) {
+				substr( $_[1], $offset ) = $chunk;
+			}
+			else {
+				$_[1] = $chunk;
+			}
+		}
+	}
+	else {
+		$read = CORE::sysread( $self, $_[1], $length, $offset || 0 );
+	}
 	if ( !defined $read && ( $! == EAGAIN || $! == EWOULDBLOCK ) ) {
 		${*$self}{wouldBlockReads}++;
 		_logReadSummary( $self, $now );
@@ -470,6 +494,57 @@ sub _wavHeader {
 		. pack( 'VvvVVvv', 16, 1, 2, 44100, $byteRate, $blockAlign, 16 )
 		. 'data'
 		. pack( 'V', $dataSize );
+}
+
+sub _readFadedPcm {
+	my ( $self, $length ) = @_;
+	my $output = ${*$self}{fadeOutput} || '';
+
+	while ( !length $output ) {
+		my $raw = '';
+		my $read = CORE::sysread( $self, $raw, $length );
+		return ( $read, '' ) unless defined $read && $read > 0;
+
+		my $input = ( ${*$self}{fadeInput} || '' ) . $raw;
+		my $completeLength = length($input) - length($input) % 4;
+		${*$self}{fadeInput} = substr( $input, $completeLength );
+		next unless $completeLength;
+
+		my $complete = substr( $input, 0, $completeLength );
+		my @samples = unpack( 's<*', $complete );
+		my $framesDone = ${*$self}{fadeFramesDone} || 0;
+		my $denominator = PCM_FADE_FRAMES - 1;
+		my $frames = @samples / 2;
+		my $fadedFrames =
+			$frames < PCM_FADE_FRAMES - $framesDone
+			? $frames
+			: PCM_FADE_FRAMES - $framesDone;
+
+		for my $frame ( 0 .. $fadedFrames - 1 ) {
+			my $numerator = $framesDone + $frame;
+			for my $channel ( 0, 1 ) {
+				my $index = $frame * 2 + $channel;
+				$samples[$index] =
+					int( $samples[$index] * $numerator / $denominator );
+			}
+		}
+		$framesDone += $fadedFrames;
+		${*$self}{fadeFramesDone} = $framesDone;
+		$output .= pack( 's<*', @samples );
+	}
+
+	my $chunk = substr( $output, 0, $length, '' );
+	${*$self}{fadeOutput} = $output;
+	if (
+		${*$self}{fadeFramesDone} >= PCM_FADE_FRAMES
+		&& !length( ${*$self}{fadeInput} || '' )
+		&& !length $output
+	) {
+		delete ${*$self}{fadeFramesDone};
+		delete ${*$self}{fadeInput};
+		delete ${*$self}{fadeOutput};
+	}
+	return ( length($chunk), $chunk );
 }
 
 sub _drainFifo {
