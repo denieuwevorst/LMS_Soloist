@@ -71,7 +71,6 @@ import sys
 import time
 
 final_fifo, wav_fifo = sys.argv[1:]
-target = 5 * 44100 * 4
 pause_every = 44100 * 4 // 2
 source = os.open(final_fifo, os.O_RDONLY)
 wav = os.open(wav_fifo, os.O_WRONLY)
@@ -84,18 +83,17 @@ os.write(wav, header)
 time.sleep(0.70)
 total = 0
 since_pause = 0
-while total < target:
-    chunk = os.read(source, min(4096, target - total))
+while True:
+    chunk = os.read(source, 4096)
     if not chunk:
-        time.sleep(0.001)
-        continue
+        break
     view = memoryview(chunk)
     while view:
         written = os.write(wav, view)
         view = view[written:]
     total += len(chunk)
     since_pause += len(chunk)
-    if since_pause >= pause_every and total < target:
+    if since_pause >= pause_every:
         time.sleep(0.40)
         since_pause = 0
 os.close(wav)
@@ -132,15 +130,16 @@ PY
 
 	wait "$client_pid"
 	client_pid=""
-	wait "$feeder_pid"
-	feeder_pid=""
-	wait "$ffmpeg_pid"
-	ffmpeg_pid=""
+	sleep 2
 	kill "$pump_pid"
 	wait "$pump_pid" 2>/dev/null || true
 	pump_pid=""
 	exec 8>&-
 	exec 9>&-
+	wait "$feeder_pid"
+	feeder_pid=""
+	wait "$ffmpeg_pid"
+	ffmpeg_pid=""
 
 	if grep -Eq 'output live-edge drop|ring live-edge drop|stream underflow|underflows=[1-9]|drops=[1-9]' "$shim_log"; then
 		echo "$format source shim lost audio despite the decoupled pump" >&2
