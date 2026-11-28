@@ -1,7 +1,69 @@
 # Changelog
 
-## Unreleased
+## 0.3.71
 
+- Fail plugin startup with a clear package-mismatch error when `Plugin.pm` and
+  `StreamSemantics.pm` do not provide the same API, and validate that contract
+  from the generated plugin ZIP in CI.
+- Restore S16/LMS song-format publication through the packaged
+  `applySongFormat` helper. Metadata polling now retries unexpected runtime
+  failures with bounded backoff and logs one error until recovery instead of
+  flooding `server.log`.
+- Keep opt-in plugin/protocol delay milestones visible in `server.log` at the
+  default plugin log level; bridge/shim milestones remain in `bridge.log`.
+- Prevent duplicate per-player supervisors from repeatedly launching Soloist
+  against an already-owned data directory. Bridge ownership is atomic, an
+  orphaned matching Soloist process is adopted by exact `--data-dir`, and a
+  second supervisor waits for the live owner instead of retrying every five
+  seconds.
+- Correlate protocol creation, first LMS read, WAV prefix, audio read,
+  recovery, playback request, player status, and close milestones with the
+  exact LMS client ID, canonical URL, generation, and monotonic time.
+- Route Soloist through LMS's handler-specific STRM input threshold so a Touch
+  starts after roughly 200 ms instead of filling its default ~1 MiB input
+  buffer (about 5.8 seconds for 44.1 kHz stereo S16LE).
+- Add a global 0-3000 ms discontinuous track restart buffer (750 ms default)
+  for generation-qualified URLs only. Normal startup retains its low-latency
+  format threshold, natural transitions retain their handler, and format-aware
+  byte conversion is capped at LMS's 255 KiB STRM limit.
+- Keep the Soloist-facing shim at its healthy 200 ms pacing for every format,
+  but retain accepted in-flight PCM across ordinary FIFO `EAGAIN` and reader
+  pauses. Only an explicit generation flush can invalidate those bytes.
+- Move FLAC and MP3 to one persistent bridge-side ffmpeg encoder behind the
+  bounded source pump. LMS now reads honest final `flc`/`mp3` streams instead
+  of attaching an asynchronous transcoder that field measurements showed
+  consuming only about 756 KiB per five seconds from an 873 KiB PCM source.
+  The pump applies bounded backpressure and never drops normal PCM.
+- Keep the shim's final FIFO handoff at 64 KiB (about 372 ms for S16LE) so
+  recurring measured 205 ms LMS read pauses are absorbed without blocking the
+  200 ms wall-clock writer. The previous 16 KiB handoff held only about 93 ms;
+  each pause timed out one ~200 ms writer chunk, aggregating to the field
+  fingerprint of roughly 176,720 dropped bytes per second.
+- Associate first-player-status diagnostics with the exact opened stream
+  generation, ignoring stale status from the outgoing handler. Add a derived
+  transition-timing milestone that separates flush, handler replacement, PCM
+  availability, and player/device buffering without changing playback.
+- Ramp the first 5 ms of direct PCM from zero to unity only after a
+  generation-qualified discontinuous replacement. This removes the waveform
+  click on manual skips without buffering, delaying, or touching initial and
+  natural gapless playback.
+
+- Add an optional startup-delay trace that correlates Spotify playing/URI
+  observation, shim first PCM output, protocol-handler WAV/audio reads,
+  LMS playback handoff, generation-flush completion, and first available
+  player status by monotonic timestamp, canonical URL, and stream generation.
+  The trace is milestone-only and does not change buffering or log PCM data.
+- Restore the field-proven S16LE direct source: Soloist writes through the
+  native shim's bounded live-edge ring into one bridge-lifetime guarded FIFO,
+  and the protocol handler supplies a truthful 44.1 kHz, stereo, 16-bit WAV
+  stream. PCM uses no ffmpeg process.
+- Keep PCM direct and encoder-free. FLAC and MP3 use a bridge-owned encoder
+  FIFO and restart that encoder only for process failure or a discontinuous
+  generation requiring fresh stream headers; natural transitions preserve it.
+- Retain generation-qualified discontinuity URLs, request-ID flush
+  acknowledgements, 64-bit frame accounting, natural-end recovery, exact shim
+  preload/map verification, and prompt local-stream startup from the later
+  experiments.
 - Qualify PCM playback URLs with a monotonically increasing `?g=` token for
   manual track/playlist changes, Next/Previous, meaningful backward seeks, and
   stale-stream recovery. LMS can no longer optimize the same-URL replay into a

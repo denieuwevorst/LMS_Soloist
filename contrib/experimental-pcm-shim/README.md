@@ -66,32 +66,37 @@ for each Soloist process.
 ```text
 Soloist
   -> this libpulse.so.0
-  -> bounded live-edge ring (200 ms by default)
-  -> player_<slot>/audio.fifo for PCM/WAV
-     or player_<slot>/pcm-shim.fifo -> ffmpeg for MP3/FLAC
-  -> player_<slot>/audio.fifo
+  -> 200 ms paced ring with lossless in-flight retry
+  -> direct player_<slot>/audio.fifo (PCM), or
+     player_<slot>/pcm-source.fifo -> 800 ms PCM pump
+       -> persistent bridge ffmpeg -> audio.fifo (FLAC/MP3)
   -> soloist:// protocol handler
-  -> LMS/player
+  -> LMS native WAV/FLAC/MP3 path
+  -> player
 ```
 
-For PCM/WAV, the protocol handler adds a streaming WAV header when LMS opens
-the FIFO; it does not encode or alter the PCM payload.
+The protocol handler adds a streaming WAV header only for PCM. FLAC/MP3 are
+already encoded by one persistent bridge-side ffmpeg process.
 
 `pa_stream_write` only copies complete frames into the bounded ring. The writer
 thread transmits available frames immediately with nonblocking FIFO writes.
-Temporary FIFO `EAGAIN` is retried while the ring's configured time budget has
-not been superseded, allowing ordinary scheduler and network-player read jitter
-without gaps. If the reader remains slow beyond that budget, the in-flight
-oldest complete frames are discarded, keeping playback near the live edge and
-bounding total PCM buffering to approximately 300 ms with the bridge's FIFO.
+Temporary FIFO `EAGAIN` is retried without discarding an accepted in-flight
+chunk; only a generation flush invalidates queued audio. Direct PCM therefore
+retains its low-latency converter-free path through ordinary LMS reader pauses.
+For FLAC and MP3, `soloist-pcm-pump.pl` continuously drains a dedicated source
+FIFO into an independent 800 ms bounded queue feeding persistent ffmpeg. At the
+queue limit the pump stops reading and applies explicit backpressure instead of
+silently dropping PCM.
 
 Generation command files contain `<request-id> <reason>`. The request ID is
 independent from the shim's internal audio generation, so Pulse flushes cannot
 collide with track-change commands. The acknowledgement contains
 `<request-id> <resulting-generation> <reason>`. Repeating a processed request
-recreates a lost acknowledgement without flushing twice. The plugin waits for that acknowledgement before replacing
-the LMS protocol handler. Pulse `flush` requests clear the ring through the same
-internal generation path.
+recreates a lost acknowledgement without flushing twice. For FLAC and MP3 the pump waits for the shim acknowledgement, clears its own
+queue and both FIFO boundaries, and publishes a second acknowledgement. The
+plugin replaces the LMS protocol handler only after both acknowledgements.
+Pulse `flush` requests clear the ring through the same internal generation
+path.
 
 ## Diagnostics
 
@@ -102,7 +107,7 @@ and inspect the player's `bridge.log`. The bridge maps this setting to
 A successfully loaded build logs its configured ring depth and control path:
 
 ```text
-[soloist-shim] loaded build 2026-11-18.6-frameunits: mode=live-ring ... ring_ms=200 ...
+[soloist-shim] loaded build 2026-11-28.2-lossless: mode=live-ring ... ring_ms=200 ...
 ```
 
 Level `2` also logs Pulse API activity. A constructor/load marker without
@@ -143,7 +148,8 @@ Soloist currently requires compatibility exports including:
   little-endian PCM.
 - Bundled binaries support x86_64, ARMv7 hard-float, and ARMv8/AArch64.
   Build and deploy the library separately on every other target architecture.
-- MP3 and FLAC bridge output still require ffmpeg. PCM/WAV does not.
+- FLAC and MP3 require a matching LMS converter. The shim and bridge remain
+  format-independent S16LE producers.
 
 ## Clean
 

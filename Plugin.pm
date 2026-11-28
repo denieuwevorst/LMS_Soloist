@@ -70,6 +70,9 @@ my $log = Slim::Utils::Log->addLogCategory({
 my $prefs = preferences('plugin.spotifysoloist');
 
 use constant STATE_LOOP_INTERVAL       => 0.5;  # seconds
+use constant INITIAL_STATE_LOOP_DELAY  => 0.1;  # seconds
+use constant STATE_LOOP_MAX_RETRY_DELAY => 30;  # seconds
+use constant STREAM_SEMANTICS_API_VERSION => 2;
 use constant IDLE_RESTART_DELAY        => 1;    # seconds
 use constant STATE_RESYNC_INTERVAL     => 30;   # seconds
 use constant TRACE_RESTART_DELAY       => 5;    # seconds
@@ -86,7 +89,6 @@ $prefs->init({
 	soloistBin      => '/usr/local/bin/soloist',
 	managedSoloistUpdates => 0,
 	managedSoloistArch => 'auto',
-	ffmpegBin       => '/usr/bin/ffmpeg',
 	audioBackend    => 'pcm-shim',        # pcm-shim | pulse
 	pipewireSink    => 'soloist_sink',    # base name; each player gets _<slot> appended
 	pcmShimDir      => '',                # optional override; supported bundled architectures are selected automatically
@@ -98,16 +100,53 @@ $prefs->init({
 	apiKey          => '',
 	autostart       => 1,
 	idleDisconnectSeconds => 30,
+	transitionRestartBufferMs => 750,
+	delayDiagnostics => 0,
 	selectedPlayers => {},                # { playerID => 1, ... }
 	playerFormatOverrides => {},          # { playerID => mp3|flac|pcm } (missing = global format)
 	playerNormalization => {},            # { playerID => 0|1 } (missing = enabled for compatibility)
-	playerLiveRing => {},                 # { playerID => 0|1 } (missing = live ring enabled)
 	playerSlots     => {},                # { playerID => slot int }, stable across restarts
 });
 
 my %bridges;      # playerID => { proc, wsPort, sink, dataDir, cacheDir, fifoPath, deviceName, lastStatus, wasPlayingHere }
 my $baseDataDir;
 my $baseCacheDir;
+my $metadataPollFailures = 0;
+my $metadataPollErrorLogged = 0;
+
+sub _assertStreamSemanticsContract {
+	my @required = qw(
+		apiVersion
+		applySongFormat
+		applySongTiming
+		metadataForFormat
+		normalizeTransitionRestartBufferMs
+		observeTimelineTransition
+		transitionBufferKb
+		transitionBufferMsForUrl
+		timelineObservation
+		timelineResyncReady
+	);
+	my @missing = grep {
+		!Plugins::SpotifySoloist::StreamSemantics->can($_)
+	} @required;
+	my $actualVersion =
+		Plugins::SpotifySoloist::StreamSemantics->can('apiVersion')
+			? Plugins::SpotifySoloist::StreamSemantics::apiVersion()
+			: 'missing';
+
+	return 1
+		if !@missing
+			&& $actualVersion eq STREAM_SEMANTICS_API_VERSION;
+
+	die sprintf(
+		"Spotify Soloist package mismatch: Plugin.pm requires StreamSemantics API %d; "
+		. "installed API=%s, missing symbols=%s. Reinstall the complete plugin package.\n",
+		STREAM_SEMANTICS_API_VERSION,
+		$actualVersion,
+		@missing ? join( ',', @missing ) : 'none',
+	);
+}
 my %originalTransportCommand;    # command name -> original dispatch coderef
 my $soloistBinaryAgeWarningLogged = 0;
 my $soloistUpdatePid;
@@ -117,11 +156,19 @@ my $soloistVersionProbeError = '';
 my %pendingBridgeStartRetries;
 my %lastBridgeFailureLog;
 my %lastBridgeFailureAt;
+my %transitionBufferWarningLogged;
+my %MP3_BITRATES = (
+	'96k'  => 96_000,
+	'128k' => 128_000,
+	'160k' => 160_000,
+	'192k' => 192_000,
+	'256k' => 256_000,
+	'320k' => 320_000,
+);
 my %FORMAT_SPECS = (
 	mp3 => {
 		wireExt       => 'mp3',
 		displayFormat => 'MP3',
-		contentType   => 'mp3',
 		bufferKb      => sub {
 			my ($bitrateBps) = @_;
 			my $threshold = $bitrateBps
@@ -135,13 +182,11 @@ my %FORMAT_SPECS = (
 	flac => {
 		wireExt       => 'flac',
 		displayFormat => 'FLAC',
-		contentType   => 'flc',
 		bufferKb      => 24,
 	},
 	pcm => {
 		wireExt       => 'wav',
 		displayFormat => 'WAV',
-		contentType   => 'wav',
 		bufferKb      => 35,
 	},
 );
@@ -161,9 +206,11 @@ sub currentFormatSpec {
 	$format = _normalizedFormatKey( $prefs->get('format') ) || 'mp3' unless defined $format;
 	my $spec = $FORMAT_SPECS{$format} || $FORMAT_SPECS{mp3};
 	my $configuredBitrate = $format eq 'mp3' ? ( $prefs->get('bitrate') || '320k' ) : undef;
-	my $parsedBitrate = $format eq 'mp3'
-		? Plugins::SpotifySoloist::StreamSemantics::parseBitrateBps($configuredBitrate)
-		: undef;
+	my $bitrateValid = $format ne 'mp3' || exists $MP3_BITRATES{$configuredBitrate};
+	my $effectiveBitrate = $format eq 'mp3' && $bitrateValid
+		? $configuredBitrate
+		: '320k';
+	my $parsedBitrate = $format eq 'mp3' ? $MP3_BITRATES{$effectiveBitrate} : undef;
 	my $bitrateBps = $format eq 'pcm' ? 1_411_200
 		: $format eq 'mp3' ? ( $parsedBitrate || 320_000 )
 		: undef;
@@ -175,17 +222,27 @@ sub currentFormatSpec {
 		key           => $format,
 		wireExt       => $spec->{wireExt},
 		displayFormat => $spec->{displayFormat},
-		contentType   => $spec->{contentType},
+		contentType   => $format eq 'pcm' ? 'wav'
+			: $format eq 'mp3' ? 'mp3' : 'flc',
 		bufferKb      => $bufferKb,
 		sampleRate    => 44_100,
 		channels      => 2,
 		bitrateBps    => $bitrateBps,
 		bitrateLabel  => $format eq 'flac' ? 'VBR (live stream)'
 			: Plugins::SpotifySoloist::StreamSemantics::bitrateLabel($bitrateBps),
-		bitrateValid  => $format ne 'mp3' || defined $parsedBitrate,
+		bitrateValid  => $bitrateValid,
 		( defined $configuredBitrate ? ( configuredBitrate => $configuredBitrate ) : () ),
+		encoderBitrate => $format eq 'mp3'
+			? int( $bitrateBps / 1000 ) . 'k'
+			: undef,
+		sourceBitrateBps => 1_411_200,
+		sourceSampleSize => 16,
+		sourceBlockAlign => 4,
 		( $format ne 'mp3' ? ( sampleSize => 16 ) : () ),
 		( $format eq 'pcm' ? ( blockAlign => 4 ) : () ),
+		outputContentType => $format eq 'mp3' ? 'mp3'
+			: $format eq 'flac' ? 'flc'
+			: 'pcm',
 	};
 }
 
@@ -204,12 +261,235 @@ sub normalizationForPlayer {
 	);
 }
 
-sub liveRingForPlayer {
-	my ($playerId) = @_;
-	return Plugins::SpotifySoloist::SoloistPrefs::liveRingForPlayer(
-		$prefs->get('playerLiveRing'),
-		$playerId,
+sub delayDiagnosticsEnabled {
+	return $prefs->get('delayDiagnostics') ? 1 : 0;
+}
+
+sub transitionRestartBufferMs {
+	my ($value) = @_;
+	$value = $prefs->get('transitionRestartBufferMs') unless @_;
+	my ( $normalized, $warning ) =
+		Plugins::SpotifySoloist::StreamSemantics::normalizeTransitionRestartBufferMs(
+			$value,
+		);
+	my $valueLabel = defined $value ? $value : 'undefined';
+	if ( $warning && !$transitionBufferWarningLogged{"$valueLabel=>$normalized"}++ ) {
+		$log->warn(
+			"invalid transition restart buffer '$valueLabel'; $warning, using ${normalized}ms"
+		);
+	}
+	return $normalized;
+}
+
+sub transitionBufferKbForFormat {
+	my ( $format, $milliseconds ) = @_;
+	$milliseconds = transitionRestartBufferMs()
+		unless defined $milliseconds;
+	return $format->{bufferKb} unless $milliseconds;
+	return Plugins::SpotifySoloist::StreamSemantics::transitionBufferKb(
+		$format,
+		$milliseconds,
 	);
+}
+
+sub _delayTraceMilestone {
+	my ( $b, $client, $milestone, %fields ) = @_;
+	return unless delayDiagnosticsEnabled();
+	my $now = Plugins::SpotifySoloist::StreamSemantics::monotonicNow();
+	my $generation = $b->{streamGeneration} || 0;
+	my $url = _playbackStreamUrlFor($b);
+	my $canonical =
+		Plugins::SpotifySoloist::StreamSemantics::canonicalSoloistUrl($url) || $url;
+	my @details = (
+		"player=" . ( $client ? $client->name : ( $b->{playerId} || 'unknown' ) ),
+		"trace_client_id=" . (
+			$client
+				? ( eval { $client->master->id } || eval { $client->id } || 'unknown' )
+				: ( $b->{playerId} || 'unknown' )
+		),
+		"generation=$generation",
+		"canonical=$canonical",
+	);
+	push @details, map {
+		my $value = defined $fields{$_} ? $fields{$_} : 'unknown';
+		$value =~ s/[\r\n\s]+/_/g;
+		"$_=$value";
+	} sort keys %fields;
+	$log->warn(
+		sprintf(
+			'[delay-trace] milestone=%s monotonic=%.3f %s',
+			$milestone, $now, join( ' ', @details ),
+		)
+	);
+	return $now;
+}
+
+sub _startDelayTrace {
+	my ( $b, $client, $state ) = @_;
+	return unless delayDiagnosticsEnabled();
+	my $timeline =
+		Plugins::SpotifySoloist::StreamSemantics::timelineObservation($state);
+	$b->{delayTrace} = {
+		generation => $b->{streamGeneration} || 0,
+		startedAt  => _delayTraceMilestone(
+			$b, $client, 'spotify-playing',
+			uri => $timeline->{uri} || '',
+			position_ms => defined $timeline->{positionMs}
+				? $timeline->{positionMs} : 'unknown',
+		),
+	};
+}
+
+sub _traceLmsStrmRequested {
+	my ( $b, $client, %fields ) = @_;
+	return unless delayDiagnosticsEnabled();
+	my $generation = $b->{streamGeneration} || 0;
+	my $trace = $b->{delayTrace};
+	if ( !$trace || ( $trace->{generation} || 0 ) != $generation ) {
+		$trace = $b->{delayTrace} = { generation => $generation };
+	}
+	$trace->{playerStatusLogged} = 0;
+	delete $trace->{handlerOpenedAt};
+	delete $trace->{handlerUrl};
+	$b->{playerProgressTrace} = {};
+	$trace->{strmRequestedAt} =
+		_delayTraceMilestone( $b, $client, 'lms-strm-requested', %fields );
+}
+
+sub _latestBridgePressureSummary {
+	my ($b) = @_;
+	return 'unavailable' unless $b->{cacheDir};
+	my $path = catfile( $b->{cacheDir}, 'bridge.log' );
+	return 'unavailable' unless -f $path && open my $fh, '<', $path;
+	my $size = -s $fh;
+	seek( $fh, $size > 32768 ? -32768 : 0, $size > 32768 ? 2 : 0 );
+	local $/;
+	my $tail = <$fh> // '';
+	close $fh;
+	my @lines = $tail =~ /^.*(?:runtime summary|output pressure|output live-edge drop).*$/mg;
+	return 'no-recent-pressure-summary' unless @lines;
+	my $start = @lines > 2 ? $#lines - 1 : 0;
+	return join( ' | ', @lines[ $start .. $#lines ] );
+}
+
+sub noteMidstreamStall {
+	my ( $playerId, $generation, $url, %fields ) = @_;
+	return unless delayDiagnosticsEnabled();
+	my $b = $bridges{$playerId} or return;
+	return unless ( $b->{streamGeneration} || 0 ) == ( $generation || 0 );
+	return unless
+		Plugins::SpotifySoloist::StreamSemantics::isCurrentSoloistPlaybackUrl(
+			$url, streamUrlFor($b), $generation,
+		);
+	my $client = Slim::Player::Client::getClient($playerId);
+	my $elapsed = $client ? eval { $client->master->songElapsedSeconds() } : undef;
+	my $playingUrl = $client ? eval { Slim::Player::Playlist::url($client->master) } : undef;
+	_delayTraceMilestone(
+		$b, $client, 'midstream-stall',
+		%fields,
+		current_url => defined $playingUrl ? $playingUrl : 'unknown',
+		song_elapsed_s => defined $elapsed ? sprintf( '%.3f', $elapsed ) : 'unknown',
+		is_remote => 1,
+		buffer_threshold_kb => $b->{formatSpec}->{bufferKb},
+		source_bitrate_bps => $b->{formatSpec}->{sourceBitrateBps},
+		transition_reason => ref $b->{lastStreamTransition} eq 'HASH'
+			? ( $b->{lastStreamTransition}->{reason} || 'unknown' )
+			: 'steady-state',
+		bridge_pressure => _latestBridgePressureSummary($b),
+	);
+}
+
+sub _traceMidstreamPlayerProgress {
+	my ( $b, $client, $url, $playback ) = @_;
+	return unless delayDiagnosticsEnabled();
+	my $onOwnStream = _clientIsOnOwnSoloistStream( $client, $url );
+	my $playing = $playback->{reallyPlayingHere}
+		&& $onOwnStream
+		&& eval { $client->isPlaying(1) } ? 1 : 0;
+	my $elapsed = $playing ? eval { $client->master->songElapsedSeconds() } : undef;
+	my $stall =
+		Plugins::SpotifySoloist::StreamSemantics::observePlayerProgressStall(
+			$b->{playerProgressTrace} ||= {},
+			$elapsed,
+			Plugins::SpotifySoloist::StreamSemantics::monotonicNow(),
+			$playing,
+		);
+	return unless $stall;
+	noteMidstreamStall(
+		$b->{playerId},
+		$b->{streamGeneration} || 0,
+		_playbackStreamUrlFor($b),
+		source => 'player-progress',
+		progress_gap_ms => sprintf( '%.0f', $stall->{gapMs} ),
+		fifo_available_bytes => 'unknown',
+	);
+}
+
+sub noteDelayTraceProtocolMilestone {
+	my ( $playerId, $handlerGeneration, $milestone, $at, $url ) = @_;
+	return unless delayDiagnosticsEnabled();
+	my $b = $bridges{$playerId} or return;
+	my $trace = $b->{delayTrace} or return;
+	my $generation = $b->{streamGeneration} || 0;
+	return unless ( $trace->{generation} || 0 ) == $generation;
+	if ( $milestone eq 'handler-close' ) {
+		return unless $generation > 0
+			&& $handlerGeneration == $generation - 1;
+		$trace->{oldHandlerClosedAt} //= $at;
+		return;
+	}
+	return unless $handlerGeneration == $generation;
+	return unless
+		Plugins::SpotifySoloist::StreamSemantics::isCurrentSoloistPlaybackUrl(
+			$url, streamUrlFor($b), $generation,
+		);
+	if ( $milestone eq 'handler-open' ) {
+		$trace->{handlerOpenedAt} = $at;
+		$trace->{handlerUrl} = $url;
+	}
+	elsif ( $milestone eq 'wav-prefix' ) {
+		$trace->{firstWavAt} //= $at;
+	}
+	elsif ( $milestone eq 'first-pcm' ) {
+		$trace->{firstPcmAt} //= $at;
+	}
+}
+
+sub _tracePlayerStatus {
+	my ( $b, $client ) = @_;
+	my $trace = $b->{delayTrace} or return;
+	return if $trace->{playerStatusLogged};
+	my $playingUrl = eval { Slim::Player::Playlist::url($client) };
+	return unless
+		Plugins::SpotifySoloist::StreamSemantics::delayTracePlayerStatusReady(
+			$trace,
+			$playingUrl,
+			streamUrlFor($b),
+			$b->{streamGeneration} || 0,
+		);
+	return unless _clientIsOnOwnSoloistStream(
+		$client, _playbackStreamUrlFor($b),
+	);
+	my $playing = eval { $client->isPlaying(1) } ? 1 : 0;
+	return unless $playing;
+	my $elapsed = eval { $client->master->songElapsedSeconds() };
+	$trace->{playerStatusLogged} = 1;
+	$trace->{playerStatusAt} =
+		Plugins::SpotifySoloist::StreamSemantics::monotonicNow();
+	_delayTraceMilestone(
+		$b, $client, 'player-first-status',
+		playing => $playing,
+		elapsed_s => defined $elapsed ? sprintf( '%.3f', $elapsed ) : 'unknown',
+	);
+	if (
+		my $summary =
+			Plugins::SpotifySoloist::StreamSemantics::delayTraceTimingSummary($trace)
+	) {
+		_delayTraceMilestone(
+			$b, $client, 'transition-timing',
+			%$summary,
+		);
+	}
 }
 
 sub _fileFingerprint {
@@ -794,6 +1074,8 @@ sub _maybeWarnAboutSoloistBinaryAge {
 sub initPlugin {
 	my $class = shift;
 
+	_assertStreamSemanticsContract();
+
 	# Registers the 'soloist' scheme as a side effect of loading.
 	require Plugins::SpotifySoloist::ProtocolHandler;
 
@@ -883,7 +1165,11 @@ sub initPlugin {
 	}
 
 	Slim::Utils::Timers::setTimer( undef, time() + 10, \&checkManagedSoloistUpdate );
-	Slim::Utils::Timers::setTimer( undef, time() + 5, \&pollMetadata );
+	Slim::Utils::Timers::setTimer(
+		undef,
+		time() + INITIAL_STATE_LOOP_DELAY,
+		\&pollMetadata,
+	);
 }
 
 sub shutdownPlugin {
@@ -953,10 +1239,12 @@ sub _configFor {
 		dataDir    => catdir( $baseDataDir, "player_$slot" ),
 		cacheDir   => catdir( $baseCacheDir, "player_$slot" ),
 		fifoPath   => catfile( $baseCacheDir, "player_$slot", 'audio.fifo' ),
+		pcmSourceFifoPath => catfile( $baseCacheDir, "player_$slot", 'pcm-source.fifo' ),
+		pcmEncoderFifoPath => catfile( $baseCacheDir, "player_$slot", 'pcm-encoder.fifo' ),
 		pcmShimDir => $prefs->get('pcmShimDir') || bundledPcmShimDir(),
-		pcmShimFifo => catfile( $baseCacheDir, "player_$slot", 'pcm-shim.fifo' ),
 		pcmShimControl => catfile( $baseCacheDir, "player_$slot", 'pcm-shim.control' ),
 		pcmShimAck => catfile( $baseCacheDir, "player_$slot", 'pcm-shim.ack' ),
+		pcmPumpAck => catfile( $baseCacheDir, "player_$slot", 'pcm-pump.ack' ),
 		runtimeDir => $runtime ? $runtime->{dir} : '',
 		runtimeLoader => $runtime ? $runtime->{loader} : '',
 		soloistCtlCommand => [
@@ -968,7 +1256,6 @@ sub _configFor {
 			)
 		],
 		normalization => normalizationForPlayer($playerId),
-		liveRing => liveRingForPlayer($playerId),
 		deviceName => $playerName . $prefs->get('deviceNameSuffix'),
 	};
 }
@@ -979,11 +1266,9 @@ sub streamUrlFor {
 	my $canonical =
 		'soloist://player-' . $cfg->{slot} . '/soloist.' . $format->{wireExt};
 
-	return $format->{key} eq 'pcm'
-		? Plugins::SpotifySoloist::StreamSemantics::generationSoloistUrl(
-			$canonical, $generation,
-		)
-		: $canonical;
+	return Plugins::SpotifySoloist::StreamSemantics::generationSoloistUrl(
+		$canonical, $generation,
+	);
 }
 
 sub _playbackStreamUrlFor {
@@ -1003,19 +1288,26 @@ sub directStreamInfoForUrl {
 			$bridge->{formatSpec} || currentFormatSpec( $bridge->{format} );
 		return unless $parts->{extension} eq $format->{wireExt};
 		my $currentGeneration = $bridge->{streamGeneration} || 0;
-		if ( $format->{key} eq 'pcm' ) {
-			return unless
-				Plugins::SpotifySoloist::StreamSemantics::isCurrentSoloistPlaybackUrl(
-					$url, streamUrlFor($bridge), $currentGeneration,
-				);
-		}
-		else {
-			return if defined $parts->{generation};
-		}
+		return unless
+			Plugins::SpotifySoloist::StreamSemantics::isCurrentSoloistPlaybackUrl(
+				$url, streamUrlFor($bridge), $currentGeneration,
+			);
+		my $transitionBufferMs =
+			Plugins::SpotifySoloist::StreamSemantics::transitionBufferMsForUrl(
+				$url,
+				transitionRestartBufferMs(),
+			);
 		return {
 			fifoPath        => $bridge->{fifoPath},
 			format          => $format,
+			bufferKb        => transitionBufferKbForFormat(
+				$format,
+				$transitionBufferMs,
+			),
+			transitionBufferMs => $transitionBufferMs,
+			playerId        => $bridge->{playerId},
 			streamGeneration => $currentGeneration,
+			delayDiagnostics => delayDiagnosticsEnabled(),
 		};
 	}
 	return;
@@ -1223,11 +1515,11 @@ sub _startBridge {
 	}
 
 	local $ENV{SOLOIST_BIN}       = soloistBin();
-	local $ENV{FFMPEG_BIN}        = $prefs->get('ffmpegBin');
 	local $ENV{SOLOIST_AUDIO_BACKEND} = $cfg->{backend};
 	local $ENV{PIPEWIRE_SINK}     = $cfg->{sink};
 	local $ENV{FORMAT}            = $cfg->{format};
-	local $ENV{BITRATE}           = $cfg->{formatSpec}->{bitrateBps} || 320_000;
+	local $ENV{BITRATE}           = $cfg->{formatSpec}->{encoderBitrate} || '320k';
+	local $ENV{FFMPEG_BIN}        = 'ffmpeg';
 	local $ENV{SOLOIST_INITIAL_VOLUME} = _initialVolume();
 	local $ENV{WS_PORT}           = $cfg->{wsPort};
 	local $ENV{DEVICE_NAME}       = $cfg->{deviceName};
@@ -1235,15 +1527,20 @@ sub _startBridge {
 	local $ENV{SOLOIST_DATA_DIR}  = $cfg->{dataDir};
 	local $ENV{SOLOIST_CACHE_DIR} = $cfg->{cacheDir};
 	local $ENV{FIFO_PATH}         = $cfg->{fifoPath};
+	local $ENV{PCM_SOURCE_FIFO_PATH} = $cfg->{pcmSourceFifoPath};
+	local $ENV{PCM_ENCODER_FIFO_PATH} = $cfg->{pcmEncoderFifoPath};
 	local $ENV{SOLOIST_PCM_SHIM_DIR}  = $cfg->{pcmShimDir};
-	local $ENV{SOLOIST_PCM_SHIM_FIFO} = $cfg->{pcmShimFifo};
 	local $ENV{SOLOIST_PCM_SHIM_CONTROL} = $cfg->{pcmShimControl};
 	local $ENV{SOLOIST_PCM_SHIM_ACK} = $cfg->{pcmShimAck};
+	local $ENV{SOLOIST_PCM_PUMP_ACK} = $cfg->{pcmPumpAck};
+	local $ENV{SOLOIST_PCM_PUMP_PERL} = $^X;
+	local $ENV{SOLOIST_PCM_PUMP_SCRIPT} =
+		catfile( dirname(_scriptPath()), 'soloist-pcm-pump.pl' );
 	local $ENV{SOLOIST_PCM_SHIM_RING_MS} = 200;
 	local $ENV{SOLOIST_PCM_SHIM_LOG} = 1;
-	local $ENV{SOLOIST_PCM_SHIM_BUILD} = '2026-11-18.6-frameunits';
-	local $ENV{SOLOIST_PCM_SHIM_MODE} =
-		$cfg->{format} eq 'pcm' && !$cfg->{liveRing} ? 'compat' : 'live-ring';
+	local $ENV{SOLOIST_DELAY_DIAGNOSTICS} =
+		delayDiagnosticsEnabled() ? 1 : 0;
+	local $ENV{SOLOIST_PCM_SHIM_BUILD} = '2026-11-28.2-lossless';
 	local $ENV{SOLOIST_RUNTIME_LIB_DIR} = $cfg->{runtimeDir};
 	local $ENV{SOLOIST_RUNTIME_LOADER}  = $cfg->{runtimeLoader};
 
@@ -1251,8 +1548,10 @@ sub _startBridge {
 		"starting soloist bridge for player '" . $client->name
 		. "' (device='$cfg->{deviceName}', slot=$cfg->{slot}, normalization="
 		. ( $cfg->{normalization} ? 'on' : 'off' )
-		. ', pcm_mode='
-		. ( $cfg->{format} eq 'pcm' && !$cfg->{liveRing} ? 'compat' : 'live-ring' )
+		. ', pcm_mode=live-ring-s16le'
+		. ( $cfg->{format} eq 'pcm'
+			? ', source=direct'
+			: ', source=decoupled-pump, encoder=bridge-ffmpeg' )
 		. ', shim=' . catfile( $cfg->{pcmShimDir}, 'libpulse.so.0' )
 		. ' ' . _fileFingerprint( catfile( $cfg->{pcmShimDir}, 'libpulse.so.0' ) )
 		. ', prefs=' . scalar(@$normalizationFiles) . ')'
@@ -1260,7 +1559,7 @@ sub _startBridge {
 	if ( $cfg->{format} eq 'mp3' && !$cfg->{formatSpec}->{bitrateValid} ) {
 		$log->warn(
 			"invalid MP3 bitrate '$cfg->{formatSpec}->{configuredBitrate}'; "
-			. 'using 320 kbps for both the bridge and LMS metadata'
+			. 'using 320 kbps for bridge conversion and metadata'
 		);
 	}
 
@@ -1313,6 +1612,8 @@ sub _writeShimGenerationCommand {
 	return unless defined $command;
 
 	unlink $b->{pcmShimAck} if $b->{pcmShimAck};
+	unlink $b->{pcmPumpAck}
+		if $b->{format} ne 'pcm' && $b->{pcmPumpAck};
 	if ( !open( $fh, '>', $tmp ) ) {
 		$log->error("can't create PCM shim generation command $tmp: $!");
 		return;
@@ -1340,8 +1641,19 @@ sub _shimGenerationAcknowledged {
 	return unless open( my $fh, '<', $path );
 	my $line = <$fh>;
 	close $fh;
-	return Plugins::SpotifySoloist::StreamSemantics::shimGenerationAcknowledged(
+	my $shimAcknowledged =
+		Plugins::SpotifySoloist::StreamSemantics::shimGenerationAcknowledged(
 		$line, $requestId,
+	);
+	return unless $shimAcknowledged;
+	return 1 if $b->{format} eq 'pcm';
+
+	my $pumpPath = $b->{pcmPumpAck} or return;
+	return unless open( my $pumpFh, '<', $pumpPath );
+	my $pumpLine = <$pumpFh>;
+	close $pumpFh;
+	return Plugins::SpotifySoloist::StreamSemantics::shimGenerationAcknowledged(
+		$pumpLine, $requestId,
 	);
 }
 
@@ -1375,7 +1687,9 @@ sub _finishPcmTimelineResync {
 		$log->warn(
 			"PCM shim request $requestId acknowledgement timed out after "
 			. ( $pending->{attempts} || 1 )
-			. " attempts (control=$b->{pcmShimControl}, ack=$b->{pcmShimAck}); "
+			. " attempts (control=$b->{pcmShimControl}, shim_ack=$b->{pcmShimAck}"
+			. ( $b->{format} eq 'pcm' ? '' : ", pump_ack=$b->{pcmPumpAck}" )
+			. '); '
 			. 'replacing the LMS handler without terminating the healthy bridge'
 		);
 	}
@@ -1397,7 +1711,29 @@ sub _finishPcmTimelineResync {
 			$pending->{url},
 		)
 	);
+	my $flushAt = _delayTraceMilestone(
+		$b, $client, 'generation-flush-complete',
+		request => $requestId,
+		shim_ack => $acknowledged ? 'yes' : 'timeout-degraded',
+		reason => $pending->{transition}->{reason},
+		url => $pending->{url},
+	);
+	$b->{delayTrace}->{generationFlushAt} = $flushAt
+		if $b->{delayTrace}
+		&& ( $b->{delayTrace}->{generation} || 0 )
+			== ( $b->{streamGeneration} || 0 );
 	$b->{suppressLyrionTransportUntil} = time() + 1;
+	_traceLmsStrmRequested(
+		$b, $client,
+		input_buffer_kb => transitionBufferKbForFormat(
+			$b->{formatSpec},
+		),
+		transition_restart_buffer_ms => transitionRestartBufferMs(),
+		path => 'generation-replacement',
+		output_format => $b->{format},
+		output_samplesize => $b->{format} eq 'mp3' ? 'compressed' : 16,
+		url => $pending->{url},
+	);
 	$client->execute( [ 'playlist', 'play', $pending->{url} ] );
 }
 
@@ -1519,6 +1855,23 @@ sub recoverDirectStreamAfterStall {
 			. " stale bytes (generation=$generation, url=$replacementUrl)"
 		);
 		$liveBridge->{suppressLyrionTransportUntil} = time() + 1;
+		_delayTraceMilestone(
+			$liveBridge, $liveClient, 'stream-recover-requested',
+			discarded_bytes => $discarded || 0,
+			url => $replacementUrl,
+		);
+		_traceLmsStrmRequested(
+			$liveBridge, $liveClient,
+			input_buffer_kb => transitionBufferKbForFormat(
+				$liveBridge->{formatSpec},
+			),
+			transition_restart_buffer_ms => transitionRestartBufferMs(),
+			path => 'stale-recovery',
+			output_format => $liveBridge->{format},
+			output_samplesize =>
+				$liveBridge->{format} eq 'mp3' ? 'compressed' : 16,
+			url => $replacementUrl,
+		);
 		$liveClient->execute( [ 'playlist', 'play', $replacementUrl ] );
 	} );
 }
@@ -1918,7 +2271,6 @@ sub _maybeApplyConfiguredVolumeOnConnect {
 
 sub _observeSpotifyTimeline {
 	my ( $b, $client, $state, $playback ) = @_;
-	return unless ( $b->{format} || '' ) eq 'pcm';
 	unless ( $playback->{isActiveDevice} ) {
 		$b->{timelineTracker} = {};
 		$b->{pendingTimelineResync} = undef;
@@ -1939,6 +2291,13 @@ sub _observeSpotifyTimeline {
 			'keeping the current direct PCM handler for natural Spotify track '
 			. "transition on " . $client->name
 			. " ($transition->{fromUri} -> $transition->{toUri})"
+		);
+		_delayTraceMilestone(
+			$b, $client, 'spotify-uri-transition',
+			reason => $transition->{reason},
+			resync => 'no',
+			from_uri => $transition->{fromUri} || '',
+			to_uri => $transition->{toUri} || '',
 		);
 		return;
 	}
@@ -1967,6 +2326,13 @@ sub _observeSpotifyTimeline {
 				? $transition->{previousPositionMs} : 'unknown',
 			defined $position ? $position : 'unknown',
 		)
+	);
+	_delayTraceMilestone(
+		$b, $client, 'spotify-uri-transition',
+		reason => $transition->{reason},
+		resync => 'yes',
+		from_uri => $transition->{fromUri} || '',
+		to_uri => $transition->{toUri} || '',
 	);
 }
 
@@ -2015,7 +2381,8 @@ sub _applySpotifyTransportEvents {
 		resyncAt   => $now,
 		generation => $b->{streamGeneration},
 	};
-	if ( $b->{backend} eq 'pcm-shim' && $b->{format} eq 'pcm' ) {
+	_startDelayTrace( $b, $client, $state );
+	if ( $b->{backend} eq 'pcm-shim' ) {
 		my $generation = $b->{streamGeneration};
 		my $requestId = ++$b->{shimRequestId};
 		$log->info(
@@ -2070,7 +2437,7 @@ sub _applySpotifyTransportEvents {
 	);
 	$b->{suppressLyrionTransportUntil} = time() + 1;
 	my $replacementUrl = _playbackStreamUrlFor($b);
-	$log->info("opening generation-qualified PCM URL $replacementUrl");
+	$log->info("opening generation-qualified Soloist URL $replacementUrl");
 	$client->execute( [ 'playlist', 'play', $replacementUrl ] );
 }
 
@@ -2080,11 +2447,20 @@ sub _applyPlaybackTransition {
 	if ( $playback->{reallyPlayingHere} && !$playback->{wasPlayingHere} ) {
 		return unless _directStreamReady($b);
 
+		_startDelayTrace( $b, $client, $b->{lastPlaybackState} || {} );
 		$log->info(
 			'auto-tuning ' . $client->name . ' to its Spotify Soloist instance'
 			. ' through the direct LMS stream'
 		);
 		$b->{suppressLyrionTransportUntil} = time() + 1;
+		_traceLmsStrmRequested(
+			$b, $client,
+			input_buffer_kb => $b->{formatSpec}->{bufferKb},
+			path => 'initial-play',
+			output_format => $b->{format},
+			output_samplesize => $b->{format} eq 'mp3' ? 'compressed' : 16,
+			url => $url,
+		);
 		$client->execute( [ 'playlist', 'play', $url ] );
 		$b->{notPlayingSince} = undef;
 		$b->{pausedSince} = undef;
@@ -2272,9 +2648,7 @@ sub _handleMissingPlayerClient {
 	return 1;
 }
 
-sub pollMetadata {
-	Slim::Utils::Timers::setTimer( undef, time() + STATE_LOOP_INTERVAL, \&pollMetadata );
-
+sub _pollMetadataPass {
 	for my $playerId ( keys %bridges ) {
 		next unless _bridgeRunning($playerId);
 		my $b = $bridges{$playerId} or next;
@@ -2303,10 +2677,58 @@ sub pollMetadata {
 		_observeSpotifyTimeline( $b, $client, $state, $playback );
 		_applySpotifyTransportEvents( $b, $client, $url, $playback, $state );
 		_applyPlaybackTransition( $playerId, $b, $client, $url, $playback );
+		_tracePlayerStatus( $b, $client );
+		_traceMidstreamPlayerProgress( $b, $client, $url, $playback );
 		_updateIdleDisconnectState( $b, $playback );
 		next if _maybeRestartIdleBridge( $playerId, $b, $client, $playback );
 		_publishMetadataForPlayer( $b, $client, $url, $state );
 	}
+}
+
+sub _metadataPollRetryDelay {
+	my ($failures) = @_;
+	return STATE_LOOP_INTERVAL unless $failures && $failures > 0;
+	my $exponent = $failures - 1;
+	$exponent = 6 if $exponent > 6;
+	my $delay = STATE_LOOP_INTERVAL * ( 2 ** $exponent );
+	return $delay > STATE_LOOP_MAX_RETRY_DELAY
+		? STATE_LOOP_MAX_RETRY_DELAY
+		: $delay;
+}
+
+sub pollMetadata {
+	my $ok = eval {
+		_pollMetadataPass();
+		1;
+	};
+
+	my $delay = STATE_LOOP_INTERVAL;
+	if ($ok) {
+		if ($metadataPollFailures) {
+			$log->info(
+				"Spotify Soloist metadata polling recovered after "
+				. "$metadataPollFailures failed attempt(s)"
+			);
+		}
+		$metadataPollFailures = 0;
+		$metadataPollErrorLogged = 0;
+	}
+	else {
+		my $error = $@ || 'unknown error';
+		$error =~ s/\s+\z//;
+		$metadataPollFailures++;
+		$delay = _metadataPollRetryDelay($metadataPollFailures);
+		if (!$metadataPollErrorLogged) {
+			$metadataPollErrorLogged = 1;
+			$log->error(
+				"Spotify Soloist metadata polling failed; retrying with bounded "
+				. "backoff (maximum " . STATE_LOOP_MAX_RETRY_DELAY
+				. " seconds): $error"
+			);
+		}
+	}
+
+	Slim::Utils::Timers::setTimer( undef, time() + $delay, \&pollMetadata );
 }
 
 1;

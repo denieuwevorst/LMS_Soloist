@@ -16,8 +16,9 @@ mkfifo "$fifo"
 make -C "$shim" clean marker_client >/dev/null
 
 # Match the bridge guard, then consume faster than real time in bursts with
-# deliberate 120 ms scheduler gaps. Those gaps exceed the 16 KiB FIFO alone,
-# but remain inside the 200 ms userspace live-edge budget.
+# deliberate 400 ms scheduler gaps that exceed both the 200 ms producer
+# budget and the 64 KiB kernel FIFO. The in-flight writer must retain every
+# accepted frame until the reader resumes.
 exec 9<>"$fifo"
 python3 - "$fifo" "$raw" <<'PY' &
 import os, sys, time
@@ -25,8 +26,8 @@ fifo, output = sys.argv[1:]
 target = 5 * 44100 * 4
 fd = os.open(fifo, os.O_RDONLY | os.O_NONBLOCK)
 data = bytearray()
-next_pause = 44100 * 4 // 4
-deadline = time.monotonic() + 8
+next_pause = 44100 * 4
+deadline = time.monotonic() + 10
 while len(data) < target and time.monotonic() < deadline:
     try:
         chunk = os.read(fd, min(16384, target - len(data)))
@@ -38,8 +39,8 @@ while len(data) < target and time.monotonic() < deadline:
         continue
     data.extend(chunk)
     if len(data) >= next_pause:
-        time.sleep(0.120)
-        next_pause += 44100 * 4 // 4
+        time.sleep(0.400)
+        next_pause += 44100 * 4
 os.close(fd)
 with open(output, "wb") as handle:
     handle.write(data)
@@ -68,7 +69,7 @@ if grep -Eq 'live-edge drop|stream underflow' "$tmp/client.log"; then
 	echo "steady-state soak dropped or underflowed audio" >&2
 	exit 1
 fi
-grep -q 'output pressure: eagain=' "$tmp/client.log"
+grep -q 'FIFO kernel queue: 65536 bytes' "$tmp/client.log"
 
 python3 - "$raw" "$tmp/client.log" <<'PY'
 import re, struct, sys
@@ -89,12 +90,10 @@ pressure = re.findall(
     r"max_wait=([0-9.]+) ms max_queued=([0-9.]+) ms",
     log,
 )
-if not pressure:
-    raise SystemExit("reader jitter did not exercise FIFO backpressure")
-max_wait = max(float(row[2]) for row in pressure)
-max_queued = max(float(row[3]) for row in pressure)
-if max_wait > 200.0:
-    raise SystemExit(f"sink wait exceeded ring budget: {max_wait} ms")
+max_wait = max((float(row[2]) for row in pressure), default=0.0)
+max_queued = max((float(row[3]) for row in pressure), default=0.0)
+if not 10.0 <= max_wait <= 450.0:
+    raise SystemExit(f"400 ms LMS pause produced unexpected writer wait: {max_wait} ms")
 ages = [
     float(value)
     for value in re.findall(r"runtime summary: .*?oldest_age=([0-9.]+) ms", log)
@@ -102,10 +101,10 @@ ages = [
 if not ages:
     raise SystemExit("runtime summaries did not report oldest audio age")
 max_age = max(ages)
-if max_age > 220.0:
-    raise SystemExit(f"oldest audio exceeded live-edge age budget: {max_age} ms")
+if max_age > 650.0:
+    raise SystemExit(f"oldest preserved audio exceeded bounded recovery budget: {max_age} ms")
 print(
-    f"steady-state pressure stayed bounded: "
+    f"400 ms LMS pauses stayed lossless: "
     f"max_wait={max_wait:.1f} ms producer_queue={max_queued:.1f} ms "
     f"oldest_age={max_age:.1f} ms"
 )

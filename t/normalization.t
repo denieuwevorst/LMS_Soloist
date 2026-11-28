@@ -31,7 +31,8 @@ BEGIN {
 	$INC{'Slim/Utils/Strings.pm'} = __FILE__;
 
 	package Plugins::SpotifySoloist::Plugin;
-	sub directStreamInfoForUrl { return }
+	our $stream;
+	sub directStreamInfoForUrl { return $stream }
 }
 
 require './ProtocolHandler.pm';
@@ -46,6 +47,51 @@ is(
 	'soloist streams override LMS remote replay gain with unity gain',
 );
 is(
+	Plugins::SpotifySoloist::ProtocolHandler->isRemote(),
+	1,
+	'Soloist opts into the LMS handler-specific player buffer threshold',
+);
+$Plugins::SpotifySoloist::Plugin::stream = {
+	format => {
+		bufferKb => 35,
+	},
+	bufferKb => 35,
+};
+my $bufferKb = Plugins::SpotifySoloist::ProtocolHandler->bufferThreshold(
+	undef,
+	'soloist://player-0/soloist.wav',
+);
+is( $bufferKb, 35, 'PCM requests a 35 KiB Touch input-buffer threshold' );
+is(
+	Plugins::SpotifySoloist::ProtocolHandler->bufferThreshold(
+		undef,
+		'soloist://player-0/soloist.wav?g=7',
+	),
+	35,
+	'generation URL uses the resolved transition threshold',
+);
+$Plugins::SpotifySoloist::Plugin::stream->{bufferKb} = 130;
+is(
+	Plugins::SpotifySoloist::ProtocolHandler->bufferThreshold(
+		undef,
+		'soloist://player-0/soloist.wav?g=7',
+	),
+	130,
+	'generation URL can use a larger persisted transition threshold',
+);
+cmp_ok(
+	$bufferKb * 1024 / ( 1_411_200 / 8 ),
+	'<',
+	0.25,
+	'PCM threshold requires less than 250 ms of source audio',
+);
+cmp_ok(
+	1024 * 1024 / ( 1_411_200 / 8 ),
+	'>',
+	5,
+	'the bypassed 1 MiB Touch prefill explains the field five-second delay',
+);
+is(
 	Plugins::SpotifySoloist::ProtocolHandler->isRepeatingStream(),
 	1,
 	'soloist streams identify as continuous so DSTM does not queue a next song',
@@ -55,19 +101,6 @@ is(
 	Plugins::SpotifySoloist::SoloistPrefs::normalizationForPlayer( undef, 'player-a' ),
 	1,
 	'missing normalization preferences preserve the enabled default',
-);
-is(
-	Plugins::SpotifySoloist::SoloistPrefs::liveRingForPlayer( undef, 'player-a' ),
-	1,
-	'missing live-ring preferences preserve the enabled experimental default',
-);
-is(
-	Plugins::SpotifySoloist::SoloistPrefs::liveRingForPlayer(
-		{ 'player-a' => 0, 'player-b' => 1 },
-		'player-a',
-	),
-	0,
-	'compatibility mode resolves independently per player',
 );
 is(
 	Plugins::SpotifySoloist::SoloistPrefs::normalizationForPlayer(

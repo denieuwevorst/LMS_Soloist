@@ -22,12 +22,6 @@ PLUGIN_SPOTIFYSOLOIST_UPDATE_NOW
 PLUGIN_SPOTIFYSOLOIST_MANAGED_STATUS
 	EN	Managed Soloist:
 
-PLUGIN_SPOTIFYSOLOIST_FFMPEGBIN
-	EN	Path to ffmpeg binary
-
-PLUGIN_SPOTIFYSOLOIST_FFMPEGBIN_DESC
-	EN	Used to capture each player's backend-specific audio source and feed its direct LMS stream.
-
 PLUGIN_SPOTIFYSOLOIST_AUDIOBACKEND
 	EN	Audio backend
 
@@ -56,13 +50,13 @@ PLUGIN_SPOTIFYSOLOIST_FORMAT
 	EN	Default stream format
 
 PLUGIN_SPOTIFYSOLOIST_FORMAT_DESC
-	EN	Default format for players without an individual override in the player table above. MP3 and FLAC are encoded by ffmpeg in the bridge. PCM sends uncompressed 44.1 kHz stereo 16-bit audio in a WAV stream; with the direct-PCM shim backend it avoids ffmpeg entirely, and LMS may apply its normal per-player transcoding when a player cannot accept WAV directly.
+	EN	Default format for players without an individual override in the player table above. The bridge always supplies uncompressed 44.1 kHz stereo 16-bit PCM in a WAV stream. PCM stays direct; Lyrion applies the plugin conversion rule for FLAC or MP3 and reports a conversion error when the required LMS converter is unavailable.
 
 PLUGIN_SPOTIFYSOLOIST_BITRATE
 	EN	MP3 bitrate
 
 PLUGIN_SPOTIFYSOLOIST_BITRATE_DESC
-	EN	Only used when format is mp3.
+	EN	Only used when format is MP3. Lyrion selects the matching fixed-bitrate conversion rule.
 
 PLUGIN_SPOTIFYSOLOIST_INITIALVOLUME
 	EN	Initial Soloist volume
@@ -93,6 +87,18 @@ PLUGIN_SPOTIFYSOLOIST_IDLEDISCONNECT
 
 PLUGIN_SPOTIFYSOLOIST_IDLEDISCONNECT_DESC
 	EN	Restarts the Soloist instance after this many seconds paused, clearing its metadata and briefly releasing the Spotify Connect account and stale artwork. Set to 0 to keep it continuously connected.
+
+PLUGIN_SPOTIFYSOLOIST_TRANSITION_BUFFER
+	EN	Discontinuous track restart buffer
+
+PLUGIN_SPOTIFYSOLOIST_TRANSITION_BUFFER_DESC
+	EN	Buffer duration used only when a manual seek or discontinuous track change opens a generation-qualified stream URL. Default 750 ms; allowed range 0-3000 ms. Set to 0 to reuse the normal low-latency threshold. PCM uses its exact sample rate, channels, and sample width; MP3 uses the selected bitrate; variable-rate FLAC uses the uncompressed PCM rate as a conservative estimate. The player protocol limits the resulting threshold to 255 KiB. Initial playback and natural transitions are unchanged.
+
+PLUGIN_SPOTIFYSOLOIST_DELAYDIAGNOSTICS
+	EN	Trace playback startup delay
+
+PLUGIN_SPOTIFYSOLOIST_DELAYDIAGNOSTICS_DESC
+	EN	Log one timestamped milestone per startup stage and stream generation. Enable only for a controlled delay test; normal per-byte audio is never logged.
 
 PLUGIN_SPOTIFYSOLOIST_STARTALL
 	EN	Start all selected

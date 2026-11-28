@@ -267,6 +267,191 @@ ok(
 	),
 	'canonical startup URL cannot reopen an older active generation',
 );
+my $generationTrace = {
+	generation => 17,
+	strmRequestedAt => 10,
+};
+ok(
+	!Plugins::SpotifySoloist::StreamSemantics::delayTracePlayerStatusReady(
+		$generationTrace,
+		'soloist://player-3/soloist.wav?g=16',
+		'soloist://player-3/soloist.wav',
+		17,
+	),
+	'stale status before the new handler opens is not first status for the generation',
+);
+$generationTrace->{handlerOpenedAt} = 11;
+ok(
+	!Plugins::SpotifySoloist::StreamSemantics::delayTracePlayerStatusReady(
+		$generationTrace,
+		'soloist://player-3/soloist.wav?g=16',
+		'soloist://player-3/soloist.wav',
+		17,
+	),
+	'status from the outgoing handler is ignored after the replacement handler opens',
+);
+ok(
+	Plugins::SpotifySoloist::StreamSemantics::delayTracePlayerStatusReady(
+		$generationTrace,
+		'soloist://player-3/soloist.wav?g=17',
+		'soloist://player-3/soloist.wav',
+		17,
+	),
+	'post-open status on the exact generation is eligible as first player status',
+);
+my $timing = Plugins::SpotifySoloist::StreamSemantics::delayTraceTimingSummary({
+	startedAt => 20,
+	generationFlushAt => 20.010,
+	strmRequestedAt => 20.012,
+	oldHandlerClosedAt => 20.013,
+	handlerOpenedAt => 20.257,
+	firstWavAt => 20.315,
+	firstPcmAt => 20.326,
+	playerStatusAt => 20.430,
+});
+is( $timing->{category}, 'handler_reopen', 'transition timing classifies the largest phase' );
+is( $timing->{track_at}, '20.000', 'transition timing includes the track milestone time' );
+is( $timing->{flush_at}, '20.010', 'transition timing includes the flush milestone time' );
+is( $timing->{strm_at}, '20.012', 'transition timing includes the STRM milestone time' );
+is( $timing->{close_at}, '20.013', 'transition timing includes the close milestone time' );
+is( $timing->{open_at}, '20.257', 'transition timing includes the open milestone time' );
+is( $timing->{wav_at}, '20.315', 'transition timing includes the WAV milestone time' );
+is( $timing->{pcm_at}, '20.326', 'transition timing includes the PCM milestone time' );
+is( $timing->{status_at}, '20.430', 'transition timing includes the status milestone time' );
+is( $timing->{track_to_flush_ms}, 10, 'transition timing measures generation flush latency' );
+is( $timing->{flush_to_strm_ms}, 2, 'transition timing measures STRM handoff latency' );
+is( $timing->{close_to_open_ms}, 244, 'transition timing measures LMS handler replacement latency' );
+is( $timing->{open_to_wav_ms}, 58, 'transition timing measures first WAV availability' );
+is( $timing->{open_to_pcm_ms}, 69, 'transition timing measures first PCM availability' );
+is( $timing->{pcm_to_status_ms}, 104, 'transition timing measures player/device buffering' );
+is( $timing->{track_to_status_ms}, 430, 'transition timing reports total transition latency' );
+my $progressTrace = {};
+ok(
+	!Plugins::SpotifySoloist::StreamSemantics::observePlayerProgressStall(
+		$progressTrace, 10, 100, 1,
+	),
+	'first player progress observation establishes a baseline',
+);
+ok(
+	!Plugins::SpotifySoloist::StreamSemantics::observePlayerProgressStall(
+		$progressTrace, 10, 100.9, 1,
+	),
+	'unchanged player progress below one second is not a stall',
+);
+my $progressStall =
+	Plugins::SpotifySoloist::StreamSemantics::observePlayerProgressStall(
+		$progressTrace, 10, 101.1, 1,
+	);
+cmp_ok( $progressStall->{gapMs}, '>=', 1_000, 'one-second player progress stall is reported' );
+ok(
+	!Plugins::SpotifySoloist::StreamSemantics::observePlayerProgressStall(
+		$progressTrace, 10, 102, 1,
+	),
+	'player progress stall is logged once until progress resumes',
+);
+ok(
+	!Plugins::SpotifySoloist::StreamSemantics::observePlayerProgressStall(
+		$progressTrace, 10.5, 102.1, 1,
+	),
+	'resumed player progress clears the stall latch',
+);
+ok(
+	!Plugins::SpotifySoloist::StreamSemantics::observePlayerProgressStall(
+		$progressTrace, 0.1, 102.2, 1,
+	),
+	'natural elapsed reset is treated as progress rather than a stall',
+);
+ok(
+	!Plugins::SpotifySoloist::StreamSemantics::observePlayerProgressStall(
+		$progressTrace, undef, 103, 0,
+	),
+	'leaving active playback resets player progress tracking',
+);
+is_deeply(
+	[ Plugins::SpotifySoloist::StreamSemantics::normalizeTransitionRestartBufferMs(undef) ],
+	[ 750, 'expected a whole number from 0 to 3000' ],
+	'missing transition buffer falls back to the recommended default',
+);
+is_deeply(
+	[ Plugins::SpotifySoloist::StreamSemantics::normalizeTransitionRestartBufferMs(-1) ],
+	[ 0, 'clamped to the minimum' ],
+	'negative transition buffer is clamped to zero',
+);
+is_deeply(
+	[ Plugins::SpotifySoloist::StreamSemantics::normalizeTransitionRestartBufferMs(3001) ],
+	[ 3000, 'clamped to the maximum' ],
+	'oversized transition buffer is clamped to three seconds',
+);
+is_deeply(
+	[ Plugins::SpotifySoloist::StreamSemantics::normalizeTransitionRestartBufferMs(750) ],
+	[ 750, undef ],
+	'valid transition buffer is preserved',
+);
+is(
+	Plugins::SpotifySoloist::StreamSemantics::transitionBufferMsForUrl(
+		'soloist://player-0/soloist.wav',
+		750,
+	),
+	0,
+	'normal Soloist URL does not enable transition restart buffering',
+);
+is(
+	Plugins::SpotifySoloist::StreamSemantics::transitionBufferMsForUrl(
+		'soloist://player-0/soloist.wav?g=7',
+		750,
+	),
+	750,
+	'generation-qualified URL enables transition restart buffering',
+);
+is(
+	Plugins::SpotifySoloist::StreamSemantics::transitionBufferKb(
+		{
+			key => 'pcm', sampleRate => 44_100, channels => 2,
+			sampleSize => 16, bufferKb => 35,
+		},
+		0,
+	),
+	35,
+	'zero transition buffer preserves the normal PCM threshold',
+);
+is(
+	Plugins::SpotifySoloist::StreamSemantics::transitionBufferKb(
+		{
+			key => 'pcm', sampleRate => 44_100, channels => 2,
+			sampleSize => 16, bufferKb => 35,
+		},
+		750,
+	),
+	130,
+	'PCM transition duration uses sample rate, channels, and sample width',
+);
+is(
+	Plugins::SpotifySoloist::StreamSemantics::transitionBufferKb(
+		{ key => 'mp3', bitrateBps => 320_000, bufferKb => 8 },
+		750,
+	),
+	30,
+	'MP3 transition duration uses the selected encoded bitrate',
+);
+is(
+	Plugins::SpotifySoloist::StreamSemantics::transitionBufferKb(
+		{ key => 'flac', sourceBitrateBps => 1_411_200, bufferKb => 24 },
+		750,
+	),
+	130,
+	'FLAC transition duration uses the conservative source-rate estimate',
+);
+is(
+	Plugins::SpotifySoloist::StreamSemantics::transitionBufferKb(
+		{
+			key => 'pcm', sampleRate => 44_100, channels => 2,
+			sampleSize => 16, bufferKb => 35,
+		},
+		3000,
+	),
+	255,
+	'transition threshold respects the one-byte player protocol limit',
+);
 ok(
 	!Plugins::SpotifySoloist::StreamSemantics::isSoloistUrl(
 		'https://radio.example/stream.mp3'

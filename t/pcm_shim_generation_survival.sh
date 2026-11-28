@@ -63,7 +63,7 @@ run_mode() {
 	kill "$client_pid"
 	wait "$client_pid" 2>/dev/null || true
 	client_pid=""
-	grep -q "loaded build 2026-11-18.6-frameunits: mode=$mode" "$log"
+	grep -q "loaded build 2026-11-28.2-lossless: mode=$mode" "$log"
 	grep -q 'generation flush: generation=8 reason=track' "$log"
 	exec 9>&-
 }

@@ -8,7 +8,7 @@
  *
  * Environment:
  *   SOLOIST_SHIM_OUT     path to FIFO / unix socket / file   (/tmp/soloist-pcm.fifo)
- *   SOLOIST_SHIM_FORMAT  s16 | s24 | s32 (interleaved stereo LE)   (s24, packed)
+ *   SOLOIST_SHIM_FORMAT  s16 | s24 | s32 (interleaved stereo LE)   (s16)
  *   SOLOIST_SHIM_RATE    output rate in Hz, 0 = pass through       (44100)
  *   SOLOIST_SHIM_LOG     0 quiet, 1 info, 2 trace API calls         (0)
  *   SOLOIST_SHIM_RING_MS bounded live-edge ring depth               (200)
@@ -49,7 +49,7 @@
 
 static struct {
     char out[512], control[512], ack[512];
-    int bytes, rate, log, max_tlength_ms, ring_ms, compat;
+    int bytes, rate, log, max_tlength_ms, ring_ms, compat, delay_trace;
     uint64_t counter_base_frames;
 } cfg;
 static pthread_once_t cfg_once = PTHREAD_ONCE_INIT;
@@ -59,7 +59,7 @@ static void cfg_init(void)
     const char *e;
     snprintf(cfg.out, sizeof cfg.out, "%s",
              (e = getenv("SOLOIST_SHIM_OUT")) && *e ? e : "/tmp/soloist-pcm.fifo");
-    cfg.bytes = 3;
+    cfg.bytes = 2;
     if ((e = getenv("SOLOIST_SHIM_FORMAT"))) {
         if (!strcmp(e, "s16")) cfg.bytes = 2;
         else if (!strcmp(e, "s32")) cfg.bytes = 4;
@@ -67,6 +67,7 @@ static void cfg_init(void)
     cfg.rate = 44100;
     if ((e = getenv("SOLOIST_SHIM_RATE"))) cfg.rate = atoi(e);
     cfg.log = (e = getenv("SOLOIST_SHIM_LOG")) ? atoi(e) : 0;
+    cfg.delay_trace = (e = getenv("SOLOIST_SHIM_DELAY_TRACE")) ? atoi(e) : 0;
     cfg.max_tlength_ms = (e = getenv("SOLOIST_SHIM_MAX_TLENGTH_MS")) ? atoi(e) : 0;
     cfg.ring_ms = (e = getenv("SOLOIST_SHIM_RING_MS")) ? atoi(e) : 200;
     if (cfg.ring_ms < 20) cfg.ring_ms = 20;
@@ -88,7 +89,7 @@ __attribute__((constructor))
 static void shim_loaded(void)
 {
     CFG();
-    fprintf(stderr, "[soloist-shim] loaded build 2026-11-18.6-frameunits: mode=%s out=%s format=%dB rate=%d ring_ms=%d max_tlength_ms=%d control=%s\n",
+    fprintf(stderr, "[soloist-shim] loaded build 2026-11-28.2-lossless: mode=%s out=%s format=%dB rate=%d ring_ms=%d max_tlength_ms=%d control=%s\n",
         cfg.compat ? "compat" : "live-ring",
         cfg.out, cfg.bytes, cfg.rate, cfg.ring_ms, cfg.max_tlength_ms,
         cfg.control[0] ? cfg.control : "off");
@@ -109,10 +110,10 @@ static uint64_t now_ns(void)
 static struct {
     pthread_mutex_t lk;
     int fd, is_sock;
-    uint64_t next_try_ns, dropped, last_drop_log_ns, last_pressure_log_ns;
+    uint64_t next_try_ns, last_pressure_log_ns;
     uint64_t eagain_count, partial_count, max_wait_ns, max_queued_usec;
-    unsigned char pending[8];
-    size_t pending_len;
+    unsigned long traced_generation;
+    int traced_generation_valid;
 } out = {
     .lk = PTHREAD_MUTEX_INITIALIZER,
     .fd = -1
@@ -152,12 +153,12 @@ static int out_open_locked(void)
         fd = open(cfg.out, O_WRONLY | O_NONBLOCK | O_CLOEXEC);
         if (fd < 0) return -1;
         /*
-         * Keep the kernel queue below 100 ms at the plugin's 44.1 kHz s16
-         * stereo format. The userspace ring owns the deliberate buffering;
-         * a large FIFO would preserve stale audio that cannot be dropped
-         * from the head by the writer.
+         * Absorb LMS's measured ~205 ms read pauses without blocking the
+         * wall-clock writer. At 44.1 kHz stereo S16LE, 64 KiB is ~372 ms:
+         * bounded below the userspace converter queue, but large enough that
+         * ordinary player scheduling never turns a 200 ms output chunk stale.
          */
-        fcntl(fd, F_SETPIPE_SZ, 16384);
+        fcntl(fd, F_SETPIPE_SZ, 65536);
         pipe_size = fcntl(fd, F_GETPIPE_SZ);
         if (pipe_size > 0) {
             int output_rate = cfg.rate > 0 ? cfg.rate : 44100;
@@ -178,12 +179,6 @@ static int out_open_locked(void)
 static void out_log_activity_locked(void)
 {
     uint64_t t = now_ns();
-    if (out.dropped && t - out.last_drop_log_ns >= 1000000000ull) {
-        LOG(1, "output live-edge drop: %llu bytes while FIFO unavailable/slow",
-            (unsigned long long) out.dropped);
-        out.dropped = 0;
-        out.last_drop_log_ns = t;
-    }
     if ((out.eagain_count || out.partial_count) &&
         t - out.last_pressure_log_ns >= 1000000000ull) {
         LOG(1, "output pressure: eagain=%llu partial=%llu max_wait=%.1f ms max_queued=%.1f ms",
@@ -200,141 +195,59 @@ static void out_log_activity_locked(void)
 }
 
 static void control_check_locked(pa_stream *s);
-static int chunk_is_current(pa_stream *s, unsigned long generation,
-                            uint64_t overflow_serial);
+static int chunk_is_current(pa_stream *s, unsigned long generation);
 static uint64_t stream_queued_usec(pa_stream *s);
 
 static void out_write(pa_stream *s, const unsigned char *b, size_t len,
-                      size_t frame_size, unsigned long generation,
-                      uint64_t overflow_serial)
+                      size_t frame_size, unsigned long generation)
 {
     size_t off = 0;
     uint64_t wait_started = 0;
-    uint64_t wait_limit_ns = (uint64_t) cfg.ring_ms * 1000000ull;
-    if (cfg.compat) wait_limit_ns = 200000000ull;
 
     pthread_mutex_lock(&out.lk);
-    if (out_open_locked() < 0) {
-        out.dropped += len;
-        out_log_activity_locked();
-        pthread_mutex_unlock(&out.lk);
-        return;
-    }
-    while (out.pending_len) {
-        ssize_t n = out.is_sock
-            ? send(out.fd, out.pending, out.pending_len, MSG_NOSIGNAL)
-            : write(out.fd, out.pending, out.pending_len);
-        if (n > 0) {
-            if ((size_t) n < out.pending_len) out.partial_count++;
-            out.pending_len -= (size_t) n;
-            if (out.pending_len)
-                memmove(out.pending, out.pending + n, out.pending_len);
-            continue;
-        }
-        if (n < 0 && errno == EINTR) continue;
-        if (n < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) {
-            struct pollfd p = { out.fd, POLLOUT, 0 };
-            uint64_t t = now_ns();
-            if (!wait_started) wait_started = t;
-            out.eagain_count++;
-            {
-                uint64_t queued = stream_queued_usec(s);
-                if (queued > out.max_queued_usec) out.max_queued_usec = queued;
-            }
-            if (!chunk_is_current(s, generation, overflow_serial) ||
-                t - wait_started >= wait_limit_ns) {
-                out.dropped += len;
-                close(out.fd);
-                out.fd = -1;
-                out.pending_len = 0;
-                out_log_activity_locked();
-                pthread_mutex_unlock(&out.lk);
-                return;
-            }
-            poll(&p, 1, 5);
-            continue;
-        }
-        LOG(1, "output closed while completing a partial frame: %s", strerror(errno));
-        close(out.fd);
-        out.fd = -1;
-        out.pending_len = 0;
-        out.dropped += len;
-        pthread_mutex_unlock(&out.lk);
-        return;
-    }
     while (off < len) {
         size_t chunk = len - off;
         ssize_t n;
+        uint64_t t;
+
+        if (!chunk_is_current(s, generation)) {
+            LOG(1, "generation output discard: generation=%lu bytes=%zu",
+                generation, len - off);
+            break;
+        }
+        if (out_open_locked() < 0) {
+            struct timespec nap = { 0, 5000000 };
+            if (!wait_started) wait_started = now_ns();
+            nanosleep(&nap, NULL);
+            continue;
+        }
         if (!out.is_sock && chunk > 4096) chunk = 4096;
         chunk -= chunk % frame_size;
         if (!chunk) chunk = frame_size;
         n = out.is_sock ? send(out.fd, b + off, chunk, MSG_NOSIGNAL)
                         : write(out.fd, b + off, chunk);
         if (n > 0) {
+            if (cfg.delay_trace &&
+                (!out.traced_generation_valid ||
+                 out.traced_generation != generation)) {
+                out.traced_generation = generation;
+                out.traced_generation_valid = 1;
+                LOG(1, "[delay-trace] milestone=shim-first-pcm-write monotonic=%.3f audio_generation=%lu bytes=%zd",
+                    now_ns() / 1000000000.0, generation, n);
+            }
             if ((size_t) n < chunk) out.partial_count++;
             off += (size_t) n;
-            if ((size_t) n % frame_size) {
-                size_t needed = frame_size - (size_t) n % frame_size;
-                memcpy(out.pending, b + off, needed);
-                out.pending_len = needed;
-                off += needed;
-                while (out.pending_len) {
-                    n = out.is_sock
-                        ? send(out.fd, out.pending, out.pending_len, MSG_NOSIGNAL)
-                        : write(out.fd, out.pending, out.pending_len);
-                    if (n > 0) {
-                        out.pending_len -= (size_t) n;
-                        if (out.pending_len)
-                            memmove(out.pending, out.pending + n, out.pending_len);
-                        continue;
-                    }
-                    if (n < 0 && errno == EINTR) continue;
-                    if (n < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) {
-                        struct pollfd p = { out.fd, POLLOUT, 0 };
-                        uint64_t t = now_ns();
-                        if (!wait_started) wait_started = t;
-                        out.eagain_count++;
-                        {
-                            uint64_t queued = stream_queued_usec(s);
-                            if (queued > out.max_queued_usec) out.max_queued_usec = queued;
-                        }
-                        if (!chunk_is_current(s, generation, overflow_serial) ||
-                            t - wait_started >= wait_limit_ns) {
-                            out.dropped += len - off;
-                            close(out.fd);
-                            out.fd = -1;
-                            out.pending_len = 0;
-                            off = len;
-                            break;
-                        }
-                        poll(&p, 1, 5);
-                        continue;
-                    }
-                    LOG(1, "output closed during partial frame: %s", strerror(errno));
-                    close(out.fd);
-                    out.fd = -1;
-                    out.pending_len = 0;
-                    out.dropped += len - off;
-                    off = len;
-                    break;
-                }
-            }
             continue;
         }
         if (n < 0 && errno == EINTR) continue;
         if (n < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) {
             struct pollfd p = { out.fd, POLLOUT, 0 };
-            uint64_t t = now_ns();
+            t = now_ns();
             if (!wait_started) wait_started = t;
             out.eagain_count++;
             {
                 uint64_t queued = stream_queued_usec(s);
                 if (queued > out.max_queued_usec) out.max_queued_usec = queued;
-            }
-            if (!chunk_is_current(s, generation, overflow_serial) ||
-                t - wait_started >= wait_limit_ns) {
-                out.dropped += len - off;
-                break;
             }
             poll(&p, 1, 5);
             continue;
@@ -350,9 +263,7 @@ static void out_write(pa_stream *s, const unsigned char *b, size_t len,
         LOG(1, "output closed (%s)", strerror(errno));
         close(out.fd);
         out.fd = -1;
-        out.dropped += len - off;
         out_log_activity_locked();
-        break;
     }
     if (wait_started) {
         uint64_t waited = now_ns() - wait_started;
@@ -941,7 +852,7 @@ struct pa_stream {
     uint64_t consumed_frames, written_frames, dropped_bytes, summary_dropped_bytes;
     int64_t underflow_index;
     uint64_t last_drop_log_ns;
-    uint64_t overflow_serial, control_next_check_ns;
+    uint64_t control_next_check_ns;
     uint64_t queue_start_ns;
     uint64_t write_calls, callback_calls, underflow_count, writer_iterations;
     uint64_t last_summary_ns, last_iteration_ns, max_iteration_gap_ns;
@@ -1051,7 +962,6 @@ static size_t ring_put(pa_stream *s, const unsigned char *d, size_t n)
     s->summary_dropped_bytes += dropped;
     if (dropped) {
         s->consumed_frames += dropped / fs;
-        s->overflow_serial++;
     }
     return n;
 }
@@ -1069,32 +979,6 @@ static void ring_get(pa_stream *s, unsigned char *d, size_t n)
     }
 }
 
-/* Keep Pulse's original producer contract, but discard audio whose scheduled
- * presentation time has fallen behind the configured live-edge budget. */
-static void ring_trim_stale_locked(pa_stream *s, uint64_t now)
-{
-    uint64_t budget_ns, cutoff, stale_ns;
-    size_t fs, remove;
-    if (cfg.compat || !s->fill || !s->queue_start_ns) return;
-    budget_ns = (uint64_t) cfg.ring_ms * 1000000ull;
-    cutoff = now > budget_ns ? now - budget_ns : 0;
-    if (s->queue_start_ns >= cutoff) return;
-    stale_ns = cutoff - s->queue_start_ns;
-    fs = pa_frame_size(&s->ss);
-    remove = (size_t) ((long double) stale_ns * s->ss.rate / 1000000000.0L) * fs;
-    remove -= remove % fs;
-    if (remove > s->fill) remove = s->fill;
-    if (!remove) return;
-    s->rd = (s->rd + remove) % s->cap;
-    s->fill -= remove;
-    s->queue_start_ns += pa_bytes_to_usec(remove, &s->ss) * 1000ull;
-    if (!s->fill) s->queue_start_ns = 0;
-    s->dropped_bytes += remove;
-    s->summary_dropped_bytes += remove;
-    s->consumed_frames += remove / fs;
-    s->overflow_serial++;
-}
-
 static void stream_log_drops_locked(pa_stream *s)
 {
     uint64_t t = now_ns();
@@ -1108,14 +992,12 @@ static void stream_log_drops_locked(pa_stream *s)
     }
 }
 
-static int chunk_is_current(pa_stream *s, unsigned long generation,
-                            uint64_t overflow_serial)
+static int chunk_is_current(pa_stream *s, unsigned long generation)
 {
     int current;
     pthread_mutex_lock(&s->lk);
     control_check_locked(s);
-    current = !s->quit && s->generation == generation &&
-              (cfg.compat || s->overflow_serial == overflow_serial);
+    current = !s->quit && s->generation == generation;
     pthread_mutex_unlock(&s->lk);
     return current;
 }
@@ -1355,7 +1237,6 @@ static void *writer_main(void *arg)
         size_t n = 0, avail;
         int underflow = 0, drained = 0;
         unsigned long chunk_generation = 0;
-        uint64_t chunk_overflow_serial = 0;
         struct timespec nap = { 0, 5000000 };
         uint64_t t;
 
@@ -1368,7 +1249,6 @@ static void *writer_main(void *arg)
             s->max_iteration_gap_ns = t - s->last_iteration_ns;
         s->last_iteration_ns = t;
         control_check_locked(s);
-        ring_trim_stale_locked(s, t);
         stream_log_drops_locked(s);
         avail = s->fill / fs;
 
@@ -1416,7 +1296,6 @@ static void *writer_main(void *arg)
                     if (n) {
                         ring_get(s, raw, n * fs);
                         chunk_generation = s->generation;
-                        chunk_overflow_serial = s->overflow_serial;
                         base += n;
                         s->consumed_frames += n;
                         s->requested += n * fs;
@@ -1474,7 +1353,7 @@ static void *writer_main(void *arg)
             pthread_mutex_unlock(&s->lk);
             if (bytes && current) {
                 out_write(s, obuf, bytes, (size_t) cfg.bytes * 2,
-                          chunk_generation, chunk_overflow_serial);
+                          chunk_generation);
             }
         }
     }

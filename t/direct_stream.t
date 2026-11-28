@@ -23,7 +23,9 @@ BEGIN {
 	package TestLogger;
 	sub debug { }
 	sub error { }
-	sub info { }
+	our @info;
+	sub info { push @info, $_[1] }
+	sub warn { push @info, $_[1] }
 
 	package Slim::Utils::Strings;
 	sub import {
@@ -35,11 +37,15 @@ BEGIN {
 	package Plugins::SpotifySoloist::Plugin;
 	our $stream;
 	our @transitionClaims;
+	our @protocolMilestones;
+	our @midstreamStalls;
 	sub directStreamInfoForUrl { return $stream }
 	sub claimDirectStreamTransitionForUrl {
 		push @transitionClaims, [@_];
-		return { reason => 'track', resyncAt => 1 };
+		return $_[0] =~ /[?&]g=\d+/ ? { reason => 'track', resyncAt => 1 } : undef;
 	}
+	sub noteDelayTraceProtocolMilestone { push @protocolMilestones, [@_] }
+	sub noteMidstreamStall { push @midstreamStalls, [@_] }
 }
 
 require './StreamSemantics.pm';
@@ -63,11 +69,18 @@ plan skip_all => "mkfifo unavailable: " . ( $@ || $! )
 
 $Plugins::SpotifySoloist::Plugin::stream = {
 	fifoPath => $fifo,
+	playerId => 'test-player-0',
+	delayDiagnostics => 1,
+	bufferKb => 35,
+	transitionBufferMs => 0,
 	format   => {
 		key           => 'pcm',
 		contentType   => 'wav',
 		displayFormat => 'WAV',
 		bitrateBps    => 1_411_200,
+		sourceBitrateBps => 1_411_200,
+		sourceSampleSize => 16,
+		sourceBlockAlign => 4,
 		bitrateLabel  => '1411.2 kbps',
 		sampleRate    => 44_100,
 		sampleSize    => 16,
@@ -83,8 +96,32 @@ my $handler = Plugins::SpotifySoloist::ProtocolHandler->new({
 	song => $song,
 });
 ok( $handler, 'opens the direct FIFO stream' );
+like(
+	join( "\n", @TestLogger::info ),
+	qr/milestone=protocol-handler-new .*trace_client_id=test-player-0 .*generation=0 .*canonical=soloist:\/\/player-0\/soloist\.wav/,
+	'diagnostic creation milestone identifies the LMS client and generation',
+);
+like(
+	join( "\n", @TestLogger::info ),
+	qr/milestone=protocol-handler-open .*trace_client_id=test-player-0 .*generation=0 .*canonical=soloist:\/\/player-0\/soloist\.wav/,
+	'diagnostic open milestone carries canonical URL and generation',
+);
+is_deeply(
+	[
+		@{
+			$Plugins::SpotifySoloist::Plugin::protocolMilestones[0]
+		}[ 0 .. 2 ]
+	],
+	[ 'test-player-0', 0, 'handler-open' ],
+	'protocol open associates the handler with the exact trace generation',
+);
 is( $handler->contentType, 'wav', 'declares the LMS WAV content type' );
 is( $handler->getStreamBitrate(2_000_000), 1_411_200, 'declares PCM bitrate' );
+is(
+	$handler->getStreamBitrate(1_200_000),
+	1_411_200,
+	'does not throttle PCM source reads to the player output bitrate cap',
+);
 is( $song->samplerate, 44100, 'sets PCM sample rate' );
 is( $song->samplesize, 16, 'sets PCM sample size' );
 is( $song->channels, 2, 'sets PCM channels' );
@@ -99,10 +136,25 @@ is( $handler->sysread( $buffer, 44 ), 44, 'prepends a complete WAV header' );
 is( substr( $buffer, 0, 4 ), 'RIFF', 'WAV header has RIFF marker' );
 is( substr( $buffer, 8, 8 ), 'WAVEfmt ', 'WAV header has format marker' );
 is( substr( $buffer, 36, 4 ), 'data', 'WAV header has data marker' );
+like(
+	join( "\n", @TestLogger::info ),
+	qr/milestone=protocol-first-sysread .*trace_client_id=test-player-0 .*requested_bytes=44/,
+	'diagnostic trace records the first LMS read request',
+);
+like(
+	join( "\n", @TestLogger::info ),
+	qr/milestone=protocol-wav-prefix .*generation=0 .*bytes=44/,
+	'diagnostic trace records the first WAV bytes once',
+);
 
 $buffer = '';
 is( $handler->sysread( $buffer, 32 ), 9, 'reads FIFO audio after the header' );
 is( $buffer, 'audio-one', 'forwards FIFO audio unchanged' );
+like(
+	join( "\n", @TestLogger::info ),
+	qr/milestone=protocol-first-pcm-read .*generation=0 .*bytes=9/,
+	'diagnostic trace records the first FIFO audio read',
+);
 
 select undef, undef, undef, 1.05;
 syswrite( $writer, 'stale-audio' ) == 11 or die "write stale payload: $!";
@@ -112,6 +164,15 @@ ok(
 	!defined $staleRead && ( $! == EAGAIN || $! == EWOULDBLOCK ),
 	'starts catch-up instead of forwarding audio queued during an LMS read stall'
 );
+is( scalar @Plugins::SpotifySoloist::Plugin::midstreamStalls, 1, 'read gap emits one correlated midstream stall event' );
+my %stallFields = @{
+	$Plugins::SpotifySoloist::Plugin::midstreamStalls[0]
+}[ 3 .. $#{ $Plugins::SpotifySoloist::Plugin::midstreamStalls[0] } ];
+is(
+	$stallFields{source},
+	'protocol-read-gap',
+	'midstream stall event identifies the protocol read gap source',
+);
 
 select undef, undef, undef, 0.30;
 $buffer = '';
@@ -119,6 +180,11 @@ my $catchupRead = $handler->sysread( $buffer, 32 );
 ok(
 	!defined $catchupRead && ( $! == EAGAIN || $! == EWOULDBLOCK ),
 	'finishes catch-up with the FIFO empty'
+);
+is(
+	scalar @Plugins::SpotifySoloist::Plugin::midstreamStalls,
+	1,
+	'catch-up does not flood duplicate midstream stall events',
 );
 
 syswrite( $writer, 'audio-live' ) == 10 or die "write live payload: $!";
@@ -141,7 +207,18 @@ is( $handler->sysread( $buffer, 32 ), 9, 'reads audio after capture reconnects' 
 is( $buffer, 'audio-two', 'forwards restarted capture audio unchanged' );
 
 close $writer;
-close $handler;
+$handler->close;
+$handler->close;
+like(
+	join( "\n", @TestLogger::info ),
+	qr/milestone=protocol-handler-close .*generation=0/,
+	'diagnostic trace records handler closure',
+);
+is(
+	scalar( grep { /milestone=protocol-handler-close/ } @TestLogger::info ),
+	1,
+	'duplicate LMS close callbacks emit one close milestone',
+);
 
 $Plugins::SpotifySoloist::Plugin::stream->{streamGeneration} = 7;
 my $generationSong = TestSong->new;
@@ -157,6 +234,51 @@ is_deeply(
 );
 $buffer = '';
 is( $generationHandler->sysread( $buffer, 44 ), 44, 'new generation emits a fresh WAV header' );
+is( substr( $buffer, 0, 4 ), 'RIFF', 'generation fade does not alter the WAV header' );
+
+sysopen( $writer, $fifo, O_WRONLY | O_NONBLOCK ) or die "open generation FIFO writer: $!";
+my $fadePayload =
+	pack( 's<*', ( ( 10_000, 10_000 ) x 221 ), 1_234, 1_234 );
+syswrite( $writer, $fadePayload ) == length($fadePayload)
+	or die "write generation fade payload: $!";
+my $faded = '';
+my @fragmentSizes = ( 1, 3, 5, 7 );
+my $fragment = 0;
+while ( length($faded) < length($fadePayload) ) {
+	my $chunk = '';
+	my $read = $generationHandler->sysread(
+		$chunk,
+		$fragmentSizes[ $fragment++ % @fragmentSizes ],
+	);
+	if ( defined $read && $read > 0 ) {
+		$faded .= $chunk;
+		next;
+	}
+	next if !defined $read && ( $! == EAGAIN || $! == EWOULDBLOCK );
+	die "generation fade read failed: " . ( defined $read ? "EOF" : $! );
+}
+my @fadedSamples = unpack( 's<*', $faded );
+is( $fadedSamples[0], 0, 'first left sample of a discontinuous generation starts at zero' );
+is( $fadedSamples[1], 0, 'first right sample of a discontinuous generation starts at zero' );
+ok(
+	!grep(
+		$fadedSamples[ $_ * 2 ] < $fadedSamples[ ( $_ - 1 ) * 2 ],
+		1 .. 220,
+	),
+	'left fade rises monotonically',
+);
+ok(
+	!grep(
+		$fadedSamples[ $_ * 2 + 1 ] < $fadedSamples[ ( $_ - 1 ) * 2 + 1 ],
+		1 .. 220,
+	),
+	'right fade rises monotonically',
+);
+is( $fadedSamples[440], 10_000, 'fade reaches unity within five milliseconds' );
+is( $fadedSamples[441], 10_000, 'both channels reach unity together' );
+is( $fadedSamples[442], 1_234, 'samples after the fade remain unmodified' );
+is( $fadedSamples[443], 1_234, 'post-fade stereo alignment remains intact' );
+close $writer;
 close $generationHandler;
 
 $Plugins::SpotifySoloist::Plugin::stream->{format} = {
@@ -164,6 +286,9 @@ $Plugins::SpotifySoloist::Plugin::stream->{format} = {
 	contentType   => 'flc',
 	displayFormat => 'FLAC',
 	bitrateLabel  => 'VBR (live stream)',
+	sourceBitrateBps => 1_411_200,
+	sourceSampleSize => 16,
+	sourceBlockAlign => 4,
 	sampleRate    => 44_100,
 	sampleSize    => 16,
 	channels      => 2,
@@ -174,17 +299,23 @@ my $flacHandler = Plugins::SpotifySoloist::ProtocolHandler->new({
 	url  => 'soloist://player-0/soloist.flac',
 	song => $flacSong,
 });
-ok( $flacHandler, 'opens a variable-bitrate FLAC direct stream' );
-is( $flacHandler->contentType, 'flc', 'declares the LMS FLAC content type' );
+ok( $flacHandler, 'opens the final bridge-encoded FLAC stream' );
+is( $flacHandler->contentType, 'flc', 'declares the native LMS FLAC content type' );
 is(
-	$flacHandler->getStreamBitrate(1_500_000),
-	1_500_000,
-	'leaves FLAC stream bitrate unknown instead of reporting a fixed estimate',
+	$flacHandler->getStreamBitrate(1_200_000),
+	1_411_200,
+	'publishes the conservative live FLAC bitrate above the player cap',
 );
-is( $flacSong->bitrate, 0, 'does not set a fabricated numeric FLAC bitrate' );
+is( $flacSong->bitrate, 1_411_200, 'sets the live FLAC bitrate estimate' );
 is( $flacSong->samplerate, 44_100, 'sets the final FLAC sample rate' );
 is( $flacSong->samplesize, 16, 'sets the final FLAC sample size' );
 is( $flacSong->channels, 2, 'sets the final FLAC channel count' );
+sysopen( $writer, $fifo, O_WRONLY | O_NONBLOCK ) or die "open FLAC FIFO writer: $!";
+syswrite( $writer, 'fLaC' ) == 4 or die "write FLAC payload: $!";
+$buffer = '';
+is( $flacHandler->sysread( $buffer, 44 ), 4, 'FLAC stream begins with bridge encoder bytes' );
+is( $buffer, 'fLaC', 'FLAC stream receives no synthetic WAV prefix' );
+close $writer;
 close $flacHandler;
 
 done_testing;

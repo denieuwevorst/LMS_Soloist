@@ -51,7 +51,6 @@
 		<th align="left">Status</th>
 		<th align="left">Format</th>
 		<th align="left">Spotify normalization</th>
-		<th align="left">PCM live-edge ring</th>
 		<th align="left">Stream</th>
 	</tr>
 	[% FOREACH player IN players %]
@@ -71,25 +70,15 @@
 			<td>
 				<select name="format.[% player.id %]">
 					<option value="" [% IF !player.formatOverride %]selected[% END %]>Default ([% prefs.pref_format %])</option>
-					<option value="mp3" [% IF player.formatOverride == 'mp3' %]selected[% END %]>MP3 (bridge/ffmpeg)</option>
-					<option value="flac" [% IF player.formatOverride == 'flac' %]selected[% END %]>FLAC (bridge/ffmpeg)</option>
-					<option value="pcm" [% IF player.formatOverride == 'pcm' %]selected[% END %]>PCM/WAV (LMS may transcode)</option>
+					<option value="mp3" [% IF player.formatOverride == 'mp3' %]selected[% END %]>MP3 (LMS conversion)</option>
+					<option value="flac" [% IF player.formatOverride == 'flac' %]selected[% END %]>FLAC (LMS conversion)</option>
+					<option value="pcm" [% IF player.formatOverride == 'pcm' %]selected[% END %]>PCM/WAV (32-bit source)</option>
 				</select>
 			</td>
 			<td>
 				<input type="checkbox" name="normalization.[% player.id %]"
 					id="normalization.[% player.id %]" [% IF player.normalization %]checked[% END %]>
 				<label for="normalization.[% player.id %]">[% "PLUGIN_SPOTIFYSOLOIST_NORMALIZATION_ENABLED" | string %]</label>
-			</td>
-			<td>
-				[% IF player.effectiveFormat == 'pcm' %]
-					<input type="checkbox" name="liveRing.[% player.id %]"
-						id="liveRing.[% player.id %]" [% IF player.liveRing %]checked[% END %]>
-					<label for="liveRing.[% player.id %]">Enabled</label>
-					<br><small>Disable for compatibility A/B testing.</small>
-				[% ELSE %]
-					<small>PCM only</small>
-				[% END %]
 			</td>
 			<td><small>[% player.streamUrl %]</small></td>
 		</tr>
@@ -115,10 +104,6 @@
 
 [% WRAPPER setting title="PLUGIN_SPOTIFYSOLOIST_SOLOISTBIN" desc="PLUGIN_SPOTIFYSOLOIST_SOLOISTBIN_DESC" %]
 	<input name="pref_soloistBin" id="pref_soloistBin" type="text" size="50" value="[% prefs.pref_soloistBin %]">
-[% END %]
-
-[% WRAPPER setting title="PLUGIN_SPOTIFYSOLOIST_FFMPEGBIN" desc="PLUGIN_SPOTIFYSOLOIST_FFMPEGBIN_DESC" %]
-	<input name="pref_ffmpegBin" id="pref_ffmpegBin" type="text" size="50" value="[% prefs.pref_ffmpegBin %]">
 [% END %]
 
 [% WRAPPER setting title="PLUGIN_SPOTIFYSOLOIST_AUDIOBACKEND" desc="PLUGIN_SPOTIFYSOLOIST_AUDIOBACKEND_DESC" %]
@@ -149,7 +134,13 @@
 [% END %]
 
 [% WRAPPER setting title="PLUGIN_SPOTIFYSOLOIST_BITRATE" desc="PLUGIN_SPOTIFYSOLOIST_BITRATE_DESC" %]
-	<input name="pref_bitrate" id="pref_bitrate" type="text" size="8" value="[% prefs.pref_bitrate %]">
+	<select class="stdedit" name="pref_bitrate" id="pref_bitrate">
+		[% FOREACH rate IN ['96k', '128k', '160k', '192k', '256k', '320k'] %]
+			<option value="[% rate %]" [% IF prefs.pref_bitrate == rate %]selected[% END %]>
+				[% rate %]
+			</option>
+		[% END %]
+	</select>
 [% END %]
 
 [% WRAPPER setting title="PLUGIN_SPOTIFYSOLOIST_INITIALVOLUME" desc="PLUGIN_SPOTIFYSOLOIST_INITIALVOLUME_DESC" %]
@@ -170,6 +161,16 @@
 
 [% WRAPPER setting title="PLUGIN_SPOTIFYSOLOIST_IDLEDISCONNECT" desc="PLUGIN_SPOTIFYSOLOIST_IDLEDISCONNECT_DESC" %]
 	<input name="pref_idleDisconnectSeconds" id="pref_idleDisconnectSeconds" type="number" min="0" step="1" value="[% prefs.pref_idleDisconnectSeconds %]"> seconds
+[% END %]
+
+[% WRAPPER setting title="PLUGIN_SPOTIFYSOLOIST_TRANSITION_BUFFER" desc="PLUGIN_SPOTIFYSOLOIST_TRANSITION_BUFFER_DESC" %]
+	<input name="pref_transitionRestartBufferMs" id="pref_transitionRestartBufferMs"
+		type="number" min="0" max="3000" step="1"
+		value="[% transitionRestartBufferMs %]"> ms
+[% END %]
+
+[% WRAPPER setting title="PLUGIN_SPOTIFYSOLOIST_DELAYDIAGNOSTICS" desc="PLUGIN_SPOTIFYSOLOIST_DELAYDIAGNOSTICS_DESC" %]
+	<input name="pref_delayDiagnostics" id="pref_delayDiagnostics" type="checkbox" [% IF prefs.pref_delayDiagnostics %]checked[% END %]>
 [% END %]
 
 [% PROCESS settings/footer.html %]

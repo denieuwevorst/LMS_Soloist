@@ -5,29 +5,30 @@
 # through environment variables it sets.
 #
 # Audio path:
-#   - Pulse backend: PipeWire/PulseAudio null-sink -> ffmpeg capture of that
-#     sink's monitor -> LMS-owned named-pipe reader
+#   - Pulse backend: PipeWire/PulseAudio null-sink -> parec S16LE capture
 #   - pcm-shim backend: contrib/experimental-pcm-shim's libpulse.so.0
-#     replacement writes raw PCM straight to a FIFO this script creates ->
-#     ffmpeg reads that FIFO directly -> LMS-owned named-pipe reader. No
-#     Pulse/PipeWire server needed -- only the shim's own build-time dependency on
-#     libpulse-dev headers (see contrib/experimental-pcm-shim/README.md).
+#     replacement writes S16LE. No Pulse/PipeWire server needed -- only the shim's own build-time
+#     dependency on libpulse-dev headers (see
+#     contrib/experimental-pcm-shim/README.md).
 #     Opt-in and still less validated than the Pulse/PipeWire backend.
-# ProtocolHandler.pm opens the final FIFO directly. Its read/write handle keeps
-# the FIFO alive while capture restarts, without an HTTP listener or relay.
+#   - PCM writes directly to the final FIFO.
+#   - FLAC/MP3 pass through a bounded PCM pump and one persistent bridge-side
+#     ffmpeg encoder before the final FIFO.
+# ProtocolHandler.pm opens the final-format FIFO directly. A bridge-lifetime
+# guard keeps it alive while capture or an encoder restarts.
 #
 # Metadata is NOT handled here -- Plugin.pm consumes Soloist's pushed
 # `ctl trace` event stream (with an occasional snapshot resync fallback)
 # and writes into Lyrion's native metadata mechanism.
 #
 # Required env vars: SOLOIST_BIN DEVICE_NAME SOLOIST_API_KEY
-# Optional (defaulted below): FORMAT BITRATE WS_PORT SOLOIST_DATA_DIR
+# Optional (defaulted below): FORMAT WS_PORT SOLOIST_DATA_DIR
 #                     SOLOIST_CACHE_DIR FIFO_PATH
-#                     SOLOIST_AUDIO_BACKEND PIPEWIRE_SINK FFMPEG_BIN
+#                     SOLOIST_AUDIO_BACKEND PIPEWIRE_SINK
 #                     SOLOIST_PCM_SHIM_DIR
-#                     SOLOIST_PCM_SHIM_FIFO SOLOIST_PCM_SHIM_LOG
+#                     SOLOIST_PCM_SHIM_LOG
 #                     SOLOIST_PCM_SHIM_RING_MS SOLOIST_PCM_SHIM_CONTROL
-#                     SOLOIST_PCM_SHIM_ACK SOLOIST_PCM_SHIM_MODE
+#                     SOLOIST_PCM_SHIM_ACK
 #                     SOLOIST_RUNTIME_LIB_DIR SOLOIST_RUNTIME_LOADER
 
 set -u
@@ -38,6 +39,7 @@ set -u
 
 FORMAT="${FORMAT:-mp3}"
 BITRATE="${BITRATE:-320k}"
+FFMPEG_BIN="${FFMPEG_BIN:-ffmpeg}"
 SOLOIST_AUDIO_BACKEND="${SOLOIST_AUDIO_BACKEND:-pcm-shim}"
 PIPEWIRE_SINK="${PIPEWIRE_SINK:-}"
 SOLOIST_INITIAL_VOLUME="${SOLOIST_INITIAL_VOLUME:-100}"
@@ -45,14 +47,19 @@ WS_PORT="${WS_PORT:-9091}"
 SOLOIST_DATA_DIR="${SOLOIST_DATA_DIR:-$HOME/.local/share/soloist-lyrion}"
 SOLOIST_CACHE_DIR="${SOLOIST_CACHE_DIR:-$HOME/.cache/soloist-lyrion}"
 FIFO_PATH="${FIFO_PATH:-/tmp/soloist-audio.fifo}"
+PCM_SOURCE_FIFO_PATH="${PCM_SOURCE_FIFO_PATH:-${SOLOIST_CACHE_DIR}/pcm-source.fifo}"
+PCM_ENCODER_FIFO_PATH="${PCM_ENCODER_FIFO_PATH:-${SOLOIST_CACHE_DIR}/pcm-encoder.fifo}"
 SOLOIST_PCM_SHIM_DIR="${SOLOIST_PCM_SHIM_DIR:-}"
-SOLOIST_PCM_SHIM_FIFO="${SOLOIST_PCM_SHIM_FIFO:-}"
 SOLOIST_PCM_SHIM_LOG="${SOLOIST_PCM_SHIM_LOG:-1}"
+SOLOIST_DELAY_DIAGNOSTICS="${SOLOIST_DELAY_DIAGNOSTICS:-0}"
 SOLOIST_PCM_SHIM_RING_MS="${SOLOIST_PCM_SHIM_RING_MS:-200}"
-SOLOIST_PCM_SHIM_MODE="${SOLOIST_PCM_SHIM_MODE:-live-ring}"
 SOLOIST_PCM_SHIM_CONTROL="${SOLOIST_PCM_SHIM_CONTROL:-${SOLOIST_CACHE_DIR}/pcm-shim.control}"
 SOLOIST_PCM_SHIM_ACK="${SOLOIST_PCM_SHIM_ACK:-${SOLOIST_CACHE_DIR}/pcm-shim.ack}"
-SOLOIST_PCM_SHIM_BUILD="${SOLOIST_PCM_SHIM_BUILD:-2026-11-18.6-frameunits}"
+SOLOIST_PCM_PUMP_ACK="${SOLOIST_PCM_PUMP_ACK:-${SOLOIST_CACHE_DIR}/pcm-pump.ack}"
+SOLOIST_PCM_PUMP_PERL="${SOLOIST_PCM_PUMP_PERL:-perl}"
+SOLOIST_PCM_PUMP_SCRIPT="${SOLOIST_PCM_PUMP_SCRIPT:-}"
+SOLOIST_PCM_PUMP_BUFFER_MS="${SOLOIST_PCM_PUMP_BUFFER_MS:-800}"
+SOLOIST_PCM_SHIM_BUILD="${SOLOIST_PCM_SHIM_BUILD:-2026-11-28.2-lossless}"
 SOLOIST_RUNTIME_LIB_DIR="${SOLOIST_RUNTIME_LIB_DIR:-}"
 SOLOIST_RUNTIME_LOADER="${SOLOIST_RUNTIME_LOADER:-}"
 WS_ENDPOINT="127.0.0.1:${WS_PORT}"
@@ -74,7 +81,7 @@ export HOME="$SOLOIST_DATA_DIR"
 export XDG_CONFIG_HOME="${SOLOIST_DATA_DIR}/.config"
 mkdir -p "${XDG_CONFIG_HOME}/pulse"
 
-# Everything this script and its children (soloist, ffmpeg, the relay)
+# Everything this script and its children
 # print goes to a dedicated per-player log file from here on. This is the
 # file to check when a specific player's device doesn't show up in
 # Spotify: Soloist's own "ready" / "waiting for login" / error lines land
@@ -102,8 +109,13 @@ echo "[soloist-bridge] bridge process: pid=$$ parent=${PPID:-unknown}"
 
 SOLOIST_PID=""
 SILENCE_PID=""
-FFMPEG_SUP_PID=""
+CAPTURE_PID=""
 SINK_ROUTER_PID=""
+COMPRESSED_PIPELINE_PID=""
+BRIDGE_OWNER_DIR="${SOLOIST_CACHE_DIR}/bridge-owner"
+BRIDGE_OWNER_PID_FILE="${BRIDGE_OWNER_DIR}/pid"
+OWNS_BRIDGE_LOCK=0
+ADOPTED_SOLOIST=0
 
 cleanup() {
 	reason="${1:-unspecified cleanup}"
@@ -111,10 +123,18 @@ cleanup() {
 	trap - EXIT TERM INT
 	echo "[soloist-bridge] cleanup reason: ${reason} (bridge_pid=$$ soloist_pid=${SOLOIST_PID:-none})" >&2
 	[ -n "$SINK_ROUTER_PID" ] && kill "$SINK_ROUTER_PID" 2>/dev/null
-	[ -n "$FFMPEG_SUP_PID" ] && kill "$FFMPEG_SUP_PID" 2>/dev/null
+	[ -n "$CAPTURE_PID" ]    && kill "$CAPTURE_PID"    2>/dev/null
+	[ -n "$COMPRESSED_PIPELINE_PID" ] && kill "$COMPRESSED_PIPELINE_PID" 2>/dev/null
 	[ -n "$SILENCE_PID" ]    && kill "$SILENCE_PID"    2>/dev/null
 	[ -n "$SOLOIST_PID" ]    && kill "$SOLOIST_PID"    2>/dev/null
 	wait 2>/dev/null
+	if [ "$OWNS_BRIDGE_LOCK" = "1" ]; then
+		owner_pid="$(cat "$BRIDGE_OWNER_PID_FILE" 2>/dev/null || true)"
+		if [ "$owner_pid" = "$$" ]; then
+			rm -f "$BRIDGE_OWNER_PID_FILE"
+			rmdir "$BRIDGE_OWNER_DIR" 2>/dev/null || true
+		fi
+	fi
 	exit "$status"
 }
 trap 'status=$?; cleanup "shell EXIT status $status" "$status"' EXIT
@@ -122,6 +142,42 @@ trap 'cleanup "received TERM" 143' TERM
 trap 'cleanup "received INT" 130' INT
 
 log() { echo "[soloist-bridge] $*" >&2; }
+
+acquire_bridge_owner() {
+	while :; do
+		if mkdir "$BRIDGE_OWNER_DIR" 2>/dev/null; then
+			printf '%s\n' "$$" > "$BRIDGE_OWNER_PID_FILE"
+			OWNS_BRIDGE_LOCK=1
+			log "acquired bridge ownership for data directory '$SOLOIST_DATA_DIR' (pid $$)"
+			return
+		fi
+
+		owner_pid="$(cat "$BRIDGE_OWNER_PID_FILE" 2>/dev/null || true)"
+		if [ -n "$owner_pid" ] && kill -0 "$owner_pid" 2>/dev/null; then
+			log "bridge owner pid $owner_pid is already supervising '$SOLOIST_DATA_DIR'; waiting instead of starting a duplicate"
+			while kill -0 "$owner_pid" 2>/dev/null; do
+				sleep 1
+			done
+			log "previous bridge owner pid $owner_pid exited; taking ownership"
+		else
+			log "removing stale bridge ownership for '$SOLOIST_DATA_DIR' (recorded pid ${owner_pid:-unknown})"
+		fi
+		rm -f "$BRIDGE_OWNER_PID_FILE"
+		rmdir "$BRIDGE_OWNER_DIR" 2>/dev/null || true
+	done
+}
+
+acquire_bridge_owner
+
+OWNER_FINDER="$(dirname "$_SELF_PATH")/find-soloist-owner.sh"
+EXISTING_SOLOIST_PID=""
+if [ -f "$OWNER_FINDER" ]; then
+	EXISTING_SOLOIST_PID="$(sh "$OWNER_FINDER" "$SOLOIST_DATA_DIR" 2>/dev/null || true)"
+fi
+if [ -n "$EXISTING_SOLOIST_PID" ] && kill -0 "$EXISTING_SOLOIST_PID" 2>/dev/null; then
+	ADOPTED_SOLOIST=1
+	log "adopting existing Soloist pid $EXISTING_SOLOIST_PID for data directory '$SOLOIST_DATA_DIR'; no duplicate process will be started"
+fi
 
 case "$SOLOIST_AUDIO_BACKEND" in
 	pulse)
@@ -157,11 +213,107 @@ case "$SOLOIST_AUDIO_BACKEND" in
 		;;
 esac
 
+if [ "$SOLOIST_AUDIO_BACKEND" = "pcm-shim" ] && [ "$ADOPTED_SOLOIST" != "1" ]; then
+	rm -f "$SOLOIST_PCM_SHIM_CONTROL" "$SOLOIST_PCM_SHIM_ACK" "$SOLOIST_PCM_PUMP_ACK"
+fi
+
 # ---------------------------------------------------------------------------
 # 1. Backend-specific audio setup
 # ---------------------------------------------------------------------------
 SOLOIST_AUDIO_TARGET_DESC=""
-CAPTURE_MODE="ffmpeg"
+CAPTURE_MODE="s16le-direct"
+CAPTURE_OUTPUT_PATH="$FIFO_PATH"
+
+[ -p "$FIFO_PATH" ] || { rm -f "$FIFO_PATH"; mkfifo "$FIFO_PATH"; }
+exec 3<> "$FIFO_PATH"
+log "holding final LMS FIFO read/write guard on fd 3 for bridge lifetime"
+
+if [ "$FORMAT" != "pcm" ]; then
+	[ -p "$PCM_SOURCE_FIFO_PATH" ] || {
+		rm -f "$PCM_SOURCE_FIFO_PATH"
+		mkfifo "$PCM_SOURCE_FIFO_PATH"
+	}
+	exec 4<> "$PCM_SOURCE_FIFO_PATH"
+	CAPTURE_OUTPUT_PATH="$PCM_SOURCE_FIFO_PATH"
+	[ -p "$PCM_ENCODER_FIFO_PATH" ] || {
+		rm -f "$PCM_ENCODER_FIFO_PATH"
+		mkfifo "$PCM_ENCODER_FIFO_PATH"
+	}
+	if [ -z "$SOLOIST_PCM_PUMP_SCRIPT" ] || [ ! -f "$SOLOIST_PCM_PUMP_SCRIPT" ]; then
+		log "ERROR: compressed output requires the PCM pump at '${SOLOIST_PCM_PUMP_SCRIPT:-unset}'"
+		exit 1
+	fi
+	if ! command -v "$SOLOIST_PCM_PUMP_PERL" >/dev/null 2>&1 && [ ! -x "$SOLOIST_PCM_PUMP_PERL" ]; then
+		log "ERROR: compressed output requires Perl at '$SOLOIST_PCM_PUMP_PERL'"
+		exit 1
+	fi
+	if ! command -v "$FFMPEG_BIN" >/dev/null 2>&1 && [ ! -x "$FFMPEG_BIN" ]; then
+		log "ERROR: compressed output requires ffmpeg at '$FFMPEG_BIN'"
+		exit 1
+	fi
+	rm -f "$SOLOIST_PCM_PUMP_ACK"
+	compressed_pipeline_supervisor() {
+		CUR_PUMP_PID=""
+		CUR_ENCODER_PID=""
+		ENCODER_FRESH=0
+		trap '[ -n "$CUR_PUMP_PID" ] && kill "$CUR_PUMP_PID" 2>/dev/null; [ -n "$CUR_ENCODER_PID" ] && kill "$CUR_ENCODER_PID" 2>/dev/null; exit 0' TERM INT
+		while :; do
+			case "$FORMAT" in
+				flac)
+					log "starting persistent S16LE -> 16-bit FLAC bridge encoder"
+					"$FFMPEG_BIN" -nostdin -hide_banner -loglevel warning -y \
+						-f s16le -ar 44100 -ac 2 -blocksize 4096 \
+						-i "$PCM_ENCODER_FIFO_PATH" \
+						-map 0:a:0 -c:a flac -sample_fmt s16 \
+						-compression_level 0 -flush_packets 1 \
+						-f flac "$FIFO_PATH" 3>&- 4>&- &
+					;;
+				mp3)
+					log "starting persistent S16LE -> MP3 ${BITRATE} bridge encoder"
+					"$FFMPEG_BIN" -nostdin -hide_banner -loglevel warning -y \
+						-f s16le -ar 44100 -ac 2 -blocksize 4096 \
+						-i "$PCM_ENCODER_FIFO_PATH" \
+						-map 0:a:0 -c:a libmp3lame -b:a "$BITRATE" \
+						-flush_packets 1 -f mp3 "$FIFO_PATH" 3>&- 4>&- &
+					;;
+			esac
+			CUR_ENCODER_PID=$!
+			log "bridge encoder started: pid=${CUR_ENCODER_PID} input=${PCM_ENCODER_FIFO_PATH} output=${FIFO_PATH}"
+			log "starting bounded S16LE pump ${PCM_SOURCE_FIFO_PATH} > ${PCM_ENCODER_FIFO_PATH}"
+			env \
+				SOLOIST_PCM_PUMP_SOURCE="$PCM_SOURCE_FIFO_PATH" \
+				SOLOIST_PCM_PUMP_OUTPUT="$PCM_ENCODER_FIFO_PATH" \
+				SOLOIST_PCM_PUMP_FINAL_OUTPUT="$FIFO_PATH" \
+				SOLOIST_PCM_PUMP_CONTROL="$SOLOIST_PCM_SHIM_CONTROL" \
+				SOLOIST_PCM_PUMP_SHIM_ACK="$SOLOIST_PCM_SHIM_ACK" \
+				SOLOIST_PCM_PUMP_ACK="$SOLOIST_PCM_PUMP_ACK" \
+				SOLOIST_PCM_PUMP_BUFFER_MS="$SOLOIST_PCM_PUMP_BUFFER_MS" \
+				SOLOIST_PCM_PUMP_RESTART_ENCODER=1 \
+				SOLOIST_PCM_PUMP_ENCODER_FRESH="$ENCODER_FRESH" \
+				SOLOIST_PCM_PUMP_FATAL_OUTPUT=1 \
+				"$SOLOIST_PCM_PUMP_PERL" "$SOLOIST_PCM_PUMP_SCRIPT" 3>&- 4>&- &
+			CUR_PUMP_PID=$!
+			wait "$CUR_PUMP_PID"
+			PUMP_STATUS=$?
+			CUR_PUMP_PID=""
+			kill "$CUR_ENCODER_PID" 2>/dev/null
+			wait "$CUR_ENCODER_PID" 2>/dev/null
+			ENCODER_STATUS=$?
+			CUR_ENCODER_PID=""
+			if [ "$PUMP_STATUS" = "75" ]; then
+				ENCODER_FRESH=1
+				log "restarting compressed pipeline for a discontinuous generation"
+			else
+				ENCODER_FRESH=0
+				log "compressed pipeline failed: pump_status=$PUMP_STATUS encoder_status=$ENCODER_STATUS -- restarting in 0.2s"
+				sleep 0.2
+			fi
+		done
+	}
+	compressed_pipeline_supervisor &
+	COMPRESSED_PIPELINE_PID=$!
+	log "holding raw S16LE source FIFO guard on fd 4; compressed pipeline supervisor pid $COMPRESSED_PIPELINE_PID"
+fi
 
 if [ "$SOLOIST_AUDIO_BACKEND" = "pulse" ]; then
 	if ! command -v pactl >/dev/null 2>&1; then
@@ -203,30 +355,18 @@ if [ "$SOLOIST_AUDIO_BACKEND" = "pulse" ]; then
 
 	SOLOIST_AUDIO_TARGET_DESC="Pulse/PipeWire sink ${PIPEWIRE_SINK}"
 elif [ "$SOLOIST_AUDIO_BACKEND" = "pcm-shim" ]; then
-	# The shim writes raw PCM straight to a FIFO we create below, and
-	# ffmpeg reads that FIFO directly. See
+	# The shim writes S16LE to the direct PCM FIFO or compressed-format source
+	# pump. See
 	# contrib/experimental-pcm-shim/README.md for the shim's status.
 	#
 	# SOLOIST_LD_LIBRARY_PATH is intentionally NOT `export`ed here, for the
 	# same reason as the Pulse setup above: it must only affect Soloist's
 	# own process (below), not every later command in this
-	# script (ffmpeg doesn't need or want this shim's libpulse.so.0 ahead
-	# of the real one on its library path).
+	# script.
 	SOLOIST_LD_LIBRARY_PATH="${SOLOIST_PCM_SHIM_DIR}${LD_LIBRARY_PATH:+:${LD_LIBRARY_PATH}}"
-	SOLOIST_PCM_SHIM_FIFO="${SOLOIST_PCM_SHIM_FIFO:-${SOLOIST_CACHE_DIR}/pcm-shim.fifo}"
-	if [ "$FORMAT" = "pcm" ]; then
-		[ -p "$FIFO_PATH" ] || { rm -f "$FIFO_PATH"; mkfifo "$FIFO_PATH"; }
-		exec 3<> "$FIFO_PATH"
-		SOLOIST_SHIM_OUTPUT="$FIFO_PATH"
-		CAPTURE_MODE="pcm-shim-direct"
-		SOLOIST_AUDIO_TARGET_DESC="experimental pcm-shim direct FIFO ${FIFO_PATH}"
-		log "holding PCM direct FIFO read/write guard on fd 3 for bridge lifetime"
-	else
-		[ -p "$SOLOIST_PCM_SHIM_FIFO" ] || { rm -f "$SOLOIST_PCM_SHIM_FIFO"; mkfifo "$SOLOIST_PCM_SHIM_FIFO"; }
-		SOLOIST_SHIM_OUTPUT="$SOLOIST_PCM_SHIM_FIFO"
-		SOLOIST_AUDIO_TARGET_DESC="experimental pcm-shim encoder FIFO ${SOLOIST_PCM_SHIM_FIFO}"
-	fi
-	rm -f "$SOLOIST_PCM_SHIM_CONTROL" "$SOLOIST_PCM_SHIM_ACK"
+	SOLOIST_SHIM_OUTPUT="$CAPTURE_OUTPUT_PATH"
+	CAPTURE_MODE="pcm-shim-s16le-direct"
+	SOLOIST_AUDIO_TARGET_DESC="pcm-shim S16LE FIFO ${CAPTURE_OUTPUT_PATH}"
 	log "using experimental pcm-shim backend from '${SOLOIST_PCM_SHIM_DIR}', raw PCM output=${SOLOIST_SHIM_OUTPUT}"
 	if command -v sha1sum >/dev/null 2>&1; then
 		SHIM_FINGERPRINT="$(wc -c < "$SOLOIST_PCM_SHIM_LIB") bytes sha1=$(sha1sum "$SOLOIST_PCM_SHIM_LIB" | awk '{print $1}')"
@@ -239,74 +379,75 @@ elif [ "$SOLOIST_AUDIO_BACKEND" = "pcm-shim" ]; then
 		exit 1
 	fi
 	log "pcm-shim build marker verified in binary: ${SOLOIST_PCM_SHIM_BUILD}"
-	log "pcm-shim settings: mode=${SOLOIST_PCM_SHIM_MODE} ring=${SOLOIST_PCM_SHIM_RING_MS}ms control=${SOLOIST_PCM_SHIM_CONTROL} ack=${SOLOIST_PCM_SHIM_ACK} log=${SOLOIST_PCM_SHIM_LOG} max_tlength=${SOLOIST_SHIM_MAX_TLENGTH_MS:-0}ms"
+	log "pcm-shim settings: mode=live-ring-s16le ring=${SOLOIST_PCM_SHIM_RING_MS}ms control=${SOLOIST_PCM_SHIM_CONTROL} ack=${SOLOIST_PCM_SHIM_ACK} log=${SOLOIST_PCM_SHIM_LOG} max_tlength=${SOLOIST_SHIM_MAX_TLENGTH_MS:-0}ms"
 fi
 
 # ---------------------------------------------------------------------------
 # 2. Launch Soloist
 # ---------------------------------------------------------------------------
 log "starting soloist: device='${DEVICE_NAME}' backend=${SOLOIST_AUDIO_BACKEND} target='${SOLOIST_AUDIO_TARGET_DESC}' ws=${WS_ENDPOINT} data-dir=${SOLOIST_DATA_DIR}"
-if [ -n "$SOLOIST_RUNTIME_LOADER" ]; then
-	if [ ! -f "$SOLOIST_RUNTIME_LOADER" ] || [ ! -x "$SOLOIST_RUNTIME_LOADER" ]; then
-		log "ERROR: bundled Soloist runtime loader is unavailable at '$SOLOIST_RUNTIME_LOADER'"
-		exit 1
-	fi
-	if [ ! -d "$SOLOIST_RUNTIME_LIB_DIR" ]; then
-		log "ERROR: bundled Soloist runtime directory is unavailable at '$SOLOIST_RUNTIME_LIB_DIR'"
-		exit 1
-	fi
-	if [ "$SOLOIST_AUDIO_BACKEND" = "pcm-shim" ]; then
-		SOLOIST_LIBRARY_PATH="${SOLOIST_PCM_SHIM_DIR}:${SOLOIST_RUNTIME_LIB_DIR}"
-		set -- "$SOLOIST_RUNTIME_LOADER" \
-			--preload "$SOLOIST_PCM_SHIM_LIB" \
-			--library-path "$SOLOIST_LIBRARY_PATH" \
-			"$SOLOIST_BIN"
-	else
-		SOLOIST_LIBRARY_PATH="$SOLOIST_RUNTIME_LIB_DIR"
-		set -- "$SOLOIST_RUNTIME_LOADER" --library-path "$SOLOIST_LIBRARY_PATH" "$SOLOIST_BIN"
-	fi
+if [ "$ADOPTED_SOLOIST" = "1" ]; then
+	SOLOIST_PID="$EXISTING_SOLOIST_PID"
 else
-	set -- "$SOLOIST_BIN"
-fi
-
-if [ "$SOLOIST_AUDIO_BACKEND" = "pcm-shim" ]; then
-	SOLOIST_SHIM_MAX_TLENGTH_MS="${SOLOIST_SHIM_MAX_TLENGTH_MS:-0}"
 	if [ -n "$SOLOIST_RUNTIME_LOADER" ]; then
-		SOLOIST_LD_PRELOAD=""
+		if [ ! -f "$SOLOIST_RUNTIME_LOADER" ] || [ ! -x "$SOLOIST_RUNTIME_LOADER" ]; then
+			log "ERROR: bundled Soloist runtime loader is unavailable at '$SOLOIST_RUNTIME_LOADER'"
+			exit 1
+		fi
+		if [ ! -d "$SOLOIST_RUNTIME_LIB_DIR" ]; then
+			log "ERROR: bundled Soloist runtime directory is unavailable at '$SOLOIST_RUNTIME_LIB_DIR'"
+			exit 1
+		fi
+		if [ "$SOLOIST_AUDIO_BACKEND" = "pcm-shim" ]; then
+			SOLOIST_LIBRARY_PATH="${SOLOIST_PCM_SHIM_DIR}:${SOLOIST_RUNTIME_LIB_DIR}"
+			set -- "$SOLOIST_RUNTIME_LOADER" \
+				--preload "$SOLOIST_PCM_SHIM_LIB" \
+				--library-path "$SOLOIST_LIBRARY_PATH" \
+				"$SOLOIST_BIN"
+		else
+			SOLOIST_LIBRARY_PATH="$SOLOIST_RUNTIME_LIB_DIR"
+			set -- "$SOLOIST_RUNTIME_LOADER" --library-path "$SOLOIST_LIBRARY_PATH" "$SOLOIST_BIN"
+		fi
 	else
-		SOLOIST_LD_PRELOAD="$SOLOIST_PCM_SHIM_LIB${LD_PRELOAD:+:${LD_PRELOAD}}"
+		set -- "$SOLOIST_BIN"
 	fi
-	# The shim defaults to s24 (packed) output if SOLOIST_SHIM_FORMAT is
-	# unset, but the capture side below assumes s16le/44100 -- so this
-	# must force s16 explicitly, or audio would be garbled/wrong-speed.
-	env \
-		LD_LIBRARY_PATH="$SOLOIST_LD_LIBRARY_PATH" \
-		LD_PRELOAD="$SOLOIST_LD_PRELOAD" \
-		SOLOIST_SHIM_OUT="$SOLOIST_SHIM_OUTPUT" \
-		SOLOIST_SHIM_FORMAT=s16 \
-		SOLOIST_SHIM_RATE=44100 \
-		SOLOIST_SHIM_LOG="$SOLOIST_PCM_SHIM_LOG" \
-		SOLOIST_SHIM_RING_MS="$SOLOIST_PCM_SHIM_RING_MS" \
-		SOLOIST_SHIM_MODE="$SOLOIST_PCM_SHIM_MODE" \
-		SOLOIST_SHIM_CONTROL="$SOLOIST_PCM_SHIM_CONTROL" \
-		SOLOIST_SHIM_ACK="$SOLOIST_PCM_SHIM_ACK" \
-		SOLOIST_SHIM_MAX_TLENGTH_MS="$SOLOIST_SHIM_MAX_TLENGTH_MS" \
+
+	if [ "$SOLOIST_AUDIO_BACKEND" = "pcm-shim" ]; then
+		SOLOIST_SHIM_MAX_TLENGTH_MS="${SOLOIST_SHIM_MAX_TLENGTH_MS:-0}"
+		if [ -n "$SOLOIST_RUNTIME_LOADER" ]; then
+			SOLOIST_LD_PRELOAD=""
+		else
+			SOLOIST_LD_PRELOAD="$SOLOIST_PCM_SHIM_LIB${LD_PRELOAD:+:${LD_PRELOAD}}"
+		fi
+		env \
+			LD_LIBRARY_PATH="$SOLOIST_LD_LIBRARY_PATH" \
+			LD_PRELOAD="$SOLOIST_LD_PRELOAD" \
+			SOLOIST_SHIM_OUT="$SOLOIST_SHIM_OUTPUT" \
+			SOLOIST_SHIM_FORMAT=s16 \
+			SOLOIST_SHIM_RATE=44100 \
+			SOLOIST_SHIM_LOG="$SOLOIST_PCM_SHIM_LOG" \
+			SOLOIST_SHIM_DELAY_TRACE="$SOLOIST_DELAY_DIAGNOSTICS" \
+			SOLOIST_SHIM_RING_MS="$SOLOIST_PCM_SHIM_RING_MS" \
+			SOLOIST_SHIM_CONTROL="$SOLOIST_PCM_SHIM_CONTROL" \
+			SOLOIST_SHIM_ACK="$SOLOIST_PCM_SHIM_ACK" \
+			SOLOIST_SHIM_MAX_TLENGTH_MS="$SOLOIST_SHIM_MAX_TLENGTH_MS" \
+			"$@" \
+			--device-name "$DEVICE_NAME" \
+			--api-key "$SOLOIST_API_KEY" \
+			--data-dir "$SOLOIST_DATA_DIR" \
+			--cache-dir "$SOLOIST_CACHE_DIR" \
+			--ws "$WS_ENDPOINT" &
+	else
 		"$@" \
-		--device-name "$DEVICE_NAME" \
-		--api-key "$SOLOIST_API_KEY" \
-		--data-dir "$SOLOIST_DATA_DIR" \
-		--cache-dir "$SOLOIST_CACHE_DIR" \
-		--ws "$WS_ENDPOINT" &
-else
-	"$@" \
 		--device-name "$DEVICE_NAME" \
 		--api-key "$SOLOIST_API_KEY" \
 		--data-dir "$SOLOIST_DATA_DIR" \
 		--cache-dir "$SOLOIST_CACHE_DIR" \
 		--ws "$WS_ENDPOINT" \
 		--pipewire-device "$PIPEWIRE_SINK" &
+	fi
+	SOLOIST_PID=$!
 fi
-SOLOIST_PID=$!
 
 # Poll for actual readiness instead of blindly sleeping a fixed amount.
 # Soloist writes ws.port when its control WebSocket is really listening,
@@ -414,107 +555,31 @@ if [ "$SOLOIST_AUDIO_BACKEND" = "pulse" ]; then
 fi
 
 # ---------------------------------------------------------------------------
-# 3. Set up the FIFO that the LMS protocol handler opens directly.
+# 3. Complete capture setup.
 # ---------------------------------------------------------------------------
-[ -p "$FIFO_PATH" ] || { rm -f "$FIFO_PATH"; mkfifo "$FIFO_PATH"; }
-
-case "$FORMAT" in
-	flac)
-		: "${FFMPEG_BIN:?FFMPEG_BIN is required when FORMAT=flac}"
-		# Live FLAC should emit frames promptly rather than favoring archive
-		# compression, otherwise Lyrion can wait several seconds for audio.
-		MUX_FORMAT="flac"
-		STREAM_EXTENSION="flac"
-		;;
-	pcm)
-		if [ "$CAPTURE_MODE" != "pcm-shim-direct" ]; then
-			CAPTURE_MODE="pcm-direct"
-		fi
-		STREAM_EXTENSION="wav"
-		if [ "$SOLOIST_AUDIO_BACKEND" = "pulse" ]; then
-			if ! command -v parec >/dev/null 2>&1; then
-				log "ERROR: parec not found -- PCM direct mode on the Pulse backend needs PulseAudio utilities"
-				exit 1
-			fi
-		fi
-		;;
-	*)
-		: "${FFMPEG_BIN:?FFMPEG_BIN is required when FORMAT=mp3}"
-		FORMAT="mp3"
-		MUX_FORMAT="mp3"
-		STREAM_EXTENSION="mp3"
-		;;
-esac
-
-if [ "$CAPTURE_MODE" = "pcm-direct" ]; then
-	# Own both ends for the bridge lifetime, not merely for one LMS protocol
-	# handler instance. Stall recovery deliberately replaces that handler to
-	# clear downstream player buffers; without this guard, the old handler can
-	# close before its replacement opens and the PCM writer receives SIGPIPE.
-	# Encoded streams deliberately retain their old lifecycle so a new ffmpeg
-	# process supplies fresh MP3/FLAC stream headers.
-	exec 3<> "$FIFO_PATH"
-	log "holding PCM direct FIFO read/write guard on fd 3 for bridge lifetime"
+if [ "$SOLOIST_AUDIO_BACKEND" = "pulse" ]; then
+	if ! command -v parec >/dev/null 2>&1; then
+		log "ERROR: parec not found -- the Pulse backend needs PulseAudio utilities"
+		exit 1
+	fi
 fi
 
 log "direct LMS stream FIFO ready at ${FIFO_PATH}; preparing capture pipeline (mode=${CAPTURE_MODE}, backend=${SOLOIST_AUDIO_BACKEND})"
 
 # ---------------------------------------------------------------------------
-# 4. Capture the backend output ONCE and write continuously into the FIFO.
-#    (One persistent capture connection for the LMS protocol handler.)
-#    For mp3/flac, ffmpeg still gets its own restart loop for resilience
-#    against transient capture hiccups.
-#    For PCM/WAV, keep the path simpler and skip ffmpeg entirely: capture
-#    raw 44.1 kHz stereo 16-bit PCM directly; ProtocolHandler.pm prepends the
-#    streaming WAV header when LMS opens the source.
+# 4. Capture one continuous 44.1 kHz stereo S16LE stream. ProtocolHandler.pm
+#    prepends a truthful WAV header only for PCM. The bridge encoder supplies
+#    final FLAC/MP3 bytes directly.
 # ---------------------------------------------------------------------------
 capture_supervisor() {
 	CUR_CAPTURE_PID=""
 	trap '[ -n "$CUR_CAPTURE_PID" ] && kill "$CUR_CAPTURE_PID" 2>/dev/null; exit 0' TERM INT
 
 	while kill -0 "$SOLOIST_PID" 2>/dev/null; do
-		if [ "$CAPTURE_MODE" = "pcm-direct" ]; then
-			if [ "$SOLOIST_AUDIO_BACKEND" = "pulse" ]; then
-				log "starting PCM capture from ${PIPEWIRE_SINK}.monitor > ${FIFO_PATH}"
-				parec --raw --rate=44100 --channels=2 --format=s16le \
-					--latency-msec=300 --process-time-msec=50 \
-					-d "${PIPEWIRE_SINK}.monitor" > "$FIFO_PATH" 3>&- &
-			else
-				log "starting PCM capture: cat ${SOLOIST_PCM_SHIM_FIFO} > ${FIFO_PATH}"
-				cat "$SOLOIST_PCM_SHIM_FIFO" > "$FIFO_PATH" 3>&- &
-			fi
-		else
-			log "starting ${CAPTURE_MODE} capture: ${FFMPEG_BIN} ... -f ${MUX_FORMAT} ${FIFO_PATH}"
-			if [ "$SOLOIST_AUDIO_BACKEND" = "pulse" ]; then
-				if [ "$FORMAT" = "flac" ]; then
-					"$FFMPEG_BIN" -nostdin -hide_banner -loglevel warning -y \
-						-fflags +genpts -f pulse -i "${PIPEWIRE_SINK}.monitor" \
-						-ar 44100 -ac 2 -sample_fmt s16 \
-						-c:a flac -compression_level 0 -flush_packets 1 \
-						-f "$MUX_FORMAT" "$FIFO_PATH" &
-				else
-					"$FFMPEG_BIN" -nostdin -hide_banner -loglevel warning -y \
-						-fflags +genpts -f pulse -i "${PIPEWIRE_SINK}.monitor" \
-						-ar 44100 -ac 2 \
-						-c:a libmp3lame -b:a "$BITRATE" \
-						-f "$MUX_FORMAT" "$FIFO_PATH" &
-				fi
-			else
-				if [ "$FORMAT" = "flac" ]; then
-					"$FFMPEG_BIN" -nostdin -hide_banner -loglevel warning -y \
-						-fflags +genpts -f s16le -ar 44100 -ac 2 -i "$SOLOIST_PCM_SHIM_FIFO" \
-						-ar 44100 -ac 2 -sample_fmt s16 \
-						-c:a flac -compression_level 0 -flush_packets 1 \
-						-f "$MUX_FORMAT" "$FIFO_PATH" &
-				else
-					"$FFMPEG_BIN" -nostdin -hide_banner -loglevel warning -y \
-						-fflags +genpts -f s16le -ar 44100 -ac 2 -i "$SOLOIST_PCM_SHIM_FIFO" \
-						-ar 44100 -ac 2 \
-						-c:a libmp3lame -b:a "$BITRATE" \
-						-f "$MUX_FORMAT" "$FIFO_PATH" &
-				fi
-			fi
-		fi
+		log "starting S16LE capture from ${PIPEWIRE_SINK}.monitor > ${CAPTURE_OUTPUT_PATH}"
+		parec --raw --rate=44100 --channels=2 --format=s16le \
+			--latency-msec=300 --process-time-msec=50 \
+			-d "${PIPEWIRE_SINK}.monitor" > "$CAPTURE_OUTPUT_PATH" 3>&- 4>&- &
 		CUR_CAPTURE_PID=$!
 		wait "$CUR_CAPTURE_PID"
 		CAPTURE_STATUS=$?
@@ -527,17 +592,34 @@ capture_supervisor() {
 	done
 }
 
-log "direct LMS stream ready: ${FIFO_PATH} (${STREAM_EXTENSION})"
-if [ "$CAPTURE_MODE" = "pcm-shim-direct" ]; then
-	log "pcm-shim writes directly to ${FIFO_PATH}; monitoring Soloist process"
-	wait "$SOLOIST_PID" 2>/dev/null
-	code=$?
+if [ "$FORMAT" = "pcm" ]; then
+	log "direct LMS PCM stream ready: ${FIFO_PATH} (source=${CAPTURE_OUTPUT_PATH}, no encoder)"
+else
+	log "direct LMS ${FORMAT} stream ready: ${FIFO_PATH} (source=${CAPTURE_OUTPUT_PATH}, conversion owned by persistent bridge encoder)"
+fi
+if [ "$SOLOIST_AUDIO_BACKEND" = "pcm-shim" ]; then
+	log "pcm-shim writes S16LE to ${CAPTURE_OUTPUT_PATH}; monitoring Soloist process"
+	if [ "$ADOPTED_SOLOIST" = "1" ]; then
+		while kill -0 "$SOLOIST_PID" 2>/dev/null; do
+			sleep 1
+		done
+		code=0
+	else
+		wait "$SOLOIST_PID" 2>/dev/null
+		code=$?
+	fi
 else
 	capture_supervisor
-	wait "$SOLOIST_PID" 2>/dev/null
-	code=$?
+	if [ "$ADOPTED_SOLOIST" = "1" ]; then
+		code=0
+	else
+		wait "$SOLOIST_PID" 2>/dev/null
+		code=$?
+	fi
 fi
-if [ "$code" = "10" ]; then
+if [ "$ADOPTED_SOLOIST" = "1" ]; then
+	log "adopted soloist pid $SOLOIST_PID exited"
+elif [ "$code" = "10" ]; then
 	log "soloist build expired (exit code 10) -- install a newer build"
 else
 	log "soloist exited (code $code)"

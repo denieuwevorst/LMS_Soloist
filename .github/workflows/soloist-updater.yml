@@ -5,10 +5,13 @@ on:
     paths:
       - "Bin/extract-soloist-update.sh"
       - "Bin/soloist-bridge.sh"
+      - "Bin/soloist-pcm-pump.pl"
       - "Plugin.pm"
       - "ProtocolHandler.pm"
       - "Settings.pm"
       - "StreamSemantics.pm"
+      - "custom-convert.conf"
+      - "custom-types.conf"
       - "contrib/experimental-pcm-shim/**"
       - "HTML/EN/plugins/SpotifySoloist/settings/basic.html"
       - "strings.txt"
@@ -72,11 +75,15 @@ jobs:
       - name: Install PCM shim build dependencies
         run: |
           sudo apt-get update -qq
-          sudo apt-get install -y -qq libpulse-dev
+          sudo apt-get install -y -qq ffmpeg libpulse-dev
       - name: Check POSIX shell syntax
         run: |
           dash -n Bin/extract-soloist-update.sh
+          dash -n Bin/find-soloist-owner.sh
           dash -n Bin/soloist-bridge.sh
+          perl -c Bin/soloist-pcm-pump.pl
+          dash -n t/bridge_ownership.sh
+          dash -n t/pcm_pump_generation.sh
       - name: Test managed update extractor
         run: |
           set -eu
@@ -97,19 +104,38 @@ jobs:
           fi
       - name: Check plugin Perl syntax
         run: perl contrib/check-plugin-syntax.pl
+      - name: Test packaged plugin archive
+        run: |
+          set -eu
+          work=$(mktemp -d)
+          trap 'rm -rf "$work"' EXIT
+          git archive --format=zip --output="$work/SpotifySoloist.zip" HEAD
+          mkdir "$work/plugin"
+          unzip -q "$work/SpotifySoloist.zip" -d "$work/plugin"
+          test -f "$work/plugin/Plugin.pm"
+          test -f "$work/plugin/StreamSemantics.pm"
+          (
+            cd "$work/plugin"
+            perl -c StreamSemantics.pm
+            perl contrib/check-plugin-syntax.pl
+          )
       - name: Test stream semantics and direct FIFO handler
         run: |
           prove -v \
             t/stream_semantics.t \
             t/normalization.t \
+            t/conversion_rules.t \
             t/stale_catchup.t \
             t/direct_stream.t
           timeout 30 sh t/direct_fifo.sh
+          timeout 30 sh t/bridge_ownership.sh
           timeout 30 sh t/pcm_shim_cadence.sh
           timeout 30 sh t/pcm_shim_smooth_soak.sh
           timeout 30 sh t/pcm_shim_live_ring.sh
           timeout 30 sh t/pcm_shim_generation_survival.sh
           timeout 30 sh t/pcm_shim_natural_end.sh
+          timeout 30 sh t/pcm_pump_generation.sh
+          timeout 30 sh t/s16_lms_conversion.sh
           timeout 30 sh t/private_loader_preload.sh
       - name: Validate current official Soloist build
         run: |
@@ -126,7 +152,7 @@ jobs:
             "$work/soloist" --version \
             >"$work/version.txt" 2>&1
           cat "$work/version.txt"
-          grep -q 'loaded build 2026-11-18.6-frameunits' "$work/version.txt"
+          grep -q 'loaded build 2026-11-28.2-lossless' "$work/version.txt"
           grep -Eq 'build [0-9]{10}|[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z' \
             "$work/version.txt"
 
@@ -164,6 +190,6 @@ jobs:
             --library-path "$PWD/Bin/${{ matrix.directory }}:$PWD/Bin/${{ matrix.directory }}/glibc" \
             "$work/soloist" --version >"$work/version.txt" 2>&1
           cat "$work/version.txt"
-          grep -q 'loaded build 2026-11-18.6-frameunits' "$work/version.txt"
+          grep -q 'loaded build 2026-11-28.2-lossless' "$work/version.txt"
           grep -Eq 'build [0-9]{10}|[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z' \
             "$work/version.txt"

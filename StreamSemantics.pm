@@ -10,6 +10,11 @@ use constant BACKWARD_SEEK_THRESHOLD_MS => 2_000;
 use constant TRACK_RESET_POSITION_MS     => 5_000;
 use constant TRACK_RESET_TIMEOUT_SECONDS => 0.75;
 use constant NATURAL_END_WINDOW_MS       => 3_000;
+use constant API_VERSION                  => 2;
+
+sub apiVersion {
+	return API_VERSION;
+}
 
 sub isSoloistUrl {
 	my ($url) = @_;
@@ -61,6 +66,155 @@ sub isCurrentSoloistPlaybackUrl {
 		: !defined $parts->{generation};
 }
 
+sub delayTracePlayerStatusReady {
+	my ( $trace, $playingUrl, $canonical, $generation ) = @_;
+	return 0 unless ref $trace eq 'HASH';
+	return 0 unless defined $trace->{strmRequestedAt}
+		&& defined $trace->{handlerOpenedAt};
+	return 0 unless ( $trace->{generation} || 0 ) == ( $generation || 0 );
+	return isCurrentSoloistPlaybackUrl( $playingUrl, $canonical, $generation );
+}
+
+sub delayTraceTimingSummary {
+	my ($trace) = @_;
+	return unless ref $trace eq 'HASH';
+	return unless defined $trace->{startedAt}
+		&& defined $trace->{strmRequestedAt}
+		&& defined $trace->{handlerOpenedAt}
+		&& defined $trace->{firstPcmAt}
+		&& defined $trace->{playerStatusAt};
+
+	my %phaseMs = (
+		pre_flush => (
+			$trace->{strmRequestedAt} - $trace->{startedAt}
+		) * 1000,
+		handler_reopen => (
+			$trace->{handlerOpenedAt} - $trace->{strmRequestedAt}
+		) * 1000,
+		pcm_availability => (
+			$trace->{firstPcmAt} - $trace->{handlerOpenedAt}
+		) * 1000,
+		player_buffer => (
+			$trace->{playerStatusAt} - $trace->{firstPcmAt}
+		) * 1000,
+	);
+	my ($category) =
+		sort { $phaseMs{$b} <=> $phaseMs{$a} } keys %phaseMs;
+	my %summary = (
+		category => $category,
+		track_at => sprintf( '%.3f', $trace->{startedAt} ),
+		strm_at => sprintf( '%.3f', $trace->{strmRequestedAt} ),
+		open_at => sprintf( '%.3f', $trace->{handlerOpenedAt} ),
+		pcm_at => sprintf( '%.3f', $trace->{firstPcmAt} ),
+		status_at => sprintf( '%.3f', $trace->{playerStatusAt} ),
+		track_to_strm_ms => sprintf( '%.0f', $phaseMs{pre_flush} ),
+		strm_to_open_ms => sprintf( '%.0f', $phaseMs{handler_reopen} ),
+		open_to_pcm_ms => sprintf( '%.0f', $phaseMs{pcm_availability} ),
+		pcm_to_status_ms => sprintf( '%.0f', $phaseMs{player_buffer} ),
+		track_to_status_ms => sprintf(
+			'%.0f',
+			( $trace->{playerStatusAt} - $trace->{startedAt} ) * 1000,
+		),
+	);
+	if ( defined $trace->{generationFlushAt} ) {
+		$summary{flush_at} = sprintf( '%.3f', $trace->{generationFlushAt} );
+		$summary{track_to_flush_ms} = sprintf(
+			'%.0f',
+			( $trace->{generationFlushAt} - $trace->{startedAt} ) * 1000,
+		);
+		$summary{flush_to_strm_ms} = sprintf(
+			'%.0f',
+			( $trace->{strmRequestedAt} - $trace->{generationFlushAt} ) * 1000,
+		);
+	}
+	if ( defined $trace->{oldHandlerClosedAt} ) {
+		$summary{close_at} = sprintf( '%.3f', $trace->{oldHandlerClosedAt} );
+		$summary{strm_to_close_ms} = sprintf(
+			'%.0f',
+			( $trace->{oldHandlerClosedAt} - $trace->{strmRequestedAt} ) * 1000,
+		);
+		$summary{close_to_open_ms} = sprintf(
+			'%.0f',
+			( $trace->{handlerOpenedAt} - $trace->{oldHandlerClosedAt} ) * 1000,
+		);
+	}
+	if ( defined $trace->{firstWavAt} ) {
+		$summary{wav_at} = sprintf( '%.3f', $trace->{firstWavAt} );
+		$summary{open_to_wav_ms} = sprintf(
+			'%.0f',
+			( $trace->{firstWavAt} - $trace->{handlerOpenedAt} ) * 1000,
+		);
+	}
+	return \%summary;
+}
+
+sub observePlayerProgressStall {
+	my ( $tracker, $elapsed, $now, $playing ) = @_;
+	return unless ref $tracker eq 'HASH';
+	if ( !$playing || !defined $elapsed ) {
+		%$tracker = ();
+		return;
+	}
+	if (
+		!defined $tracker->{elapsed}
+		|| abs( $elapsed - $tracker->{elapsed} ) > 0.01
+	) {
+		$tracker->{elapsed} = $elapsed;
+		$tracker->{progressAt} = $now;
+		$tracker->{stallLogged} = 0;
+		return;
+	}
+	return if $tracker->{stallLogged};
+	return unless defined $tracker->{progressAt}
+		&& $now - $tracker->{progressAt} >= 1;
+	$tracker->{stallLogged} = 1;
+	return {
+		gapMs => ( $now - $tracker->{progressAt} ) * 1000,
+		elapsed => $elapsed,
+	};
+}
+
+sub normalizeTransitionRestartBufferMs {
+	my ($value) = @_;
+	return ( 750, 'expected a whole number from 0 to 3000' )
+		unless defined $value && $value =~ /\A-?\d+\z/;
+	$value = int($value);
+	return ( 0, 'clamped to the minimum' ) if $value < 0;
+	return ( 3000, 'clamped to the maximum' ) if $value > 3000;
+	return ( $value, undef );
+}
+
+sub transitionBufferMsForUrl {
+	my ( $url, $milliseconds ) = @_;
+	my $parts = soloistUrlParts($url) or return 0;
+	return defined $parts->{generation} ? $milliseconds : 0;
+}
+
+sub transitionBufferKb {
+	my ( $format, $milliseconds ) = @_;
+	return unless ref $format eq 'HASH';
+	return $format->{bufferKb} unless $milliseconds;
+
+	my $bitrate;
+	if ( ( $format->{key} || '' ) eq 'pcm' ) {
+		$bitrate =
+			( $format->{sampleRate} || 44_100 )
+			* ( $format->{channels} || 2 )
+			* ( $format->{sampleSize} || $format->{sourceSampleSize} || 16 );
+	}
+	elsif ( ( $format->{key} || '' ) eq 'mp3' ) {
+		$bitrate = $format->{bitrateBps} || $format->{transcodeBitrateBps};
+	}
+	else {
+		# Live FLAC is variable-rate. Use the uncompressed S16 source rate as
+		# a conservative upper estimate so transitions never request too few
+		# bytes for the configured duration.
+		$bitrate = $format->{sourceBitrateBps} || 1_411_200;
+	}
+	my $kilobytes = int( ( $bitrate * $milliseconds + 8_192_000 - 1 ) / 8_192_000 );
+	return $kilobytes > 255 ? 255 : ( $kilobytes || 1 );
+}
+
 sub monotonicNow {
 	my $now = eval {
 		Time::HiRes::clock_gettime( Time::HiRes::CLOCK_MONOTONIC() );
@@ -105,7 +259,7 @@ sub metadataForFormat {
 	return {
 		type   => 'Spotify Soloist (' . join( ', ', $display, @details ) . ')',
 		format => $display,
-		ct     => $format->{contentType},
+		ct     => $format->{outputContentType} || $format->{contentType},
 		( $format->{bitrateLabel} ? ( bitrate => $format->{bitrateLabel} ) : () ),
 		( $format->{sampleRate} ? ( samplerate => $format->{sampleRate} ) : () ),
 		( $format->{sampleSize} ? ( samplesize => $format->{sampleSize} ) : () ),
@@ -123,19 +277,24 @@ sub applySongFormat {
 
 	for my $target (@targets) {
 		next unless $target;
-		$target->bitrate( $format->{bitrateBps} || 0 )
+		$target->bitrate(
+			$format->{transcodeBitrateBps}
+				|| $format->{sourceBitrateBps}
+				|| $format->{bitrateBps}
+				|| 0
+		)
 			if $target->can('bitrate');
 		$target->samplerate( $format->{sampleRate} || 0 )
 			if $target->can('samplerate');
-		$target->samplesize( $format->{sampleSize} || 0 )
+		$target->samplesize( $format->{sourceSampleSize} || $format->{sampleSize} || 0 )
 			if $target->can('samplesize');
 		$target->channels( $format->{channels} || 0 )
 			if $target->can('channels');
 	}
 
-	$song->blockalign( $format->{blockAlign} || 0 )
+	$song->blockalign( $format->{sourceBlockAlign} || $format->{blockAlign} || 0 )
 		if $song->can('blockalign');
-	$track->block_alignment( $format->{blockAlign} || 0 )
+	$track->block_alignment( $format->{sourceBlockAlign} || $format->{blockAlign} || 0 )
 		if $track && $track->can('block_alignment');
 
 	return metadataForFormat($format);
